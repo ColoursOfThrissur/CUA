@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Data & Databases
+data/
+*.db
+*.sqlite
+
+# Backups & Checkpoints
+backups/
+checkpoints/
+
+# Environment
+.env
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Node (UI)
+ui/node_modules/
+ui/build/
+ui/.env.local
+
+# Output & Temporary
+output/
+*.tmp
+*.bak
+*.exe
+.DS_Store
+
+# Sandbox
+sandbox/
+
+# Audit
+audit/

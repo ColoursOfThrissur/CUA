@@ -1,0 +1,188 @@
+.history-viewer {
+  padding: 20px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.history-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-secondary);
+}
+
+.history-item {
+  background: var(--bg-primary);
+  padding: 15px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.history-item:hover {
+  border-color: var(--accent-color);
+}
+
+.history-item.failed {
+  border-left: 3px solid #ef4444;
+}
+
+.history-info {
+  flex: 1;
+}
+
+.history-desc {
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.history-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.history-time {
+  color: var(--text-secondary);
+}
+
+.history-risk {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.history-risk.risk-low { background: #10b98120; color: #10b981; }
+.history-risk.risk-medium { background: #f59e0b20; color: #f59e0b; }
+.history-risk.risk-high { background: #ef444420; color: #ef4444; }
+
+.history-status {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.history-status.status-applied { background: #10b98120; color: #10b981; }
+.history-status.status-failed { background: #ef444420; color: #ef4444; }
+
+.history-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.plan-details-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.plan-details-content {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-details-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.plan-details-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.plan-details-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.detail-row {
+  display: flex;
+  margin-bottom: 15px;
+}
+
+.detail-label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.detail-value {
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.detail-section {
+  margin-top: 20px;
+}
+
+.patch-preview {
+  background: var(--bg-secondary);
+  padding: 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+  color: var(--text-primary);
+  margin-top: 10px;
+}
+
+.plan-details-footer {
+  padding: 20px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}

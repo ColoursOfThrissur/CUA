@@ -1,0 +1,3 @@
+improved_http = ImprovedHttpTool()
+page = improved_http.get("https://example.com")
+linked_page = improved_http.follow_link("https://example.com", "/about-us")
