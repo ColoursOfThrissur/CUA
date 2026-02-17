@@ -18,6 +18,12 @@ class SecurityConfig(BaseModel):
     blocked_extensions: List[str] = Field(default=[".exe", ".bat", ".cmd", ".ps1", ".sh", ".dll"])
 
 class LLMConfig(BaseModel):
+    # Multi-model strategy
+    analysis_model: str = "mistral"  # For reasoning and planning
+    code_model: str = "qwen"         # For code generation
+    review_model: str = "mistral"    # For validation
+    fallback_model: str = "qwen"     # Fallback if primary fails
+    
     default_model: str = "qwen"
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=100)
@@ -71,24 +77,44 @@ class Config(BaseModel):
     
     @classmethod
     def load(cls, config_path: str = "config.yaml") -> "Config":
-        """Load config from YAML with environment variable overrides"""
+        """Load config from YAML with environment variable overrides and validation"""
         config_file = Path(config_path)
         
         if config_file.exists():
-            with open(config_file, 'r') as f:
-                data = yaml.safe_load(f) or {}
+            try:
+                with open(config_file, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid YAML in config file: {e}")
         else:
             data = {}
         
-        config = cls(**data)
+        try:
+            config = cls(**data)
+        except Exception as e:
+            raise ValueError(f"Invalid configuration: {e}")
+        
+        # Validate critical settings
+        if config.improvement.max_iterations <= 0:
+            raise ValueError("max_iterations must be > 0")
+        if config.improvement.sandbox_timeout <= 0:
+            raise ValueError("sandbox_timeout must be > 0")
+        if config.security.max_file_writes <= 0:
+            raise ValueError("max_file_writes must be > 0")
         
         # Environment variable overrides
         if api_url := os.getenv("CUA_API_URL"):
             config.api.url = api_url
         if api_port := os.getenv("CUA_API_PORT"):
-            config.api.port = int(api_port)
+            try:
+                config.api.port = int(api_port)
+            except ValueError:
+                pass  # Ignore invalid port
         if max_writes := os.getenv("CUA_MAX_FILE_WRITES"):
-            config.security.max_file_writes = int(max_writes)
+            try:
+                config.security.max_file_writes = int(max_writes)
+            except ValueError:
+                pass
         if ollama_url := os.getenv("OLLAMA_URL"):
             config.llm.ollama_url = ollama_url
         

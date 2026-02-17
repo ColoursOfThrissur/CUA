@@ -23,32 +23,37 @@ class AtomicApplier:
         # Create backup
         backup_path = self._create_backup(update_id)
         
+        patch_file = None
         try:
             # Write patch
             patch_file = self.repo_path / f"update_{update_id}.patch"
             patch_file.write_text(patch_content)
             
-            # Apply patch
+            # Apply patch with timeout
             result = subprocess.run(
                 ["git", "apply", "--check", patch_file.name],
                 cwd=self.repo_path,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30
             )
             
             if result.returncode != 0:
-                patch_file.unlink()
+                if patch_file.exists():
+                    patch_file.unlink()
                 return False, f"Patch validation failed: {result.stderr}"
             
-            # Apply for real
+            # Apply for real with timeout
             result = subprocess.run(
                 ["git", "apply", patch_file.name],
                 cwd=self.repo_path,
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=30
             )
             
-            patch_file.unlink()
+            if patch_file.exists():
+                patch_file.unlink()
             
             if result.returncode != 0:
                 # Rollback
@@ -63,17 +68,30 @@ class AtomicApplier:
                 self.rollback(update_id)
                 return False, "CRITICAL: Protected file modification detected - update rolled back"
             
-            # Commit
-            subprocess.run(["git", "add", "-A"], cwd=self.repo_path)
+            # Commit with detailed message and timeout
+            subprocess.run(["git", "add", "-A"], cwd=self.repo_path, timeout=30)
+            
+            # Extract files changed from patch
+            changed_files = self._extract_changed_files(patch_content)
+            commit_msg = f"Self-improvement: {update_id}\n\nFiles modified:\n" + "\n".join(f"- {f}" for f in changed_files)
+            
             subprocess.run(
-                ["git", "commit", "-m", f"Auto-update: {update_id}"],
-                cwd=self.repo_path
+                ["git", "commit", "-m", commit_msg],
+                cwd=self.repo_path,
+                timeout=30
             )
             
             return True, None
             
+        except subprocess.TimeoutExpired:
+            if patch_file and patch_file.exists():
+                patch_file.unlink()
+            self.rollback(update_id)
+            return False, "Git operation timeout"
         except Exception as e:
             # Rollback on any error
+            if patch_file and patch_file.exists():
+                patch_file.unlink()
             self.rollback(update_id)
             return False, str(e)
     
@@ -182,3 +200,14 @@ class AtomicApplier:
                 })
         
         return backups
+    
+    def _extract_changed_files(self, patch_content: str) -> list:
+        """Extract list of changed files from patch"""
+        files = []
+        for line in patch_content.split('\n'):
+            if line.startswith('+++'):
+                # Extract filename from +++ b/path/to/file
+                file_path = line.split(' ')[1].replace('b/', '')
+                if file_path != '/dev/null':
+                    files.append(file_path)
+        return files

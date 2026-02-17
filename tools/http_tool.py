@@ -161,7 +161,10 @@ class HTTPTool(BaseTool):
             parsed = urlparse(url)
             if not parsed.netloc:
                 return False
-            return any(domain in parsed.netloc for domain in self.ALLOWED_DOMAINS)
-        except Exception as e:
-            print(f"Error parsing URL {url}: {e}")
+            # Exact domain matching to prevent SSRF bypass
+            return any(
+                parsed.netloc == domain or parsed.netloc.endswith('.' + domain)
+                for domain in self.ALLOWED_DOMAINS
+            )
+        except Exception:
             return False

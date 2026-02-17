@@ -140,6 +140,15 @@ class LoopController:
                 
                 iteration_start = time.time()
                 
+                # Switch to analysis model (Mistral for reasoning)
+                original_model = self.llm_client.model
+                try:
+                    analysis_model = self.config.llm.analysis_model
+                    self.llm_client.set_model(analysis_model)
+                    self.add_log("info", f"Using {analysis_model} for analysis")
+                except Exception:
+                    pass
+                
                 # Analyze system (pass history BEFORE adding current iteration)
                 analysis = self.task_analyzer.analyze_and_propose_task(
                     focus=self.custom_focus,
@@ -149,14 +158,32 @@ class LoopController:
                 
                 if not analysis:
                     self.add_log("info", "No improvements needed")
+                    # Restore original model
+                    try:
+                        self.llm_client.set_model(original_model)
+                    except Exception:
+                        pass
                     await asyncio.sleep(2)
                     continue
+                
+                # Switch to code model (Qwen for code generation)
+                try:
+                    code_model = self.config.llm.code_model
+                    self.llm_client.set_model(code_model)
+                    self.add_log("info", f"Using {code_model} for code generation")
+                except Exception:
+                    pass
                 
                 # Generate proposal
                 proposal = self.proposal_generator.generate_proposal(analysis)
                 
                 if not proposal or not self._validate_proposal_structure(proposal):
                     self.add_log("error", "Failed to generate valid proposal")
+                    # Restore original model
+                    try:
+                        self.llm_client.set_model(original_model)
+                    except Exception:
+                        pass
                     # Add to history even on validation failure
                     self.iteration_history.append({
                         "iter": self.state.current_iteration,
@@ -166,6 +193,12 @@ class LoopController:
                         "error": "Invalid proposal structure"
                     })
                     continue
+                
+                # Restore original model after code generation
+                try:
+                    self.llm_client.set_model(original_model)
+                except Exception:
+                    pass
                 
                 # Calculate risk
                 risk_score = self.update_orchestrator.risk_scorer.score_update(
@@ -276,6 +309,12 @@ class LoopController:
                     self.add_log("stop", "Loop stopped gracefully")
                     break
                 
+                # Circuit breaker - stop if too many consecutive failures
+                recent_failures = sum(1 for h in self.iteration_history[-5:] if h.get('result') != 'success')
+                if recent_failures >= 5:
+                    self.add_log("error", "Circuit breaker: 5 consecutive failures - stopping loop")
+                    break
+                
                 # Rate limiting
                 await asyncio.sleep(self.config.improvement.rate_limit_delay)
             
@@ -291,13 +330,19 @@ class LoopController:
         return all(field in proposal for field in required)
     
     async def _handle_approval(self, proposal: Dict, risk_score) -> bool:
-        """Handle approval workflow"""
-        proposal_id = f"proposal_{self.state.current_iteration:03d}"
-        self.pending_approvals[proposal_id] = {
-            "proposal": proposal,
-            "risk_score": risk_score,
-            "approved": None
-        }
+        """Handle approval workflow with lock"""
+        async with self.approval_lock:  # Prevent race conditions
+            proposal_id = f"proposal_{self.state.current_iteration:03d}"
+            
+            # Check if already exists (shouldn't happen but safety check)
+            if proposal_id in self.pending_approvals:
+                return False
+            
+            self.pending_approvals[proposal_id] = {
+                "proposal": proposal,
+                "risk_score": risk_score,
+                "approved": None
+            }
         
         self.add_log("approval_needed", 
                     f"Risk: {risk_score.level.value.upper()} - Waiting for approval...",
@@ -366,6 +411,9 @@ class LoopController:
         import shutil
         from pathlib import Path
         
+        backup_path = None
+        file_path = None
+        
         try:
             files_changed = proposal.get('files_changed', [])
             if not files_changed:
@@ -379,7 +427,6 @@ class LoopController:
                 return {"success": False, "error": "No raw code"}
             
             # Backup if exists
-            backup_path = None
             if file_path.exists():
                 backup_dir = Path("backups")
                 backup_dir.mkdir(exist_ok=True)
@@ -405,11 +452,11 @@ class LoopController:
             return {"success": True, "backup_id": f"manual_backup_{update_id}"}
         except Exception as e:
             # Attempt rollback
-            if 'backup_path' in locals() and backup_path and backup_path.exists():
+            if backup_path and backup_path.exists() and file_path:
                 try:
                     shutil.copy2(backup_path, file_path)
                     self.add_log("error", f"Apply failed, rolled back: {e}")
-                except:
+                except Exception:
                     pass
             return {"success": False, "error": f"Direct apply failed: {str(e)}"}
     
@@ -427,7 +474,8 @@ class LoopController:
         """Approve pending proposal with locking"""
         if proposal_id in self.pending_approvals:
             # Check if already approved/rejected
-            if self.pending_approvals[proposal_id].get('approved') is not None:
+            current = self.pending_approvals[proposal_id].get('approved')
+            if current is not None:
                 return False  # Already processed
             self.pending_approvals[proposal_id]['approved'] = True
             return True
@@ -437,7 +485,8 @@ class LoopController:
         """Reject pending proposal with locking"""
         if proposal_id in self.pending_approvals:
             # Check if already approved/rejected
-            if self.pending_approvals[proposal_id].get('approved') is not None:
+            current = self.pending_approvals[proposal_id].get('approved')
+            if current is not None:
                 return False  # Already processed
             self.pending_approvals[proposal_id]['approved'] = False
             return True

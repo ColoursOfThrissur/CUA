@@ -62,25 +62,29 @@ class PatchGenerator:
         if code.startswith('---') or code.startswith('+++') or '@@' in code[:100]:
             return False
         
-        # Check dangerous patterns
-        dangerous = [
-            "eval(", "exec(", "__import__", "compile(",
-            "os.system", "subprocess.call",
-            "shutil.rmtree(", ".unlink(", ".rmdir(",
-            "open(", "Path(", "file.write",
-            # Security validation patterns
-            "domain in ",  # Substring matching in security checks
-            " in parsed.netloc",  # SSRF vulnerability pattern
-            " in url",  # Weak URL validation
+        # CRITICAL SECURITY PATTERNS - Block these completely
+        critical_patterns = [
+            ("eval(", "Code execution vulnerability"),
+            ("exec(", "Code execution vulnerability"),
+            ("__import__", "Dynamic import vulnerability"),
+            ("compile(", "Code compilation vulnerability"),
+            ("os.system", "Shell injection vulnerability"),
+            ("subprocess.call", "Shell injection vulnerability"),
+            ("shutil.rmtree(", "Dangerous file deletion"),
         ]
         
-        # Block definitely dangerous operations
-        blocked = [
-            "eval(", "exec(", "__import__", "compile(", 
-            "os.system", "subprocess.call", "shutil.rmtree(",
-            "domain in ", " in parsed.netloc"  # Prevent SSRF patterns
-        ]
-        return not any(d in code for d in blocked)
+        for pattern, reason in critical_patterns:
+            if pattern in code:
+                return False
+        
+        # SECURITY VALIDATION PATTERNS - Check for weak security
+        # Block substring matching in security-critical contexts
+        if "domain in " in code or " in parsed.netloc" in code or " in url" in code:
+            # Check if it's in a security validation context
+            if any(keyword in code for keyword in ["_is_allowed", "validate", "check_url", "allowed_domains"]):
+                return False  # Reject weak validation patterns
+        
+        return True
     
     def _extract_code(self, response: str) -> Optional[str]:
         """Extract code from LLM response"""

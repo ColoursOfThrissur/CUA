@@ -44,28 +44,32 @@ class ImprovementAnalytics:
     def record_attempt(self, iteration: int, proposal_desc: str, risk_level: str,
                       test_passed: bool, apply_success: bool, duration: float,
                       error_type: str = None):
-        """Record improvement attempt"""
+        """Record improvement attempt with transaction"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT INTO improvement_metrics 
-            (timestamp, iteration, proposal_desc, risk_level, test_passed, 
-             apply_success, duration_seconds, error_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.now().timestamp(),
-            iteration,
-            proposal_desc,
-            risk_level,
-            test_passed,
-            apply_success,
-            duration,
-            error_type
-        ))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO improvement_metrics 
+                (timestamp, iteration, proposal_desc, risk_level, test_passed, 
+                 apply_success, duration_seconds, error_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().timestamp(),
+                iteration,
+                proposal_desc[:200],  # Limit description length
+                risk_level,
+                test_passed,
+                apply_success,
+                duration,
+                error_type[:100] if error_type else None  # Limit error length
+            ))
+            
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
     
     def get_stats(self, days: int = 30) -> Dict:
         """Get analytics statistics"""

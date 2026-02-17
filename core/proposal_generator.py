@@ -90,7 +90,7 @@ class ProposalGenerator:
         }
     
     def _validate_code(self, code: str, file_path: str) -> Optional[str]:
-        """Validate generated code"""
+        """Validate generated code with security pattern checks"""
         import ast
         
         if not file_path.endswith('.py'):
@@ -110,6 +110,11 @@ class ProposalGenerator:
             return f"Syntax error line {e.lineno}: {e.msg}"
         except Exception as e:
             return f"Parse error: {str(e)}"
+        
+        # CRITICAL: Check for security anti-patterns
+        security_issues = self._check_security_patterns(code, file_path)
+        if security_issues:
+            return f"BLOCKED: {security_issues}"
         
         # Dangerous patterns
         dangerous = ['eval(', 'exec(', '__import__', 'compile(']
@@ -136,6 +141,36 @@ class ProposalGenerator:
         if 'tests/' in file_path and 'test_' in file_path:
             if 'import unittest' in code or 'unittest.TestCase' in code:
                 return "Use pytest instead of unittest"
+        
+        return None
+    
+    def _check_security_patterns(self, code: str, file_path: str) -> Optional[str]:
+        """Check for security anti-patterns that should never be allowed"""
+        
+        # SSRF vulnerability patterns - substring matching in URL validation
+        if any(func in code for func in ['_is_allowed_url', 'validate_url', 'check_url']):
+            # Check for weak validation patterns
+            weak_patterns = [
+                ('domain in parsed.netloc', 'Use exact domain matching: parsed.netloc == domain or parsed.netloc.endswith("." + domain)'),
+                ('domain in url', 'Use exact domain matching with urlparse'),
+                (' in parsed.netloc', 'Substring matching in URL validation is vulnerable to SSRF'),
+            ]
+            
+            for pattern, fix in weak_patterns:
+                if pattern in code:
+                    return f"SSRF vulnerability: {pattern}. Fix: {fix}"
+        
+        # SQL injection patterns
+        if 'execute(' in code and any(x in code for x in ['f"', "f'", ' + ']):
+            if 'sql' in code.lower() or 'query' in code.lower():
+                return "Potential SQL injection - use parameterized queries"
+        
+        # Path traversal without validation
+        if 'open(' in code or 'Path(' in code:
+            if '_validate_path' not in code and 'validate' not in file_path:
+                # Only warn for tools that handle user input
+                if 'tool' in file_path.lower():
+                    return "File operations without path validation in tool"
         
         return None
     

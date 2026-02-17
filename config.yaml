@@ -32,6 +32,12 @@ security:
 
 # LLM Model Settings
 llm:
+  # Multi-model strategy: Use different models for different tasks
+  analysis_model: "mistral"      # Reasoning, planning, review
+  code_model: "qwen"             # Code generation, refactoring
+  review_model: "mistral"        # Validation, security review
+  fallback_model: "qwen"         # Fallback if primary fails
+  
   default_model: "qwen"
   temperature: 0.7
   max_tokens: 4096
@@ -45,26 +51,19 @@ llm:
       name: "qwen2.5-coder:14b"
       context_length: 16384
       description: "Qwen 2.5 Coder 14B - Optimized for code generation (Q4_K_M)"
+      strengths: ["code_generation", "syntax", "refactoring"]
     
     mistral:
-      name: "mistral:latest"
+      name: "mistral:7b"
       context_length: 8192
-      description: "Mistral 7B - Fast and efficient"
-    
-    llama2:
-      name: "llama2:latest"
-      context_length: 4096
-      description: "Llama 2 - General purpose"
-    
-    codellama:
-      name: "codellama:latest"
-      context_length: 16384
-      description: "Code Llama - Optimized for code"
+      description: "Mistral 7B - Fast reasoning and analysis"
+      strengths: ["reasoning", "analysis", "planning", "review"]
     
     phi:
-      name: "phi:latest"
+      name: "phi3:latest"
       context_length: 2048
-      description: "Phi - Lightweight and fast"
+      description: "Phi 3 - Lightweight for simple tasks"
+      strengths: ["simple_tasks", "fast_response"]
 
 # Timeout Settings
 timeouts:

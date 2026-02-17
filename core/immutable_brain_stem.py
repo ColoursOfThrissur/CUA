@@ -49,7 +49,7 @@ class ImmutableBrainStem:
     
     # CRITICAL: Precomputed checksum - MUST be set before deployment
     # Generate with: python -c "import hashlib; print(hashlib.sha256(open('core/immutable_brain_stem.py','rb').read()).hexdigest())"
-    _EXPECTED_CHECKSUM = "f6312c0282b10349bfae7f506b2c1f7627e020c68c1896bd4834d2888abc4cfe"
+    _EXPECTED_CHECKSUM = "2a07461577987de48d8214230f87b17c564ae68558688b478792106480fea57a"
     
     def __init__(self):
         """Verify integrity on initialization"""

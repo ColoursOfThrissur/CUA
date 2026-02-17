@@ -47,31 +47,36 @@ class PlanHistory:
     
     def save_plan(self, plan_id: str, iteration: int, proposal: Dict, 
                   risk_level: str, test_result: Dict, apply_result: Dict):
-        """Save executed plan to history"""
+        """Save executed plan to history with transaction"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO plan_history 
-            (plan_id, timestamp, iteration, description, proposal, patch, 
-             risk_level, test_result, apply_result, status, rollback_commit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            plan_id,
-            datetime.now().timestamp(),
-            iteration,
-            proposal.get('description', ''),
-            json.dumps(proposal),
-            proposal.get('patch', ''),
-            risk_level,
-            json.dumps(test_result),
-            json.dumps(apply_result),
-            'applied' if apply_result.get('success') else 'failed',
-            apply_result.get('backup_id', '')
-        ))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO plan_history 
+                (plan_id, timestamp, iteration, description, proposal, patch, 
+                 risk_level, test_result, apply_result, status, rollback_commit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                plan_id,
+                datetime.now().timestamp(),
+                iteration,
+                proposal.get('description', ''),
+                json.dumps(proposal),
+                proposal.get('patch', ''),
+                risk_level,
+                json.dumps(test_result),
+                json.dumps(apply_result),
+                'applied' if apply_result.get('success') else 'failed',
+                apply_result.get('backup_id', '')
+            ))
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     
     def get_history(self, limit: int = 50) -> List[Dict]:
         """Get plan execution history"""

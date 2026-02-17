@@ -11,6 +11,14 @@ class TaskAnalyzer:
         self.llm_client = llm_client
         self.analyzer = system_analyzer
         self.llm_logger = llm_logger
+        self.static_analyzer = None
+        
+        # Try to import static analyzer
+        try:
+            from tools.static_analyzer import StaticAnalyzer
+            self.static_analyzer = StaticAnalyzer()
+        except ImportError:
+            pass
     
     def analyze_and_propose_task(
         self, 
@@ -35,6 +43,14 @@ class TaskAnalyzer:
         # Build tool information with capabilities
         tools_info = self._get_tools_info(test_files)
         
+        # Get static analysis issues if available
+        static_issues = []
+        if self.static_analyzer:
+            try:
+                static_issues = self.static_analyzer.get_top_issues(max_issues=3)
+            except Exception:
+                pass
+        
         # Detect repeated suggestions
         repeated_count = self._count_repeated_tasks(iteration_history or [])
         blocked_tasks = self._extract_blocked_tasks(iteration_history or [])
@@ -46,7 +62,8 @@ class TaskAnalyzer:
             focus,
             failed_suggestions or [],
             iteration_history or [],
-            blocked_tasks
+            blocked_tasks,
+            static_issues
         )
         
         prompt = self.llm_client._format_prompt(prompt_text)
@@ -186,42 +203,61 @@ class TaskAnalyzer:
         focus: Optional[str],
         failed_suggestions: List[str],
         iteration_history: List[Dict],
-        blocked_tasks: List[str]
+        blocked_tasks: List[str],
+        static_issues: List[Dict] = None
     ) -> str:
-        """Build analysis prompt for LLM"""
+        """Build analysis prompt for LLM with code snippets"""
+        
+        # Format static issues if available
+        issues_section = ""
+        if static_issues:
+            issues_section = "\n\n## Concrete Issues Found by Static Analysis:\n"
+            for i, issue in enumerate(static_issues, 1):
+                issues_section += f"{i}. **{issue['file']}:{issue['line']}** [{issue['severity'].upper()}]\n"
+                issues_section += f"   - {issue['code']}: {issue['message']}\n"
         
         if focus:
+            # User-directed mode - show code snippets
+            code_snippets = self._get_code_snippets(tools_info)
             return f"""User request: "{focus}"
 
-## Available Tools:
-{json.dumps(tools_info, indent=2)}
+## Available Tools with Code Preview:
+{code_snippets}{issues_section}
 
 ## Existing Tests:
 {json.dumps(test_files, indent=2)}
 
 ## Your Task:
 Interpret the user's request and determine the best approach.
+Look at the code snippets and static analysis issues to identify SPECIFIC problems:
+- Missing error handling
+- Hardcoded values that should be configurable
+- Security vulnerabilities (SQL injection, path traversal, etc.)
+- Performance issues (inefficient loops, memory leaks)
+- Missing validation
 
 ## Output Format (JSON only):
 {{
   "task_type": "create_test|modify_tool|create_tool|fix_bug",
   "target_file": "tools/exact_name.py",
   "test_file": "tests/unit/test_name.py",
-  "description": "what you'll do and why",
+  "description": "SPECIFIC issue found and how to fix it",
   "priority": "high"
 }}
 
 Respond with ONLY valid JSON:"""
         
-        # Autonomous mode
+        # Autonomous mode with code analysis
         blocked_section = ""
         if blocked_tasks:
             blocked_section = f"\n\n## DO NOT SUGGEST (already done or failed 3+ times):\n{json.dumps(blocked_tasks, indent=2)}\n\nCRITICAL: If you see a task in Previous Iterations with result='success', DO NOT suggest it again!\nCRITICAL: If you see the same task repeated 3+ times, DO NOT suggest it again!"
         
+        code_snippets = self._get_code_snippets(tools_info)
+        
         return f"""Analyze this codebase and decide what improvement would add the most value.
 
-## Available Tool Classes:
-{json.dumps(tools_info, indent=2)}
+## Available Tool Classes with Code Preview:
+{code_snippets}{issues_section}
 
 ## Existing Tests:
 {json.dumps(test_files, indent=2)}
@@ -233,29 +269,66 @@ Respond with ONLY valid JSON:"""
 {json.dumps(iteration_history[-5:], indent=2) if iteration_history else 'None - First iteration'}{blocked_section}
 
 ## Your Task:
-You are an autonomous agent. Analyze the codebase and decide:
-- What would improve system reliability?
-- What would add valuable functionality?
-- What issues need attention?
+Analyze the CODE SNIPPETS and STATIC ANALYSIS ISSUES above to identify SPECIFIC problems:
+1. **PRIORITY**: Fix issues found by static analysis first (concrete, actionable)
+2. Security vulnerabilities (SQL injection, XSS, path traversal, SSRF)
+3. Missing error handling or validation
+4. Hardcoded values that should be in config
+5. Performance issues (inefficient algorithms, memory leaks)
+6. Code quality issues (duplicated code, complex logic)
 
 IMPORTANT RULES:
 1. Look at Previous Iterations - if a task has result='success', DO NOT suggest it again
 2. If you see the same task repeated multiple times, suggest something DIFFERENT
-3. Do NOT suggest async/await features (too complex for this LLM)
-4. Do NOT suggest threading/multiprocessing
-5. Focus on simple, practical improvements
-6. Prefer bug fixes and code quality over new features
+3. Be SPECIFIC - mention the exact issue you found in the code
+4. Do NOT suggest async/await features (too complex)
+5. Do NOT suggest threading/multiprocessing
+6. Focus on simple, practical improvements
 
 ## Output Format (JSON only):
 {{
-  "task_type": "create_test|fix_bug|add_feature|improve_code",
+  "task_type": "fix_bug|improve_code|add_validation",
   "target_file": "exact/path/from/lists/above.py",
   "test_file": "tests/unit/test_name.py",
-  "description": "specific task and why it matters",
+  "description": "SPECIFIC issue: [describe exact problem in code] - Fix: [how to fix it]",
   "priority": "low|medium|high"
 }}
 
 Respond with ONLY valid JSON:"""
+    
+    def _get_code_snippets(self, tools_info: List[Dict]) -> str:
+        """Get code snippets from tools for LLM analysis"""
+        snippets = []
+        
+        for tool in tools_info:
+            file_path = tool['file']
+            content = self.analyzer.get_file_content(file_path)
+            
+            if not content:
+                continue
+            
+            # Extract key methods (first 30 lines of each class)
+            lines = content.split('\n')
+            class_start = None
+            
+            for i, line in enumerate(lines):
+                if 'class ' in line:
+                    class_start = i
+                    break
+            
+            if class_start is not None:
+                # Get first 30 lines of class
+                snippet_lines = lines[class_start:min(class_start + 30, len(lines))]
+                snippet = '\n'.join(snippet_lines)
+                
+                snippets.append(f"""### {file_path}
+```python
+{snippet}
+... (truncated)
+```
+""")
+        
+        return '\n'.join(snippets) if snippets else "No code available"
     
     def _interpret_task(self, analysis: Dict, focus: Optional[str]) -> Optional[Dict]:
         """Interpret LLM response and determine files to modify"""
