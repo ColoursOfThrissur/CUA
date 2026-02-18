@@ -100,7 +100,6 @@ FEW_SHOT_EXAMPLES = """
 EXAMPLE 1 - Filesystem:
 User: "list files in current directory"
 Output:
-```json
 {
   "plan_id": "plan_001",
   "analysis": "User wants to see all files in the current working directory",
@@ -116,12 +115,10 @@ Output:
   "confidence": 0.95,
   "estimated_duration": 2
 }
-```
 
-EXAMPLE 2 - HTTP Request:
+EXAMPLE 2 - HTTP GET:
 User: "fetch data from example.com"
 Output:
-```json
 {
   "plan_id": "plan_002",
   "analysis": "User wants to make HTTP GET request to example.com",
@@ -137,36 +134,31 @@ Output:
   "confidence": 0.92,
   "estimated_duration": 3
 }
-```
 
-EXAMPLE 3 - JSON Processing:
-User: "parse config.json and extract the version"
+EXAMPLE 3 - HTTP POST with JSON:
+User: "POST to api.example.com/users with name: John, age: 30"
 Output:
-```json
 {
   "plan_id": "plan_003",
-  "analysis": "User wants to read JSON file and extract version field",
+  "analysis": "User wants to send POST request with JSON data containing user information",
   "steps": [
     {
       "step_id": "step_1",
-      "tool": "filesystem_tool",
-      "operation": "read_file",
-      "parameters": {"path": "./config.json"},
-      "reasoning": "Read the JSON configuration file"
-    },
-    {
-      "step_id": "step_2",
-      "tool": "json_tool",
-      "operation": "parse",
-      "parameters": {"json_string": "{{content_from_step_1}}"},
-      "reasoning": "Parse JSON content to extract version field",
-      "depends_on": ["step_1"]
+      "tool": "http_tool",
+      "operation": "post",
+      "parameters": {
+        "url": "https://api.example.com/users",
+        "data": {
+          "name": "John",
+          "age": 30
+        }
+      },
+      "reasoning": "Send POST request with structured JSON body containing user data"
     }
   ],
-  "confidence": 0.88,
-  "estimated_duration": 2
+  "confidence": 0.90,
+  "estimated_duration": 4
 }
-```
 """
 
 # Prompt template for LLM - will be populated with registry tools
@@ -183,10 +175,10 @@ RULES:
 2. step_id must be: step_1, step_2, etc.
 3. reasoning must be 10-500 characters
 4. Max 20 steps
-5. Output ONLY valid JSON wrapped in ```json code fence
+5. Output ONLY valid JSON in this exact format
 
 {examples}
 
 USER REQUEST: {user_request}
 
-Generate valid JSON plan (wrapped in ```json fence):"""
+Generate the execution plan as valid JSON:"""

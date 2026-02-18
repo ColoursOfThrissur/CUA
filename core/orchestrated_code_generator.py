@@ -1,8 +1,7 @@
 """
-Orchestrated Code Generator - Multi-step approach for small LLMs
-Breaks complex code generation into manageable steps
+Orchestrated Code Generator - Diff-first approach
+Generates minimal changes instead of full method rewrites
 """
-import json
 from typing import Dict, List, Optional, Tuple
 from core.method_extractor import MethodExtractor
 from core.code_integrator import CodeIntegrator
@@ -13,489 +12,799 @@ class OrchestratedCodeGenerator:
         self.config = get_config()
         self.llm_client = llm_client
         self.analyzer = analyzer
+        
+        # Components
         self.extractor = MethodExtractor()
         self.integrator = CodeIntegrator()
+        
+        # Block-based generator
+        from core.block_code_generator import BlockCodeGenerator
+        self.block_generator = BlockCodeGenerator(llm_client, analyzer)
     
     def generate_code(self, user_request: str, target_file: str, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Legacy method for backward compatibility"""
+        success, code, error, _ = self.generate_code_with_plan(user_request, target_file, target_tool, previous_errors)
+        return success, code, error
+    
+    def generate_code_with_plan(self, user_request: str, target_file: str, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None, user_override: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
         """
-        Generate code using multi-step orchestration
-        Args:
-            user_request: What to generate
-            target_file: File to create/modify
-            target_tool: For test files, the tool being tested
-        Returns: (success, complete_code, error_message)
+        Generate code using intelligent strategy selection
+        Returns: (success, complete_code, error_message, methods_to_modify)
         """
         
         if not target_file:
-            return False, None, "No target file specified"
+            return False, None, "No target file specified", None
         
         from core.logging_system import get_logger
         logger = get_logger("code_generator")
         
-        # Warmup: ensure model is loaded on GPU before orchestration
-        if self.config.improvement.warmup_enabled:
-            logger.info("Loading model to GPU...")
-            self.llm_client._call_llm("Ready", temperature=0.1)
+        logger.info(f"=== CODE GENERATION START ===")
+        logger.info(f"Target file: {target_file}")
+        logger.info(f"Request: {user_request[:100]}")
+        if user_override:
+            logger.info(f"USER REQUEST MODE: {user_override[:80]}")
         
-        logger.info(f"Planning modifications for {target_file}...")
-        plan = self._plan_modifications(user_request, target_file)
-        if not plan:
-            return False, None, "Failed to create modification plan"
+        task = user_override or user_request
         
-        logger.debug(f"Plan: {json.dumps(plan, indent=2)}")
+        # Intelligent strategy selection
+        strategy = self._select_strategy(task, target_file)
+        logger.info(f"Selected strategy: {strategy}")
         
-        modified_methods = {}
-        new_methods = {}
+        if strategy == "incremental":
+            return self._generate_incremental_modification(task, target_file, previous_errors or [])
+        elif strategy == "insert":
+            method_name = self._extract_method_name(task)
+            if method_name:
+                original_code = self.analyzer.get_file_content(target_file)
+                return self._insert_new_method(task, target_file, method_name, original_code, previous_errors or [])
         
-        for method_name in plan.get('methods_to_modify', []):
-            logger.info(f"Modifying method: {method_name}")
-            success, code = self._generate_method(method_name, target_file, user_request, plan)
-            if success:
-                logger.info(f"Generated {method_name} ({len(code)} chars)")
-                modified_methods[method_name] = code
-            else:
-                logger.error(f"Failed to generate {method_name}")
-                # Return the failed code for self-correction attempt
-                error_msg = f"Failed to generate method: {method_name}"
-                if code:
-                    error_msg += " - validation failed"
-                return False, code, error_msg
+        # Default: method rewrite
+        return self._generate_method_rewrite(task, target_file, previous_errors or [])
+
+    def _select_strategy(self, task: str, target_file: str) -> str:
+        """
+        Select code generation strategy based on task intent
+        Returns: 'incremental', 'insert', or 'rewrite'
+        """
+        task_lower = task.lower()
         
-        for method_name in plan.get('new_methods', []):
-            logger.info(f"Creating new method: {method_name}")
-            success, code = self._generate_new_method(method_name, target_file, user_request, plan, target_tool, previous_errors or [])
-            if success:
-                logger.info(f"Generated {method_name} ({len(code)} chars)")
-                new_methods[method_name] = code
-            else:
-                logger.error(f"Failed to generate {method_name}")
-                return False, None, f"Failed to generate new method: {method_name}"
+        # Incremental: Adding features to existing methods without full rewrite
+        incremental_keywords = [
+            'add logging', 'add timeout', 'add validation', 'add error handling',
+            'add retry', 'add caching', 'add monitoring', 'add metrics',
+            'add parameter', 'add argument', 'add check', 'add support for',
+            'comprehensive logging', 'logging for debugging', 'add async'
+        ]
         
-        logger.info("Integrating changes...")
-        original_code = self.analyzer.get_file_content(target_file)
+        for keyword in incremental_keywords:
+            if keyword in task_lower:
+                return "rewrite"  # Changed: use rewrite for reliability
         
-        # If new file (test file), use generated code directly
-        if not original_code:
-            if new_methods:
-                # For new test files, return the complete generated code
-                result_code = list(new_methods.values())[0]
-                logger.info(f"Created new file with {len(result_code)} chars")
-            else:
-                return False, None, "No code generated for new file"
-        else:
-            # Existing file - integrate changes
-            result_code = original_code
-            if modified_methods:
-                result_code = self.integrator.integrate_methods(result_code, modified_methods)
-                logger.info(f"Integrated {len(modified_methods)} modified methods")
-            if new_methods:
-                result_code = self.integrator.add_new_methods(result_code, new_methods)
-                logger.info(f"Added {len(new_methods)} new methods")
+        # Insert: Creating new methods
+        if 'add new method' in task_lower or 'create method' in task_lower:
+            return "insert"
         
-        # Clean trailing placeholders
-        lines = result_code.split('\n')
-        while lines:
-            last_line = lines[-1].strip().lower()
-            if not last_line or 'rest of' in last_line or 'remains unchanged' in last_line:
-                lines.pop()
-            else:
-                break
-        result_code = '\n'.join(lines)
+        # Check if method doesn't exist (insert)
+        method_name = self._extract_method_name(task)
+        if method_name:
+            original_code = self.analyzer.get_file_content(target_file)
+            if original_code:
+                methods = self.extractor.extract_methods(original_code)
+                if method_name not in methods:
+                    return "insert"
         
+        # Default: rewrite for fixes, refactors, major changes
+        return "rewrite"
+    
+    def _generate_incremental_modification(self, task: str, target_file: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+        """
+        Generate incremental modifications using block-based approach with fallbacks
+        Strategy: Block → Line → Full method rewrite
+        """
         from core.logging_system import get_logger
         logger = get_logger("code_generator")
         
-        logger.info("Validating complete code...")
-        validation_result = self._validate_complete_code(result_code, logger)
-        if not validation_result:
-            logger.error("Validation failed")
-            logger.debug(f"Last 500 chars:\n{result_code[-500:]}")
-            # Return broken code with error for self-correction, but mark as failed
-            return False, result_code, "Validation failed: indentation or syntax error"
-        
-        logger.info("Validation passed")
-        return True, result_code, None
-    
-    def _plan_modifications(self, user_request: str, target_file: str) -> Optional[Dict]:
-        """Step 1: Plan which methods to modify/add"""
-        
-        # Get file structure (signatures only, not full code)
-        original_code = self.analyzer.get_file_content(target_file)
-        
-        # For new files (like test files), skip planning and go straight to generation
-        if not original_code:
-            # New file - return simple plan to generate complete file
-            return {
-                "methods_to_modify": [],
-                "new_methods": ["complete_file"],  # Placeholder name
-                "reason": "Creating new file"
-            }
-        
-        methods = self.extractor.extract_methods(original_code)
-        method_signatures = {name: info['args'] for name, info in methods.items()}
-        
-        prompt = self.llm_client._format_prompt(f"""Analyze this modification request and create a plan.
-
-USER REQUEST: {user_request}
-TARGET FILE: {target_file}
-
-EXISTING METHODS:
-{json.dumps(method_signatures, indent=2)}
-
-OUTPUT JSON with:
-{{
-  "methods_to_modify": ["method1", "method2"],
-  "new_methods": ["new_method1"],
-  "reason": "explanation"
-}}
-
-Respond with JSON only:""")
-        
-        response = self.llm_client._call_llm(prompt, temperature=0.2)
-        if not response:
-            return None
-        
-        plan = self.llm_client._extract_json(response)
-        return plan
-    
-    def _generate_method(self, method_name: str, target_file: str, user_request: str, plan: Dict) -> Tuple[bool, Optional[str]]:
-        """Step 2a: Generate single modified method"""
+        logger.info("Using incremental modification strategy")
         
         original_code = self.analyzer.get_file_content(target_file)
         methods = self.extractor.extract_methods(original_code)
         
-        if method_name not in methods:
-            return False, None
+        if not methods:
+            logger.error(f"No methods found in {target_file}")
+            return False, None, "No methods found in file", None
         
-        method_info = methods[method_name]
-        current_code = method_info['code']
+        # Identify target method
+        method_name = self._extract_method_name(task)
+        if not method_name or method_name not in methods:
+            # Try to find method mentioned in task
+            for m in methods.keys():
+                if m in task or m.lstrip('_') in task:
+                    method_name = m
+                    break
+            # If still not found, use smart selection based on task type
+            if not method_name or method_name not in methods:
+                # For caching/performance features, target execution method
+                if any(keyword in task.lower() for keyword in ['caching', 'cache', 'performance', 'timeout', 'retry']):
+                    for preferred in ['_execute', 'execute', '_handle', 'run', '_get', '_post']:
+                        if preferred in methods:
+                            method_name = preferred
+                            break
+                # For other features, prefer execution methods over __init__
+                if not method_name:
+                    for preferred in ['_execute', 'execute', '_handle', 'run', '_get', '_post']:
+                        if preferred in methods:
+                            method_name = preferred
+                            break
+                # Last resort: first non-init method
+                if not method_name:
+                    non_init = [m for m in methods.keys() if m != '__init__']
+                    method_name = non_init[0] if non_init else list(methods.keys())[0]
         
-        # Get dependencies
-        deps = self.extractor.get_method_dependencies(method_name, original_code)
-        dep_code = ""
-        for dep in deps:
-            if dep in methods:
-                dep_code += f"\n# Dependency: {dep}\n{methods[dep]['code']}\n"
+        logger.info(f"Target method: {method_name}")
         
-        prompt = self.llm_client._format_prompt(f"""Modify this method based on user request.
-
-USER REQUEST: {user_request}
-REASON: {plan.get('reason', '')}
-
-CURRENT METHOD:
-```python
-{current_code}
-```
-
-DEPENDENCIES:
-```python
-{dep_code}
-```
-
-IMPORTANT RULES:
-1. Output COMPLETE method code - no placeholders
-2. Keep method signature EXACTLY the same
-3. NO comments like "# rest unchanged" or "# existing code"
-4. Must have proper return statement
-5. NO async/await unless method already uses it
-6. Complete working code only
-7. If you can't implement fully, return the original code unchanged
-8. CRITICAL: Maintain proper indentation - all code inside method must be indented consistently
-9. Do NOT mix tabs and spaces - use 4 spaces for indentation
-
-Output the COMPLETE modified method:""")
+        # STRATEGY 1: Block-based modification (preferred)
+        logger.info("Trying block-based modification")
+        success, code, error = self.block_generator.generate_block_modification(
+            task, target_file, method_name, original_code, previous_errors
+        )
         
-        last_code = None
-        for attempt in range(3):
-            response = self.llm_client._call_llm(prompt, temperature=0.2)
-            if not response:
-                continue
-            
-            code = self._extract_code(response)
-            last_code = code  # Save for potential return
-            
-            if code and self._validate_method(code, method_name):
-                return True, code
-            
-            # If validation failed, give specific feedback
-            if code:
-                if 'return' not in code and method_name != '__init__':
-                    prompt += f"\n\nERROR: Method must have a return statement. Add: return <value>\n"
-                elif 'async def' in code and 'async def' not in current_code:
-                    prompt += f"\n\nERROR: Do NOT add async. Keep method synchronous like original.\n"
-                elif '\t' in code:
-                    prompt += f"\n\nERROR: Do NOT use tabs. Use 4 spaces for indentation.\n"
-                else:
-                    prompt += f"\n\nERROR: Method incomplete, invalid indentation, or syntax error. Output COMPLETE working code with proper 4-space indentation.\n"
+        if success and code:
+            # Validate block result
+            if self._validate_syntax(code):
+                logger.info("Block-based modification succeeded")
+                return True, code, None, [method_name]
             else:
-                prompt += f"\n\nERROR: Could not extract code. Use ```python code ``` format.\n"
-        
-        # Return last generated code even if failed, for self-correction
-        return False, last_code
-    
-    def _generate_new_method(self, method_name: str, target_file: str, user_request: str, plan: Dict, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None) -> Tuple[bool, Optional[str]]:
-        """Step 2b: Generate new method or complete test file"""
-        
-        original_code = self.analyzer.get_file_content(target_file)
-        
-        # If creating new test file, generate complete file
-        if not original_code and 'test_' in target_file:
-            return self._generate_complete_test_file(target_file, user_request, plan, target_tool, previous_errors or [])
-        
-        class_def = self.extractor.extract_class_definition(original_code) if original_code else ""
-        
-        prompt = self.llm_client._format_prompt(f"""Create a new method for this class.
-
-USER REQUEST: {user_request}
-METHOD NAME: {method_name}
-REASON: {plan.get('reason', '')}
-
-CLASS CONTEXT:
-```python
-{class_def}
-```
-
-RULES:
-1. Output COMPLETE method code
-2. Use def {method_name}(self, ...):
-3. Must have return statement
-4. NO placeholders
-5. Complete working code only
-
-Output the COMPLETE new method:""")
-        
-        for attempt in range(3):
-            response = self.llm_client._call_llm(prompt, temperature=0.2)
-            if not response:
-                continue
-            
-            code = self._extract_code(response)
-            if code and self._validate_method(code, method_name):
-                return True, code
-            
-            prompt += f"\n\nERROR: Method incomplete. Must have return statement.\n"
-        
-        return False, None
-    
-    def _generate_complete_test_file(self, target_file: str, user_request: str, plan: Dict, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None) -> Tuple[bool, Optional[str]]:
-        """Generate complete test file for new tests"""
-        
-        # Extract tool name from test file path or use provided target_tool
-        if target_tool:
-            tool_file = target_tool
-            tool_name = tool_file.replace('tools/', '').replace('.py', '')
+                logger.warning(f"Block produced invalid code: {self._get_syntax_error(code)}")
         else:
-            tool_name = target_file.replace('tests/unit/test_', '').replace('.py', '')
-            tool_file = f"tools/{tool_name}.py"
+            logger.warning(f"Block-based failed: {error}")
         
-        # Get tool code
-        tool_code = self.analyzer.get_file_content(tool_file)
-        if not tool_code:
-            return False, None
+        # STRATEGY 2: Line-based modification (fallback)
+        logger.info("Trying line-based modification")
+        success, code, error = self._generate_line_modification(
+            task, target_file, method_name, original_code, previous_errors
+        )
         
-        # Extract class name from tool code
-        import re
-        class_match = re.search(r'class (\w+)', tool_code)
-        class_name = class_match.group(1) if class_match else "ToolClass"
+        if success:
+            logger.info("Line-based modification succeeded")
+            return True, code, None, [method_name]
         
-        # Build error context if available
+        logger.warning(f"Line-based failed: {error}")
+        
+        # STRATEGY 3: Full method rewrite (last resort)
+        logger.info("Falling back to full method rewrite")
+        return self._generate_method_rewrite(task, target_file, previous_errors)
+    
+    def _generate_line_modification(self, task: str, target_file: str, method_name: str,
+                                   original_code: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Generate line-by-line diff modifications"""
+        from core.logging_system import get_logger
+        logger = get_logger("line_generator")
+        
+        method_code = self.extractor.extract_methods(original_code).get(method_name, {}).get('code')
+        if not method_code:
+            return False, None, f"Method {method_name} not found"
+        
         error_context = ""
         if previous_errors:
-            error_context = "\n\nPREVIOUS ERRORS TO AVOID:\n"
-            for err in previous_errors[-3:]:
-                error_context += f"- {err}\n"
+            error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
         
-        prompt = self.llm_client._format_prompt(f"""Create a COMPLETE test file.
+        prompt = self.llm_client._format_prompt(f"""Generate line modifications.
 
-USER REQUEST: {user_request}
-TEST FILE: {target_file}
-TOOL FILE: {tool_file}
-TOOL CLASS: {class_name}
+Task: {task}
 
-TOOL CODE:
+Method:
 ```python
-{tool_code[:self.config.improvement.code_preview_chars]}
+{method_code}
 ```
 {error_context}
 
-!! CRITICAL - READ THIS CAREFULLY !!
+Format:
++5: new line
+~10: modified line
 
-WRONG PATTERN (DO NOT USE):
+Modifications:""", expect_json=False)
+        
+        for attempt in range(2):
+            response = self.llm_client._call_llm(prompt, temperature=0.1, max_tokens=1024, expect_json=False)
+            if not response:
+                prompt += "\n\nERROR: No response."
+                continue
+            
+            modifications = self._parse_line_diffs(response)
+            if not modifications:
+                prompt += "\n\nERROR: Use +N: or ~N: format."
+                continue
+            
+            modified_method = self._apply_line_diffs(method_code, modifications)
+            if not modified_method:
+                prompt += "\n\nERROR: Invalid line numbers."
+                continue
+            
+            modified_file = self.integrator.integrate_methods(original_code, {method_name: modified_method})
+            
+            if not self._validate_syntax(modified_file):
+                error_msg = self._get_syntax_error(modified_file)
+                prompt += f"\n\nERROR: {error_msg}"
+                continue
+            
+            return True, modified_file, None
+        
+        return False, None, "Line modification failed"
+    
+    def _parse_line_diffs(self, response: str) -> List[dict]:
+        """Parse line diff format"""
+        import re
+        modifications = []
+        for line in response.split('\n'):
+            match = re.match(r'^([+~])(\d+):\s*(.+)$', line.strip())
+            if match:
+                op, line_num, code = match.groups()
+                modifications.append({
+                    'op': 'insert' if op == '+' else 'modify',
+                    'line': int(line_num),
+                    'code': code
+                })
+        return modifications
+    
+    def _apply_line_diffs(self, method_code: str, modifications: List[dict]) -> Optional[str]:
+        """Apply line modifications"""
+        lines = method_code.split('\n')
+        modifications.sort(key=lambda x: x['line'], reverse=True)
+        
+        for mod in modifications:
+            line_num = mod['line'] - 1
+            if mod['op'] == 'insert':
+                if 0 <= line_num <= len(lines):
+                    lines.insert(line_num, mod['code'])
+            elif mod['op'] == 'modify':
+                if 0 <= line_num < len(lines):
+                    lines[line_num] = mod['code']
+        
+        return '\n'.join(lines)
+    
+    def _generate_method_rewrite(self, task: str, target_file: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+        """Generate method rewrite or insert new method"""
+        from core.logging_system import get_logger
+        logger = get_logger("code_generator")
+        
+        logger.info("Using method rewrite strategy")
+        
+        original_code = self.analyzer.get_file_content(target_file)
+        methods = self.extractor.extract_methods(original_code)
+        
+        if not methods:
+            logger.error(f"No methods found in {target_file}")
+            return False, None, "No methods found in file", None
+        
+        # Identify target method
+        method_name = self._extract_method_name(task)
+        
+        # Check if method exists
+        if method_name and method_name not in methods:
+            # NEW METHOD - use insert strategy
+            logger.info(f"Method {method_name} doesn't exist - using insert strategy")
+            return self._insert_new_method(task, target_file, method_name, original_code, previous_errors)
+        
+        # Method already exists - check if it needs modification
+        if method_name and method_name in methods:
+            # Verify if task is actually needed
+            method_code = methods[method_name]['code']
+            if self._is_already_implemented(task, method_code):
+                logger.info(f"Method {method_name} already implements requested feature - skipping")
+                return False, None, f"Feature already implemented in {method_name}", [method_name]
+        
+        # EXISTING METHOD - use rewrite strategy
+        if not method_name or method_name not in methods:
+            method_name = list(methods.keys())[0]
+        
+        method_info = methods[method_name]
+        current_method = method_info['code']
+        
+        # Build focused context - only what LLM needs
+        error_context = ""
+        if previous_errors:
+            error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
+        
+        # Check if caching task - needs special prompt
+        is_caching_task = any(kw in task.lower() for kw in ['add caching', 'add cache', 'caching mechanism'])
+        
+        if is_caching_task:
+            prompt = self.llm_client._format_prompt(f"""Add caching to this method.
+
+Task: {task}
+
+Current method:
 ```python
-# WRONG - ToolResult has NO execute method
-result = ToolResult(...)
-result.execute()  # ERROR: This will fail!
+{current_method}
+```
+{error_context}
+
+Rules:
+1. Output ONLY ONE method: 'def {method_name}'
+2. Add caching INLINE using a dict (e.g., self._cache = {{}})
+3. Do NOT create separate cache helper methods
+4. Check cache at start, store result before return
+5. Return method with ZERO indentation (no leading spaces)
+6. Output raw Python only
+
+Example (NO leading spaces):
+```python
+def analyze(self, file):
+    # Check cache
+    if hasattr(self, '_cache') and file in self._cache:
+        return self._cache[file]
+    # Original logic
+    result = self.process(file)
+    # Store in cache
+    if not hasattr(self, '_cache'):
+        self._cache = {{}}
+    self._cache[file] = result
+    return result
 ```
 
-CORRECT PATTERN (USE THIS):
+Modified method:""", expect_json=False)
+        else:
+            # Give LLM ONLY the method to modify, not entire file
+            prompt = self.llm_client._format_prompt(f"""Modify this method to complete the task.
+
+Task: {task}
+
+Current method:
 ```python
-# CORRECT - Call execute on the TOOL, not the result
+{current_method}
+```
+{error_context}
+
+Rules:
+1. Output COMPLETE method starting with 'def {method_name}'
+2. Include ALL original code plus your modifications
+3. Do NOT add class definition - only the method
+4. Do NOT add import statements inside the method - imports go at module level
+5. No placeholders, TODO, or comments like "# existing code"
+6. Return method with ZERO indentation (no leading spaces)
+7. Output raw Python only - no JSON, no explanations
+8. Code MUST be different from current method
+
+Good example (NO leading spaces):
+```python
+def execute(self, param):
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Starting with {{param}}")
+    result = self.process(param)
+    return result
+```
+
+Modified method:""", expect_json=False)
+        
+        for attempt in range(2):
+            # Increase temperature on retry to get different output
+            temp = 0.2 if attempt == 0 else 0.4
+            # Increase tokens for multi-method tasks
+            method_count = len(task.split('method')) - 1
+            if method_count > 1 or 'add' in task.lower() and 'method' in task.lower():
+                max_tokens = 3072  # Large buffer for multiple methods
+            else:
+                max_tokens = 1536
+            
+            response = self.llm_client._call_llm(prompt, temperature=temp, max_tokens=max_tokens, expect_json=False)
+            if not response:
+                logger.warning(f"Attempt {attempt+1}: No response")
+                prompt += "\n\nERROR: No response. Generate complete method."
+                continue
+            
+            code = self._extract_code(response)
+            if not code:
+                logger.warning(f"Attempt {attempt+1}: Could not extract code")
+                prompt += "\n\nERROR: Use ```python blocks."
+                continue
+            
+            # CRITICAL: Check if LLM returned nested methods (common Qwen error)
+            import re
+            found_methods = re.findall(r'^\s*def (\w+)\(', code, re.MULTILINE)
+            if len(found_methods) > 1:
+                logger.warning(f"Attempt {attempt+1}: LLM returned {len(found_methods)} methods: {found_methods}")
+                prompt += f"\n\nERROR: You returned {len(found_methods)} methods. Output ONLY 'def {method_name}', not other methods."
+                continue
+            
+            # CRITICAL: Check if LLM added class definition
+            if 'class ' in code and f'def {method_name}' in code:
+                # Extract just the method, remove class wrapper
+                import re
+                method_match = re.search(rf'(    def {method_name}\(.+?\n(?:(?:    .+\n)|(?:\n))*)', code, re.DOTALL)
+                if method_match:
+                    code = method_match.group(1)
+                    logger.info(f"Removed class wrapper, extracted method only")
+                else:
+                    logger.warning(f"Attempt {attempt+1}: LLM added class definition")
+                    prompt += f"\n\nERROR: Do NOT add 'class' definition. Output ONLY the method 'def {method_name}'."
+                    continue
+            
+            # CRITICAL: Check if code actually changed
+            if code.strip() == current_method.strip():
+                logger.warning(f"Attempt {attempt+1}: Code unchanged")
+                prompt += f"\n\nERROR: You returned the EXACT SAME code. You MUST make changes for: {task}"
+                continue
+            
+            # CRITICAL: Check if super().__init__() was removed from __init__
+            if method_name == '__init__':
+                if 'super().__init__()' in current_method and 'super().__init__()' not in code:
+                    logger.warning(f"Attempt {attempt+1}: Removed super().__init__() call")
+                    prompt += "\n\nERROR: You removed 'super().__init__()'. This is required - keep it."
+                    continue
+            
+            if f'def {method_name}' not in code:
+                logger.warning(f"Attempt {attempt+1}: Wrong method signature")
+                prompt += f"\n\nERROR: Must contain 'def {method_name}'."
+                continue
+            
+            # Check if LLM returned multiple methods
+            import re
+            found_methods = re.findall(r'^\s*def (\w+)\(', code, re.MULTILINE)
+            
+            if len(found_methods) > 1:
+                # Split and handle multiple methods
+                modified_methods, new_methods = self._split_methods(code, method_name)
+                result_code = self.integrator.integrate_methods(original_code, modified_methods)
+                if new_methods:
+                    result_code = self.integrator.add_new_methods(result_code, new_methods)
+            else:
+                # Single method - direct replacement
+                result_code = self.integrator.integrate_methods(original_code, {method_name: code})
+            
+            # Validate result
+            if not self._validate_syntax(result_code):
+                error_msg = self._get_syntax_error(result_code)
+                logger.warning(f"Attempt {attempt+1}: Syntax error: {error_msg}")
+                # Show LLM the ACTUAL error with line numbers
+                lines = result_code.split('\n')
+                numbered = '\n'.join([f"{i+1:3d}: {line}" for i, line in enumerate(lines[:50])])
+                prompt += f"\n\nERROR: {error_msg}\n\nYour code (first 50 lines):\n{numbered}\n\nFix the indentation/syntax."
+                continue
+            
+            logger.info(f"Method {method_name} rewritten successfully")
+            return True, result_code, None, [method_name]
+        
+        # Return detailed error on final failure
+        last_error = f"Syntax error: {self._get_syntax_error(result_code)}" if 'result_code' in locals() else "No valid code generated"
+        return False, None, last_error, [method_name]
+    
+    def _insert_new_method(self, task: str, target_file: str, method_name: str, original_code: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+        """Insert new method at end of class"""
+        from core.logging_system import get_logger
+        logger = get_logger("code_generator")
+        
+        logger.info(f"Inserting new method: {method_name}")
+        
+        error_context = ""
+        if previous_errors:
+            error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
+        
+        prompt = self.llm_client._format_prompt(f"""Create a new method for this class.
+
+Task: {task}
+Method name: {method_name}
+{error_context}
+
+Rules:
+1. Output ONLY the new method (def {method_name}...)
+2. Include complete implementation
+3. No placeholders or TODO
+4. Use 4-space indentation
+5. Output raw Python only
+
+New method:""", expect_json=False)
+        
+        for attempt in range(2):
+            response = self.llm_client._call_llm(prompt, temperature=0.2, max_tokens=2048, expect_json=False)
+            if not response:
+                logger.warning(f"Attempt {attempt+1}: No response")
+                prompt += "\n\nERROR: No response. Generate complete method."
+                continue
+            
+            code = self._extract_code(response)
+            if not code:
+                logger.warning(f"Attempt {attempt+1}: Could not extract code")
+                prompt += "\n\nERROR: Use ```python blocks."
+                continue
+            
+            if f'def {method_name}' not in code:
+                logger.warning(f"Attempt {attempt+1}: Wrong method name")
+                prompt += f"\n\nERROR: Must contain 'def {method_name}'."
+                continue
+            
+            # Insert at end of class
+            result_code = self.integrator.add_new_methods(original_code, {method_name: code})
+            
+            if not self._validate_syntax(result_code):
+                error_msg = self._get_syntax_error(result_code)
+                logger.warning(f"Attempt {attempt+1}: Syntax error: {error_msg}")
+                prompt += f"\n\nERROR: {error_msg}"
+                continue
+            
+            logger.info(f"Method {method_name} inserted successfully")
+            return True, result_code, None, [method_name]
+        
+        return False, None, "Method insert failed after 2 attempts", [method_name]
+    
+    def _split_methods(self, code: str, primary_method: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Split LLM response into modified and new methods"""
+        import re
+        modified = {}
+        new = {}
+        
+        method_blocks = re.split(r'(^\s*def \w+\()', code, flags=re.MULTILINE)
+        current_method = None
+        current_code = []
+        
+        for block in method_blocks:
+            if re.match(r'^\s*def (\w+)\(', block):
+                # Save previous
+                if current_method and current_code:
+                    full = ''.join(current_code)
+                    if current_method == primary_method:
+                        modified[current_method] = full
+                    else:
+                        new[current_method] = full
+                # Start new
+                match = re.match(r'^\s*def (\w+)\(', block)
+                current_method = match.group(1)
+                current_code = [block]
+            elif current_method:
+                current_code.append(block)
+        
+        # Save last
+        if current_method and current_code:
+            full = ''.join(current_code)
+            if current_method == primary_method:
+                modified[current_method] = full
+            else:
+                new[current_method] = full
+        
+        return modified, new
+    
+    def _generate_incremental(self, task: str, target_file: str, target_tool: Optional[str], previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+        """Generate new file"""
+        from core.logging_system import get_logger
+        logger = get_logger("code_generator")
+        
+        # For test files
+        if 'test_' in target_file:
+            return self._generate_test_file(target_file, task, target_tool, previous_errors)
+        
+        # For other new files
+        logger.info("Generating new file")
+        
+        error_context = ""
+        if previous_errors:
+            error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
+        
+        prompt = self.llm_client._format_prompt(f"""Create a new Python file.
+
+Task: {task}
+File: {target_file}
+{error_context}
+
+Include:
+1. All necessary imports
+2. Complete class definition
+3. All required methods
+4. No placeholders or TODO comments
+
+Complete file:""", expect_json=False)
+        
+        response = self.llm_client._call_llm(prompt, temperature=0.3, max_tokens=2048, expect_json=False)
+        if not response:
+            return False, None, "No response from LLM", None
+        
+        code = self._extract_code(response)
+        if code and self._validate_syntax(code):
+            logger.info("New file generated")
+            return True, code, None, []
+        
+        return False, None, "Failed to generate new file", None
+    
+    def _generate_test_file(self, target_file: str, task: str, target_tool: Optional[str], previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+        """Generate test file with anti-pattern prevention"""
+        
+        if not target_tool:
+            tool_name = target_file.replace('tests/unit/test_', '').replace('.py', '')
+            target_tool = f"tools/{tool_name}.py"
+        
+        tool_code = self.analyzer.get_file_content(target_tool)
+        if not tool_code:
+            return False, None, f"Tool file not found: {target_tool}", None
+        
+        # Extract class name
+        import re
+        class_match = re.search(r'class (\w+)', tool_code)
+        class_name = class_match.group(1) if class_match else "Tool"
+        tool_name = target_tool.replace('tools/', '').replace('.py', '')
+        
+        error_context = ""
+        if previous_errors:
+            error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
+        
+        prompt = self.llm_client._format_prompt(f"""Create a pytest test file.
+
+Task: {task}
+Test file: {target_file}
+Tool: {tool_name}.{class_name}
+
+Tool code preview:
+```python
+{tool_code[:1000]}
+```
+{error_context}
+
+CRITICAL - Correct pattern:
+```python
+# CORRECT
 tool = {class_name}()
 result = tool.execute("operation", {{"param": "value"}})
 assert result.status == ResultStatus.SUCCESS
+
+# WRONG - result.execute() does NOT exist
 ```
 
-RULES:
-1. Import: from tools.{tool_name} import {class_name}
-2. Import: from tools.tool_result import ToolResult, ResultStatus
-3. Create instance: tool = {class_name}()
-4. Call tool.execute() NOT result.execute()
-5. ToolResult is the RETURN VALUE - it has NO execute method
-6. Check: result.status and result.data
-7. Use pytest: def test_name():
-8. NO unittest classes
+Required imports:
+- from tools.{tool_name} import {class_name}
+- from tools.tool_result import ToolResult, ResultStatus
 
-REMEMBER: tool.execute() returns ToolResult. You check the result, not call execute on it.
+Rules:
+1. Use pytest style (def test_name)
+2. Call tool.execute(), NOT result.execute()
+3. Test multiple operations
+4. Include assertions
 
-Output COMPLETE test file:""")
+Complete test file:""", expect_json=False)
         
-        for attempt in range(3):
-            response = self.llm_client._call_llm(prompt, temperature=0.2)
-            if not response:
-                continue
-            
-            # Log the response for debugging
-            from core.llm_logger import LLMLogger
-            logger = LLMLogger()
-            preview_len = min(500, len(prompt))
-            logger.log_interaction(
-                prompt=prompt[:preview_len],
-                response=response,
-                metadata={"phase": "test_generation", "attempt": attempt, "target_file": target_file}
-            )
-            
-            code = self._extract_code(response)
-            if code and 'def test_' in code and 'import' in code:
-                # Auto-fix common mistake: result.execute() -> tool.execute()
-                if 'result.execute(' in code:
-                    logger.info("Auto-fixing result.execute() to tool.execute()")
-                    code = code.replace('result.execute(', 'tool.execute(')
-                return True, code
-            
-            prompt += f"\n\nERROR: Must be complete test file with imports and test functions.\n"
+        response = self.llm_client._call_llm(prompt, temperature=0.2, max_tokens=1536, expect_json=False)
+        if not response:
+            return False, None, "No response from LLM", None
         
-        return False, None
+        code = self._extract_code(response)
+        
+        # Auto-fix common mistake
+        if code and 'result.execute(' in code:
+            from core.logging_system import get_logger
+            logger = get_logger("code_generator")
+            logger.info("Auto-fixing result.execute() → tool.execute()")
+            code = code.replace('result.execute(', 'tool.execute(')
+        
+        if code and 'def test_' in code and self._validate_syntax(code):
+            return True, code, None, []
+        
+        return False, None, "Failed to generate test file", None
     
     def _extract_code(self, response: str) -> Optional[str]:
-        """Extract code from LLM response and clean placeholders"""
-        code = None
+        """Extract code from response"""
+        import json
         
+        # Check for JSON (Qwen issue)
+        if response.strip().startswith('{'):
+            try:
+                data = json.loads(response)
+                # Try multiple keys that Qwen might use
+                for key in ['code', 'method_code', 'modified_method', 'result', 'fixed_code', 'output']:
+                    if key in data and isinstance(data[key], str):
+                        # Unescape newlines if JSON-escaped
+                        code = data[key]
+                        if '\\n' in code:
+                            code = code.replace('\\n', '\n')
+                        return code
+            except:
+                pass
+        
+        # Extract from markdown
         if '```python' in response:
             start = response.find('```python') + 9
             end = response.find('```', start)
             if end != -1:
-                code = response[start:end].strip()
+                return response[start:end].strip()
         
-        elif '```' in response:
+        if '```' in response:
             start = response.find('```') + 3
             newline = response.find('\n', start)
             if newline != -1:
                 start = newline + 1
             end = response.find('```', start)
             if end != -1:
-                code = response[start:end].strip()
+                return response[start:end].strip()
         
-        if code:
-            # Remove placeholder comments
-            lines = code.split('\n')
-            cleaned = []
-            for line in lines:
-                lower = line.lower().strip()
-                if 'rest of' in lower or 'remains unchanged' in lower or 'existing code' in lower:
-                    continue
-                cleaned.append(line)
-            code = '\n'.join(cleaned)
-        
-        return code
+        return None
     
     def _validate_method(self, code: str, method_name: str) -> bool:
-        """Validate single method is complete"""
-        
-        # Must have method definition
+        """Validate method"""
         if f'def {method_name}' not in code:
             return False
-        
-        # Must have return statement (unless __init__)
         if method_name != '__init__' and 'return' not in code:
             return False
-        
-        # No placeholders
-        if '# rest' in code.lower() or 'unchanged' in code.lower():
-            return False
-        
-        if '...' in code or 'pass  #' in code:
-            return False
-        
-        # Valid syntax
+        return self._validate_syntax(code)
+    
+    def _validate_syntax(self, code: str) -> bool:
+        """Validate Python syntax"""
         try:
             import ast
             ast.parse(code)
+            return True
         except:
             return False
-        
-        return True
     
-    def _validate_complete_code(self, code: str, logger) -> bool:
-        """Validate complete file and clean trailing placeholders"""
-        
-        # Remove trailing placeholder comments
-        lines = code.split('\n')
-        while lines:
-            last_line = lines[-1].strip().lower()
-            if not last_line or 'rest of' in last_line or 'remains unchanged' in last_line:
-                lines.pop()
-            else:
-                break
-        
-        code = '\n'.join(lines)
-        
-        # Check for incomplete return statements
-        if 'return"' in code or 'return\'' in code:
-            logger.debug("Found incomplete return statement")
-            return False
-        
-        # Check for mismatched braces/brackets
-        if code.count('{') != code.count('}'):
-            logger.debug("Mismatched braces")
-            return False
-        
-        # No placeholders in middle
-        if '# The rest' in code or 'remains unchanged' in code:
-            return False
-        
-        # Check for placeholder imports
-        if 'from your_module import' in code or '# Replace with actual' in code:
-            logger.debug("Found placeholder imports")
-            return False
-        
-        # Check for common indentation errors that cause "unexpected indent"
+    def _infer_task_type(self, task: str) -> str:
+        """Infer task type from description"""
+        task_lower = task.lower()
+        if 'fix' in task_lower or 'bug' in task_lower:
+            return 'fix_bug'
+        elif 'add' in task_lower or 'validation' in task_lower:
+            return 'add_validation'
+        else:
+            return 'improve_code'
+    
+    def _extract_method_name(self, task: str) -> Optional[str]:
+        """Extract method name from task"""
         import re
-        # Look for lines that start with unexpected indentation after dedent
-        prev_indent = 0
-        for i, line in enumerate(lines, 1):
-            if not line.strip():
-                continue
-            curr_indent = len(line) - len(line.lstrip())
-            # If indent increases by more than 4 spaces without reason, flag it
-            if curr_indent > prev_indent + 4 and prev_indent > 0:
-                # Check if previous line ends with : (valid indent increase)
-                if i > 1 and not lines[i-2].rstrip().endswith(':'):
-                    logger.debug(f"Unexpected indent at line {i}")
-                    return False
-            prev_indent = curr_indent
-        
-        # Valid syntax
+        patterns = [r'method (\w+)', r'function (\w+)', r'def (\w+)', r'(\w+)\(\)']
+        for pattern in patterns:
+            match = re.search(pattern, task)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _get_syntax_error(self, code: str) -> str:
+        """Get detailed syntax error message"""
         try:
             import ast
             ast.parse(code)
+            return "No error"
         except SyntaxError as e:
-            logger.debug(f"Syntax error: {e}")
-            # If it's an indentation error, provide more context
-            if 'indent' in str(e).lower():
-                logger.debug("Indentation issue detected - LLM generated malformed code")
-            return False
+            return f"Line {e.lineno}: {e.msg}"
         except Exception as e:
-            logger.debug(f"Parse error: {e}")
-            return False
+            return str(e)
+    
+    def _is_already_implemented(self, task: str, method_code: str) -> bool:
+        """Check if task is already implemented in method"""
+        task_lower = task.lower()
+        code_lower = method_code.lower()
         
-        return True
+        # Check for common patterns
+        if 'add _put' in task_lower and 'def _put' in code_lower:
+            return True
+        if 'add _delete' in task_lower and 'def _delete' in code_lower:
+            return True
+        if 'url validation' in task_lower and '_is_allowed_url' in code_lower:
+            return True
+        if 'error handling' in task_lower and 'try:' in code_lower and 'except' in code_lower:
+            return True
+        
+        return False
+    
+    def _fix_syntax_error(self, full_code: str, inserted_block: str, error: str, task: str) -> Optional[str]:
+        """Ask LLM to fix syntax error"""
+        from core.logging_system import get_logger
+        logger = get_logger("code_generator")
+        
+        logger.info("Asking LLM to fix syntax error", error=error)
+        
+        prompt = self.llm_client._format_prompt(f"""Fix this syntax error.
+
+Task: {task}
+Error: {error}
+
+Inserted block:
+```python
+{inserted_block}
+```
+
+Full file with error:
+```python
+{full_code[:2000]}
+```
+
+Output the COMPLETE corrected file:""", expect_json=False)
+        
+        response = self.llm_client._call_llm(prompt, temperature=0.1, max_tokens=2048, expect_json=False)
+        if not response:
+            return None
+        
+        fixed = self._extract_code(response)
+        return fixed if fixed else None

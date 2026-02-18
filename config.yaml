@@ -32,17 +32,17 @@ security:
 
 # LLM Model Settings
 llm:
-  # Multi-model strategy: Use different models for different tasks
-  analysis_model: "mistral"      # Reasoning, planning, review
-  code_model: "qwen"             # Code generation, refactoring
-  review_model: "mistral"        # Validation, security review
-  fallback_model: "qwen"         # Fallback if primary fails
+  # Single-model strategy: Use Qwen for everything (optimal for 12GB VRAM)
+  analysis_model: "qwen"         # Code analysis and reasoning
+  code_model: "qwen"             # Code generation
+  review_model: "qwen"           # Validation and review
+  fallback_model: "qwen"         # Fallback
   
   default_model: "qwen"
   temperature: 0.7
   max_tokens: 4096
   max_retries: 3
-  timeout_seconds: 120
+  timeout_seconds: 300
   ollama_url: "http://localhost:11434"
   
   # Available models (Ollama)
@@ -68,7 +68,7 @@ llm:
 # Timeout Settings
 timeouts:
   sandbox_test: 30
-  llm_request: 120
+  llm_request: 300
   health_check: 5
   startup_wait: 2
 
@@ -80,7 +80,7 @@ api:
 
 # Self-Improvement Settings
 improvement:
-  max_iterations: 10
+  max_iterations: 1
   auto_approve_low_risk: true
   sandbox_timeout: 120
   approval_timeout: 300
@@ -93,7 +93,14 @@ improvement:
   protected_files:
     - "core/immutable_brain_stem.py"
     - "core/config_manager.py"
+    - "core/proposal_generator.py"
+    - "core/orchestrated_code_generator.py"
+    - "core/patch_generator.py"
+    - "core/change_classifier.py"
+    - "core/change_locator.py"
+    - "core/diff_generator.py"
     - "api/server.py"
+    - "tools/test_tool.py"
 
 # Session Settings
 session:

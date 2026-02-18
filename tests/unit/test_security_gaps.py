@@ -52,16 +52,26 @@ class TestSecurityGaps:
         
         applier = AtomicApplier(repo_path=project_root)
         
-        # Get current checksum
-        checksum_before = applier._get_brainstem_checksum()
+        # Get current checksums
+        checksums_before = applier._get_protected_checksums()
         
-        # Should be valid hash (not 'missing' or 'error')
-        assert checksum_before not in ["missing", "error"], f"BrainStem file not found at {project_root}/core/immutable_brain_stem.py"
-        assert len(checksum_before) == 64, f"Expected SHA256 hash (64 chars), got {len(checksum_before)}"
+        # Should have at least one protected file
+        assert len(checksums_before) > 0, "No protected files found"
+        
+        # Check for brain stem specifically
+        brain_stem_key = None
+        for key in checksums_before.keys():
+            if 'immutable_brain_stem' in key:
+                brain_stem_key = key
+                break
+        
+        assert brain_stem_key is not None, "BrainStem not in protected files"
+        checksum = checksums_before[brain_stem_key]
+        assert len(checksum) == 64, f"Expected SHA256 hash (64 chars), got {len(checksum)}"
         
         # Verify checksum is stable (same file = same hash)
-        checksum_again = applier._get_brainstem_checksum()
-        assert checksum_before == checksum_again
+        checksums_again = applier._get_protected_checksums()
+        assert checksums_before == checksums_again
     
     def test_sandbox_process_restrictions(self):
         """Gap 1: Verify sandbox has process restrictions"""

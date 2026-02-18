@@ -2,8 +2,11 @@
 Shell Tool - Safe command execution
 """
 import subprocess
+import logging
 from tools.tool_interface import BaseTool
 from tools.tool_result import ToolResult, ResultStatus
+
+logger = logging.getLogger(__name__)
 
 class ShellTool(BaseTool):
     ALLOWED_COMMANDS = ["ls", "dir", "echo", "cat", "type", "pwd", "cd"]

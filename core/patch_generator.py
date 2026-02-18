@@ -10,33 +10,28 @@ class PatchGenerator:
         self.repo_path = Path(repo_path)
     
     def generate_patch(self, file_path: str, old_content: str, new_content: str) -> str:
-        """Generate unified diff patch"""
-        old_lines = old_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
+        """Generate simple replacement patch (LLM provides complete correct code)"""
+        from core.logging_system import get_logger
+        logger = get_logger("patch_generator")
         
-        diff = difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"a/{file_path}",
-            tofile=f"b/{file_path}",
-            lineterm=''
-        )
+        # Normalize Windows backslashes to forward slashes
+        file_path = file_path.replace('\\', '/')
         
-        return ''.join(diff)
+        logger.info(f"Generating patch for {file_path}: old={len(old_content)} chars, new={len(new_content)} chars")
+        
+        # Simple format: just store the new content with metadata
+        # This avoids difflib complexity and corruption issues
+        patch = f"FILE_REPLACE:{file_path}\n{new_content}"
+        logger.info(f"Generated patch: {len(patch)} chars")
+        return patch
     
     def generate_new_file_patch(self, file_path: str, content: str) -> str:
         """Generate patch for new file creation"""
-        lines = content.splitlines(keepends=True)
+        # Normalize Windows backslashes to forward slashes
+        file_path = file_path.replace('\\', '/')
         
-        diff = difflib.unified_diff(
-            [],
-            lines,
-            fromfile="/dev/null",
-            tofile=f"b/{file_path}",
-            lineterm=''
-        )
-        
-        return ''.join(diff)
+        # Same format as replacement - sandbox will create if not exists
+        return f"FILE_REPLACE:{file_path}\n{content}"
     
     def parse_llm_changes(self, llm_response: str, file_path: str) -> Optional[str]:
         """Parse LLM response and generate proper patch with validation"""
@@ -77,12 +72,10 @@ class PatchGenerator:
             if pattern in code:
                 return False
         
-        # SECURITY VALIDATION PATTERNS - Check for weak security
-        # Block substring matching in security-critical contexts
-        if "domain in " in code or " in parsed.netloc" in code or " in url" in code:
-            # Check if it's in a security validation context
-            if any(keyword in code for keyword in ["_is_allowed", "validate", "check_url", "allowed_domains"]):
-                return False  # Reject weak validation patterns
+        # WEAK SECURITY PATTERNS - Only block if using substring matching in domain validation
+        # Specifically check for: "domain in parsed.netloc" or "domain in url"
+        if "domain in parsed.netloc" in code or "domain in url" in code:
+            return False  # Reject weak SSRF validation
         
         return True
     

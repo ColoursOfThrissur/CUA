@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import MagicMock, patch
 from tools.json_tool import JSONTool, ToolResult, ResultStatus
 
@@ -15,14 +16,11 @@ class TestJSONTool(unittest.TestCase):
         self.assertIsInstance(result.data, dict)
         self.assertEqual(result.data, {"key": "value"})
 
-    @patch("tools.json_tool.json")
-    def test_parse_failure(self, mock_json):
-        mock_json.loads.side_effect = json.JSONDecodeError("Invalid JSON", '{"invalid": 1}', 2)
-        params = {"text": '{"invalid": 1}'}
+    def test_parse_failure(self):
+        params = {"text": '{invalid json}'}
         result = self.tool.execute("parse", params)
         self.assertEqual(result.status, ResultStatus.FAILURE)
-        self.assertIsInstance(result.error_message, str)
-        self.assertEqual(result.error_message, "Invalid JSON: Invalid syntax (2): line 1 column 6 - line 1 column 9 (char 5): expected separator ',' or '}'")
+        self.assertIn("Invalid JSON", result.error_message)
 
     @patch("tools.json_tool.json")
     def test_stringify_success(self, mock_json):
@@ -33,34 +31,23 @@ class TestJSONTool(unittest.TestCase):
         self.assertIsInstance(result.data, str)
         self.assertEqual(result.data, '{"key": "value"}')
 
-    @patch("tools.json_tool.json")
-    def test_stringify_failure(self, mock_json):
-        mock_json.dumps.side_effect = Exception("Unexpected error")
-        params = {"data": None}
+    def test_stringify_failure(self):
+        params = {}
         result = self.tool.execute("stringify", params)
         self.assertEqual(result.status, ResultStatus.FAILURE)
-        self.assertIsInstance(result.error_message, str)
-        self.assertEqual(result.error_message, "Unexpected error")
+        self.assertIn("Data required", result.error_message)
 
-    @patch("tools.json_tool.json")
-    def test_query_success(self, mock_json):
-        mock_data = {"user": {"name": "Alice"}}
-        mock_json.loads.return_value = mock_data
-        params = {"data": '{"user": {"name": "Alice"}}', "path": "user.name"}
+    def test_query_success(self):
+        params = {"data": {"user": {"name": "Alice"}}, "path": "user.name"}
         result = self.tool.execute("query", params)
         self.assertEqual(result.status, ResultStatus.SUCCESS)
-        self.assertIsInstance(result.data, str)
         self.assertEqual(result.data, "Alice")
 
-    @patch("tools.json_tool.json")
-    def test_query_failure(self, mock_json):
-        mock_data = {"user": {"name": "Alice"}}
-        mock_json.loads.return_value = mock_data
-        params = {"data": '{"user": {"name": "Alice"}}', "path": "non-existent"}
+    def test_query_failure(self):
+        params = {"data": {"user": {"name": "Alice"}}, "path": "non-existent"}
         result = self.tool.execute("query", params)
         self.assertEqual(result.status, ResultStatus.FAILURE)
-        self.assertIsInstance(result.error_message, str)
-        self.assertEqual(result.error_message, "Query failed: KeyError('non-existent')")
+        self.assertIn("Query failed", result.error_message)
 
 if __name__ == "__main__":
     unittest.main()

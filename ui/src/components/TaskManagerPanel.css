@@ -1,0 +1,213 @@
+.task-manager-panel {
+  padding: 20px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.task-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+
+.parent-task-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--glass-shadow);
+  transition: all var(--transition-normal);
+}
+
+.parent-task-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.parent-task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.parent-task-info h3 {
+  margin: 0 0 10px 0;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.parent-task-meta {
+  display: flex;
+  gap: 15px;
+  font-size: 14px;
+}
+
+.task-file {
+  color: var(--text-secondary);
+}
+
+.task-priority {
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(5px);
+}
+
+.priority-high {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--accent-red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.priority-medium {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--accent-orange);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.priority-low {
+  background: rgba(74, 158, 255, 0.2);
+  color: var(--accent-blue);
+  border: 1px solid rgba(74, 158, 255, 0.3);
+}
+
+.parent-task-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.progress-section {
+  margin-bottom: 20px;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 24px;
+  background: rgba(26, 31, 58, 0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+  transition: width 0.3s ease;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
+
+.progress-text {
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.subtasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.subtask-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border-left: 3px solid transparent;
+  background: rgba(26, 31, 58, 0.3);
+  backdrop-filter: blur(5px);
+  border: 1px solid var(--glass-border);
+  transition: all var(--transition-normal);
+}
+
+.subtask-item:hover {
+  transform: translateX(4px);
+  background: rgba(26, 31, 58, 0.5);
+}
+
+.subtask-status-completed {
+  border-left-color: var(--accent-green);
+}
+
+.subtask-status-in_progress {
+  border-left-color: var(--accent-blue);
+}
+
+.subtask-status-pending {
+  border-left-color: var(--text-muted);
+}
+
+.subtask-status-failed {
+  border-left-color: var(--accent-red);
+}
+
+.subtask-icon {
+  font-size: 20px;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.subtask-content {
+  flex: 1;
+}
+
+.subtask-title {
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.subtask-progress {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.subtask-error {
+  font-size: 12px;
+  color: var(--accent-red);
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: var(--radius-md);
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  backdrop-filter: blur(5px);
+  transition: all var(--transition-normal);
+}
+
+.btn-secondary {
+  background: rgba(108, 117, 125, 0.3);
+  color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+  background: rgba(108, 117, 125, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(108, 117, 125, 0.3);
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.3);
+  color: var(--accent-red);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}

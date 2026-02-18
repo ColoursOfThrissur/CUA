@@ -1,100 +1,52 @@
 import unittest
-from unittest.mock import MagicMock, patch
+import os
+import tempfile
+from pathlib import Path
 from tools.enhanced_filesystem_tool import FilesystemTool
+from tools.tool_result import ToolResult, ResultStatus
 
 class TestEnhancedFilesystemTool(unittest.TestCase):
     def setUp(self):
         self.tool = FilesystemTool()
+        # Use workspace dir which is in allowed_roots
+        self.test_dir = Path("./workspace/test_data")
+        self.test_dir.mkdir(parents=True, exist_ok=True)
+        self.test_file = self.test_dir / "test.txt"
+        self.test_file.write_text("test content")
+    
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
 
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    @patch('os.listdir')
-    def test_read_file(self, mock_listdir, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["./test_data", "./test_data"]
-        mock_listdir.return_value = ["test_file.txt"]
-        with open("./test_data/test_file.txt", "r") as f:
-            content = f.read()
-
-        params = {"path": "./test_data/test_file.txt"}
-
-        # Act
-        result = self.tool.execute("read_file", params)
-
-        # Assert
+    def test_read_file(self):
+        result = self.tool.execute("read_file", {"path": str(self.test_file)})
         self.assertEqual(result.status, ResultStatus.SUCCESS)
-        self.assertEqual(result.data, content)
+        self.assertEqual(result.data, "test content")
 
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    def test_read_file_outside_allowed_roots(self, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["/root/test_data", "./test_data"]
+    def test_read_file_outside_allowed_roots(self):
+        result = self.tool.execute("read_file", {"path": "/etc/passwd"})
+        self.assertEqual(result.status, ResultStatus.FAILURE)
+        self.assertIn("outside allowed", result.error_message.lower())
 
-        params = {"path": "/root/test_file.txt"}
-
-        # Act and Assert
-        with self.assertRaises(ValueError):
-            self.tool.execute("read_file", params)
-
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    @patch('os.listdir')
-    def test_write_file(self, mock_listdir, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["./test_output", "./test_output"]
-        mock_listdir.return_value = []
-
-        params = {"path": "./test_output/test_file.txt", "content": "Test content"}
-
-        # Act
-        result = self.tool.execute("write_file", params)
-
-        # Assert
+    def test_write_file(self):
+        new_file = self.test_dir / "new.txt"
+        result = self.tool.execute("write_file", {"path": str(new_file), "content": "new content"})
         self.assertEqual(result.status, ResultStatus.SUCCESS)
-        self.assertIn("Successfully wrote", result.data)
-        self.assertTrue(os.path.exists("./test_output/test_file.txt"))
+        self.assertTrue(new_file.exists())
+        self.assertEqual(new_file.read_text(), "new content")
 
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    @patch('os.listdir')
-    def test_write_file_outside_allowed_roots(self, mock_listdir, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["/root/test_output", "./test_data"]
+    def test_write_file_outside_allowed_roots(self):
+        result = self.tool.execute("write_file", {"path": "/etc/test.txt", "content": "bad"})
+        self.assertEqual(result.status, ResultStatus.FAILURE)
+        self.assertIn("outside allowed", result.error_message.lower())
 
-        params = {"path": "/root/test_file.txt", "content": "Test content"}
-
-        # Act and Assert
-        with self.assertRaises(ValueError):
-            self.tool.execute("write_file", params)
-
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    @patch('os.listdir')
-    def test_list_directory(self, mock_listdir, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["./test_data", "./test_data"]
-        mock_listdir.return_value = ["test_file.txt", "subdir", "empty_folder"]
-
-        params = {"path": "./test_data"}
-
-        # Act
-        result = self.tool.execute("list_directory", params)
-
-        # Assert
+    def test_list_directory(self):
+        result = self.tool.execute("list_directory", {"path": str(self.test_dir)})
         self.assertEqual(result.status, ResultStatus.SUCCESS)
-        expected_output = ["test_file.txt", "subdir/", "empty_folder/"]
-        self.assertListEqual(result.data, sorted(expected_output))
+        self.assertIn("test.txt", result.data)
 
-    @patch('os.path.abspath')
-    @patch('os.path.normpath')
-    @patch('os.listdir')
-    def test_list_directory_outside_allowed_roots(self, mock_listdir, mock_normpath, mock_abspath):
-        # Arrange
-        mock_abspath.side_effect = ["/root/test_data", "./test_data"]
-
-        params = {"path": "/root"}
-
-        # Act and Assert
-        with self.assertRaises(ValueError):
-            self.tool.execute("list_directory", params)
+    def test_list_directory_outside_allowed_roots(self):
+        result = self.tool.execute("list_directory", {"path": "/etc"})
+        self.assertEqual(result.status, ResultStatus.FAILURE)
+        self.assertIn("outside allowed", result.error_message.lower())

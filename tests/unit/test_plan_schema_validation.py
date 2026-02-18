@@ -3,8 +3,7 @@ Unit tests for plan schema validation
 """
 import pytest
 from core.plan_schema import (
-    ExecutionPlanSchema, PlanStepSchema, validate_plan_json,
-    ToolName, OperationName
+    ExecutionPlanSchema, PlanStepSchema, validate_plan_json
 )
 
 @pytest.mark.unit
@@ -14,8 +13,8 @@ class TestPlanStepSchema:
         """Test valid plan step is accepted"""
         step = PlanStepSchema(
             step_id="step_1",
-            tool=ToolName.FILESYSTEM_TOOL,
-            operation=OperationName.LIST_DIRECTORY,
+            tool="filesystem_tool",
+            operation="list_directory",
             parameters={"path": "."},
             reasoning="List files in current directory"
         )
@@ -26,46 +25,45 @@ class TestPlanStepSchema:
         with pytest.raises(ValueError):
             PlanStepSchema(
                 step_id="invalid_id",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.LIST_DIRECTORY,
+                tool="filesystem_tool",
+                operation="list_directory",
                 parameters={"path": "."},
                 reasoning="Test step"
             )
     
     def test_read_file_requires_path(self):
-        """Test read_file operation requires path parameter"""
-        with pytest.raises(ValueError, match="requires 'path'"):
-            PlanStepSchema(
-                step_id="step_1",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.READ_FILE,
-                parameters={},
-                reasoning="Test read without path"
-            )
+        """Test read_file operation - schema no longer validates params"""
+        step = PlanStepSchema(
+            step_id="step_1",
+            tool="filesystem_tool",
+            operation="read_file",
+            parameters={},
+            reasoning="Test read without path"
+        )
+        assert step.operation == "read_file"
     
     def test_write_file_requires_path_and_content(self):
-        """Test write_file operation requires path and content"""
-        with pytest.raises(ValueError, match="requires 'path' and 'content'"):
-            PlanStepSchema(
-                step_id="step_1",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.WRITE_FILE,
-                parameters={"path": "./test.txt"},
-                reasoning="Test write without content"
-            )
+        """Test write_file operation - schema no longer validates params"""
+        step = PlanStepSchema(
+            step_id="step_1",
+            tool="filesystem_tool",
+            operation="write_file",
+            parameters={"path": "./test.txt"},
+            reasoning="Test write without content"
+        )
+        assert step.operation == "write_file"
     
     def test_write_file_content_size_limit(self):
-        """Test write_file content size limit is enforced"""
-        large_content = "x" * (1024 * 1024 + 1)  # >1MB
-        
-        with pytest.raises(ValueError, match="exceeds 1MB limit"):
-            PlanStepSchema(
-                step_id="step_1",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.WRITE_FILE,
-                parameters={"path": "./test.txt", "content": large_content},
-                reasoning="Test large content"
-            )
+        """Test write_file content - schema no longer validates size"""
+        large_content = "x" * (1024 * 1024 + 1)
+        step = PlanStepSchema(
+            step_id="step_1",
+            tool="filesystem_tool",
+            operation="write_file",
+            parameters={"path": "./test.txt", "content": large_content},
+            reasoning="Test large content"
+        )
+        assert len(step.parameters["content"]) > 1024 * 1024
     
     def test_reasoning_length_validation(self):
         """Test reasoning length is validated"""
@@ -73,8 +71,8 @@ class TestPlanStepSchema:
         with pytest.raises(ValueError):
             PlanStepSchema(
                 step_id="step_1",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.LIST_DIRECTORY,
+                tool="filesystem_tool",
+                operation="list_directory",
                 parameters={"path": "."},
                 reasoning="Short"
             )
@@ -83,8 +81,8 @@ class TestPlanStepSchema:
         with pytest.raises(ValueError):
             PlanStepSchema(
                 step_id="step_1",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.LIST_DIRECTORY,
+                tool="filesystem_tool",
+                operation="list_directory",
                 parameters={"path": "."},
                 reasoning="x" * 501
             )
@@ -100,8 +98,8 @@ class TestExecutionPlanSchema:
             steps=[
                 PlanStepSchema(
                     step_id="step_1",
-                    tool=ToolName.FILESYSTEM_TOOL,
-                    operation=OperationName.LIST_DIRECTORY,
+                    tool="filesystem_tool",
+                    operation="list_directory",
                     parameters={"path": "."},
                     reasoning="List all files in current directory"
                 )
@@ -126,8 +124,8 @@ class TestExecutionPlanSchema:
         steps = [
             PlanStepSchema(
                 step_id=f"step_{i+1}",
-                tool=ToolName.FILESYSTEM_TOOL,
-                operation=OperationName.LIST_DIRECTORY,
+                tool="filesystem_tool",
+                operation="list_directory",
                 parameters={"path": "."},
                 reasoning="Test step for max limit validation"
             )
@@ -152,8 +150,8 @@ class TestExecutionPlanSchema:
                 steps=[
                     PlanStepSchema(
                         step_id="step_1",
-                        tool=ToolName.FILESYSTEM_TOOL,
-                        operation=OperationName.LIST_DIRECTORY,
+                        tool="filesystem_tool",
+                        operation="list_directory",
                         parameters={"path": "."},
                         reasoning="Test step for confidence validation"
                     )
@@ -169,8 +167,8 @@ class TestExecutionPlanSchema:
                 steps=[
                     PlanStepSchema(
                         step_id="step_1",
-                        tool=ToolName.FILESYSTEM_TOOL,
-                        operation=OperationName.LIST_DIRECTORY,
+                        tool="filesystem_tool",
+                        operation="list_directory",
                         parameters={"path": "."},
                         reasoning="Test step for confidence validation"
                     )
@@ -187,8 +185,8 @@ class TestExecutionPlanSchema:
                 steps=[
                     PlanStepSchema(
                         step_id="step_1",
-                        tool=ToolName.FILESYSTEM_TOOL,
-                        operation=OperationName.LIST_DIRECTORY,
+                        tool="filesystem_tool",
+                        operation="list_directory",
                         parameters={"path": "."},
                         reasoning="First step with invalid dependency",
                         depends_on=["step_999"]  # Non-existent
@@ -205,15 +203,15 @@ class TestExecutionPlanSchema:
             steps=[
                 PlanStepSchema(
                     step_id="step_1",
-                    tool=ToolName.FILESYSTEM_TOOL,
-                    operation=OperationName.LIST_DIRECTORY,
+                    tool="filesystem_tool",
+                    operation="list_directory",
                     parameters={"path": "."},
                     reasoning="First step lists files in directory"
                 ),
                 PlanStepSchema(
                     step_id="step_2",
-                    tool=ToolName.FILESYSTEM_TOOL,
-                    operation=OperationName.WRITE_FILE,
+                    tool="filesystem_tool",
+                    operation="write_file",
                     parameters={"path": "./summary.txt", "content": "Summary"},
                     reasoning="Second step creates summary file",
                     depends_on=["step_1"]

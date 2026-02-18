@@ -1,0 +1,9 @@
+Fix the shell_tool.py code quality issues:
+
+1. Remove duplicate ALLOWED_COMMANDS definitions (appears 3 times in the file)
+2. Fix the broken validation logic: "not command or not command in ALLOWED_COMMANDS" should be "command not in ALLOWED_COMMANDS"
+3. Fix the arguments validation: "all(arg for arg in arguments if isinstance(arg, str))" is incorrect logic - should be "all(isinstance(arg, str) for arg in arguments)"
+4. Consolidate ALLOWED_COMMANDS into a single class-level constant
+
+Target file: tools/shell_tool.py
+Expected outcome: All 8 tests in test_shell_tool.py should pass

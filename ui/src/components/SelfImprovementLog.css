@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--secondary-bg);
+  background: transparent;
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
@@ -12,8 +12,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
-  background: var(--accent-bg);
-  border-bottom: 1px solid var(--border-color);
+  background: transparent;
+  border-bottom: 1px solid var(--glass-border);
 }
 
 .log-header h3 {
@@ -28,8 +28,9 @@
 }
 
 .btn-icon {
-  background: var(--secondary-bg);
-  border: 1px solid var(--border-color);
+  background: rgba(74, 158, 255, 0.1);
+  backdrop-filter: blur(5px);
+  border: 1px solid var(--glass-border);
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -38,8 +39,9 @@
 }
 
 .btn-icon:hover {
-  background: var(--accent-bg);
+  background: rgba(74, 158, 255, 0.2);
   transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(74, 158, 255, 0.2);
 }
 
 .log-content {
@@ -63,14 +65,18 @@
   gap: 0.75rem;
   padding: 0.75rem;
   margin-bottom: 0.5rem;
-  background: var(--accent-bg);
+  background: rgba(26, 31, 58, 0.3);
+  backdrop-filter: blur(5px);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   border-left: 3px solid transparent;
   transition: all var(--transition-normal);
 }
 
 .log-entry:hover {
-  background: #2f3450;
+  background: rgba(26, 31, 58, 0.5);
+  transform: translateX(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .log-info {
@@ -83,7 +89,7 @@
 
 .log-warning {
   border-left-color: var(--accent-orange);
-  background: rgba(245, 158, 11, 0.1);
+  background: rgba(245, 158, 11, 0.05);
 }
 
 .log-error {
@@ -112,18 +118,19 @@
   gap: 0.5rem;
   margin-top: 0.5rem;
   padding-top: 0.5rem;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--glass-border);
   width: 100%;
 }
 
 .btn-small {
   padding: 0.375rem 0.75rem;
-  border: none;
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
   transition: all var(--transition-normal);
+  backdrop-filter: blur(5px);
 }
 
 .btn-view {
@@ -133,6 +140,8 @@
 
 .btn-view:hover {
   background: #3a8eef;
+  box-shadow: 0 4px 12px rgba(74, 158, 255, 0.3);
+  transform: translateY(-2px);
 }
 
 .btn-approve {
@@ -142,6 +151,8 @@
 
 .btn-approve:hover {
   background: #0ea572;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  transform: translateY(-2px);
 }
 
 .btn-reject {
@@ -151,4 +162,6 @@
 
 .btn-reject:hover {
   background: #dc2626;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+  transform: translateY(-2px);
 }

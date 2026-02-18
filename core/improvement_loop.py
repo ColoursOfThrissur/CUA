@@ -14,7 +14,7 @@ from core.llm_logger import LLMLogger
 class SelfImprovementLoop:
     """Compatibility wrapper - delegates to new modular components"""
     
-    def __init__(self, llm_client, orchestrator, max_iterations=10):
+    def __init__(self, llm_client, orchestrator, max_iterations=10, libraries_manager=None):
         # Initialize components
         self.llm_client = llm_client
         self.update_orchestrator = orchestrator
@@ -23,11 +23,12 @@ class SelfImprovementLoop:
         self.plan_history = PlanHistory()
         self.analytics = ImprovementAnalytics()
         self.llm_logger = LLMLogger()
+        self.libraries_manager = libraries_manager
         
         # Initialize new modular components
         self.task_analyzer = TaskAnalyzer(llm_client, self.analyzer, self.llm_logger)
         self.proposal_generator = ProposalGenerator(llm_client, self.analyzer, self.patch_gen, orchestrator)
-        self.sandbox_tester = SandboxTester(self.analyzer)
+        self.sandbox_tester = SandboxTester(self.analyzer, libraries_manager)
         
         # Initialize controller
         self.controller = LoopController(
@@ -93,6 +94,16 @@ class SelfImprovementLoop:
     def dry_run(self, value):
         """Set dry_run on controller"""
         self.controller.dry_run = value
+    
+    @property
+    def task_manager(self):
+        """Task manager removed - return None for compatibility"""
+        return None
+    
+    @property
+    def pending_tools_manager(self):
+        """Pending tools manager removed - return None for compatibility"""
+        return None
     
     def add_log(self, log_type: str, message: str, proposal_id=None):
         """Delegate to controller"""

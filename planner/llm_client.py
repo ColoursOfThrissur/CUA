@@ -21,6 +21,7 @@ class LLMClient:
     
     def __init__(self, max_retries: int = None, model: str = None, ollama_url: str = None, config_path: str = "config.yaml", registry=None):
         from core.config_manager import get_config
+        from core.llm_logger import LLMLogger
         config = get_config()
         
         self.max_retries = max_retries or config.llm.max_retries
@@ -28,6 +29,7 @@ class LLMClient:
         self.ollama_url = ollama_url or config.llm.ollama_url
         self.validation_errors = []
         self.registry = registry
+        self.llm_logger = LLMLogger()  # Add logger
         
         # Load config
         self.config = self._load_config(config_path)
@@ -72,11 +74,17 @@ class LLMClient:
         
         self.validation_errors = []
         
-        # Get available tools from registry
+        # Get available tools from registry file if available
         tools_description = "filesystem_tool, http_tool, json_tool, shell_tool"
-        if self.registry:
-            from core.schema_generator import get_tool_descriptions
-            tools_description = get_tool_descriptions(self.registry)
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            registry_mgr = ToolRegistryManager()
+            tools_description = registry_mgr.get_all_capabilities_text()
+        except:
+            # Fallback to schema generator
+            if self.registry:
+                from core.schema_generator import get_tool_descriptions
+                tools_description = get_tool_descriptions(self.registry)
         
         # Build prompt with model-specific format
         prompt = self._format_prompt(
@@ -85,14 +93,15 @@ class LLMClient:
                 tools=tools_description,
                 examples=FEW_SHOT_EXAMPLES,
                 user_request=user_request
-            )
+            ),
+            expect_json=True  # Plan generation expects JSON
         )
         
         # Retry loop with error feedback
         for attempt in range(self.max_retries):
             try:
                 # Call LLM with low temperature for deterministic output
-                llm_response = self._call_llm(prompt, temperature=0.1)
+                llm_response = self._call_llm(prompt, temperature=0.1, expect_json=True)
                 
                 if not llm_response:
                     self.validation_errors.append(f"Attempt {attempt+1}: No response from LLM")
@@ -134,20 +143,35 @@ class LLMClient:
         Returns: Natural language response
         """
         
+        # Get tool capabilities from registry file if available
+        tools_info = "No tools available"
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            registry_mgr = ToolRegistryManager()
+            tools_info = registry_mgr.get_all_capabilities_text()
+        except:
+            # Fallback to direct registry query
+            if self.registry:
+                tools_list = []
+                for tool in self.registry.tools:
+                    caps = tool.get_capabilities()
+                    ops = ", ".join([cap.operation for cap in caps])
+                    tools_list.append(f"- {tool.name}: {ops}")
+                tools_info = "\n".join(tools_list)
+        
         # Build conversational prompt
-        system_msg = """You are CUA, an autonomous agent assistant.
+        system_msg = f"""You are CUA, an autonomous agent assistant.
 
-Capabilities:
-- File operations: read, write, list files
-- Task planning and execution
-- Answer questions about your abilities
+Your available tools and capabilities:
+{tools_info}
 
 Rules:
-- Be concise and direct
-- Give actionable responses
-- If asked to do a task, suggest using 'plan to...' or specific commands
+- Be concise and helpful
+- If asked what you can do, explain your tools
+- If asked to perform a task, tell user you can execute it
+- Be conversational and friendly
 
-Respond naturally and helpfully."""
+Respond naturally."""
         
         # Build context from history
         messages = []
@@ -160,35 +184,35 @@ Respond naturally and helpfully."""
         context = self._format_chat_prompt(system_msg, messages)
         
         # Call LLM for conversational response
-        response = self._call_llm(context, temperature=0.7)
+        response = self._call_llm(context, temperature=0.7, expect_json=False)
         
         return response or "I'm here to help! Ask me anything or give me a task to execute."
     
-    def _format_prompt(self, content: str) -> str:
+    def _format_prompt(self, content: str, expect_json: bool = False) -> str:
         """Format prompt based on model type"""
         if 'qwen' in self.model.lower():
-            # Qwen uses plain format
-            return f"{content}\n\n```json\n"
+            # Qwen: Plain format with explicit JSON instruction when needed
+            if expect_json:
+                return f"{content}\n\nRespond with valid JSON only:"
+            return content
         elif 'mistral' in self.model.lower():
             # Mistral uses instruction format
-            return f"<s>[INST] {content} [/INST]\n\n```json\n"
+            json_hint = "\n\n```json\n" if expect_json else ""
+            return f"<s>[INST] {content} [/INST]{json_hint}"
         else:
             # Default plain format
-            return f"{content}\n\n```json\n"
+            return content
     
     def _format_chat_prompt(self, system: str, messages: List[Dict]) -> str:
         """Format chat prompt based on model type"""
         if 'qwen' in self.model.lower():
-            # Qwen plain format
-            prompt = f"{system}\n\n"
+            # Qwen: Use <|im_start|> format for better instruction following
+            prompt = f"<|im_start|>system\n{system}<|im_end|>\n"
             for msg in messages:
                 role = msg.get('role', 'user')
                 content = msg.get('content', '')
-                if role == 'user':
-                    prompt += f"User: {content}\n"
-                else:
-                    prompt += f"Assistant: {content}\n"
-            prompt += "Assistant:"
+                prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
+            prompt += "<|im_start|>assistant\n"
             return prompt
         elif 'mistral' in self.model.lower():
             # Mistral instruction format
@@ -210,55 +234,126 @@ Respond naturally and helpfully."""
                 prompt += f"{role.title()}: {content}\n"
             return prompt
     
-    def _call_llm(self, prompt: str, temperature: float = 0.1) -> Optional[str]:
-        """Call Mistral 7B via Ollama with optimized settings"""
+    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False) -> Optional[str]:
+        """Call Mistral 7B via Ollama with structured output enforcement"""
+        
+        from core.logging_system import get_logger
+        logger = get_logger("llm_client")
+        
+        logger.debug(f"LLM call: model={self.model}, temp={temperature}, expect_json={expect_json}")
         
         try:
-            # Optimized for 14B models with 12GB VRAM - maximize context usage
             options = {
                 "temperature": temperature,
                 "top_p": 0.9,
                 "top_k": 40,
                 "repeat_penalty": 1.1,
-                "num_predict": 8192,  # Max output for 14B model
-                "num_ctx": 16384,     # Full 16K context window
-                "num_gpu": 99,        # Load ALL layers on GPU
-                "num_thread": 8,      # Parallel processing
+                "num_predict": max_tokens or 2048,
+                "num_ctx": 8192,
+                "num_gpu": 99,
+                "num_thread": 8,
             }
             
-            # Lower temperature for code generation
-            if temperature < 0.3:
-                options["top_p"] = 0.85
-                options["repeat_penalty"] = 1.15
+            # Enforce JSON format for structured outputs
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": options,
+                "keep_alive": "10m"
+            }
+            
+            if expect_json:
+                payload["format"] = "json"  # Ollama JSON mode
             
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": options,
-                    "keep_alive": "10m"  # Keep model loaded longer during orchestration
-                },
+                json=payload,
                 timeout=self.timeout
             )
             
             if response.status_code == 200:
                 result = response.json()
-                return result.get("response", "")
+                llm_response = result.get("response", "")
+                
+                # CRITICAL: Detect truncated response
+                if llm_response and len(llm_response) > 100:
+                    # Check if response ends abruptly (not at natural boundary)
+                    last_line = llm_response.strip().split('\n')[-1]
+                    
+                    # ONLY flag as truncated if it ends mid-code (not at closing fence)
+                    if last_line == '```':
+                        # This is a NORMAL code block ending - NOT truncated
+                        pass
+                    elif last_line.strip().startswith('```'):
+                        # Closing fence with language - also normal
+                        pass
+                    else:
+                        # Check for actual truncation indicators
+                        truncation_signs = [
+                            last_line.endswith(','),  # Ends with comma
+                            last_line.endswith('('),  # Unclosed paren
+                            last_line.endswith('['),  # Unclosed bracket
+                            last_line.endswith('{'),  # Unclosed brace
+                            last_line.rstrip().endswith('\\'),  # Line continuation
+                        ]
+                        
+                        if any(truncation_signs):
+                            logger.error(f"Response truncated. Last line: '{last_line}'")
+                            logger.error(f"Response length: {len(llm_response)} chars, tokens: {result.get('eval_count', 0)}")
+                            logger.debug(f"Full response: {llm_response}")
+                            # Return None to trigger retry with error feedback
+                            return None
+                
+                # Log interaction with detailed metadata
+                self.llm_logger.log_interaction(
+                    prompt=prompt,  # Full prompt for debugging
+                    response=llm_response,  # Full response
+                    metadata={
+                        "model": self.model,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens or 2048,
+                        "expect_json": expect_json,
+                        "status": "success",
+                        "prompt_length": len(prompt),
+                        "response_length": len(llm_response),
+                        "tokens_generated": result.get('eval_count', 0),
+                        "tokens_prompt": result.get('prompt_eval_count', 0),
+                        "prompt_ends_with": prompt[-100:] if len(prompt) > 100 else prompt,
+                        "response_ends_with": llm_response[-100:] if len(llm_response) > 100 else llm_response
+                    }
+                )
+                
+                return llm_response
             else:
+                self.llm_logger.log_error(
+                    f"HTTP {response.status_code}",
+                    {"model": self.model, "prompt_preview": prompt[:200]}
+                )
                 return None
                 
         except requests.exceptions.ConnectionError:
+            self.llm_logger.log_error(
+                "Connection failed - Ollama not available",
+                {"model": self.model}
+            )
             # Fallback to mock if Ollama not available
             return self._mock_response(prompt, temperature)
-        except Exception:
+        except Exception as e:
+            self.llm_logger.log_error(
+                f"Exception: {str(e)}",
+                {"model": self.model, "prompt_preview": prompt[:200]}
+            )
             return None
     
     def _unload_model(self):
         """Unload model from memory immediately"""
+        from core.logging_system import get_logger
+        logger = get_logger("llm_client")
+        
         try:
-            requests.post(
+            logger.info(f"Unloading model: {self.model}")
+            response = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json={
                     "model": self.model,
@@ -267,8 +362,12 @@ Respond naturally and helpfully."""
                 },
                 timeout=5
             )
-        except:
-            pass
+            if response.status_code == 200:
+                logger.info(f"Model {self.model} unloaded successfully")
+            else:
+                logger.warning(f"Model unload returned HTTP {response.status_code}")
+        except Exception as e:
+            logger.error(f"Failed to unload model {self.model}: {e}")
     
     def _mock_response(self, prompt: str, temperature: float) -> str:
         """Mock response when Ollama unavailable"""

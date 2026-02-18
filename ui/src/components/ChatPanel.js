@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { User, Bot, Mic, Send } from 'lucide-react';
 import './ChatPanel.css';
 
 function ChatPanel({ messages, onSendMessage, isProcessing }) {
@@ -14,6 +15,12 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
     if (input.trim() && !isProcessing) {
       onSendMessage(input);
       setInput('');
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      handleSubmit(e);
     }
   };
 
@@ -59,7 +66,7 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
           messages.map((msg, index) => (
             <div key={index} className={`message ${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user' ? '👤' : '🤖'}
+                {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
               </div>
               <div className="message-content">
                 <div className="message-text">{msg.content}</div>
@@ -72,7 +79,7 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
         )}
         {isProcessing && (
           <div className="message assistant">
-            <div className="message-avatar">🤖</div>
+            <div className="message-avatar"><Bot size={20} /></div>
             <div className="message-content">
               <div className="typing-indicator">
                 <span></span><span></span><span></span>
@@ -87,9 +94,10 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
         <input
           type="text"
           className="chat-input"
-          placeholder="Type a command or question..."
+          placeholder="Type a command or question... (Ctrl+Enter to send)"
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
           disabled={isProcessing}
         />
         <button 
@@ -98,13 +106,14 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
           onClick={startVoiceInput}
           disabled={isProcessing}
         >
-          🎤
+          <Mic size={18} />
         </button>
         <button 
           type="submit" 
           className="btn-send" 
           disabled={isProcessing || !input.trim()}
         >
+          <Send size={16} />
           Send
         </button>
       </form>

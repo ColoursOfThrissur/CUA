@@ -17,6 +17,11 @@ class AtomicApplier:
     def apply_update(self, patch_content: str, update_id: str) -> Tuple[bool, Optional[str]]:
         """Apply update atomically with protected files verification"""
         
+        # Check if FILE_REPLACE format (not git diff)
+        if patch_content.startswith("FILE_REPLACE:"):
+            # Use direct file write instead of git apply
+            return self._apply_file_replace(patch_content, update_id)
+        
         # Verify protected files BEFORE applying
         protected_checksums = self._get_protected_checksums()
         
@@ -203,6 +208,13 @@ class AtomicApplier:
     
     def _extract_changed_files(self, patch_content: str) -> list:
         """Extract list of changed files from patch"""
+        # Handle FILE_REPLACE format
+        if patch_content.startswith("FILE_REPLACE:"):
+            first_line = patch_content.split('\n')[0]
+            file_path = first_line.replace("FILE_REPLACE:", "").strip()
+            return [file_path]
+        
+        # Handle git diff format
         files = []
         for line in patch_content.split('\n'):
             if line.startswith('+++'):
@@ -211,3 +223,41 @@ class AtomicApplier:
                 if file_path != '/dev/null':
                     files.append(file_path)
         return files
+    
+    def _apply_file_replace(self, patch_content: str, update_id: str) -> Tuple[bool, Optional[str]]:
+        """Apply FILE_REPLACE format patch"""
+        import ast
+        
+        try:
+            lines = patch_content.split('\n', 1)
+            if len(lines) != 2:
+                return False, "Invalid FILE_REPLACE format"
+            
+            file_path_str = lines[0].replace("FILE_REPLACE:", "").strip()
+            new_content = lines[1]
+            
+            file_path = self.repo_path / file_path_str
+            
+            # Backup original
+            backup_path = None
+            if file_path.exists():
+                backup_path = self.backup_dir / f"{file_path.name}.{update_id}.bak"
+                shutil.copy2(file_path, backup_path)
+            
+            # Write new content
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(new_content, encoding='utf-8')
+            
+            # Validate syntax if Python file
+            if file_path.suffix == '.py':
+                try:
+                    ast.parse(new_content)
+                except SyntaxError as e:
+                    # Rollback
+                    if backup_path and backup_path.exists():
+                        shutil.copy2(backup_path, file_path)
+                    return False, f"Syntax error: {e}"
+            
+            return True, None
+        except Exception as e:
+            return False, f"FILE_REPLACE apply failed: {str(e)}"

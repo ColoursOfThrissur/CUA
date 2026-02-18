@@ -4,7 +4,8 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,14 +13,17 @@
 }
 
 .diff-modal {
-  background: var(--bg-secondary);
-  border-radius: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  -webkit-backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
   width: 90%;
   max-width: 1000px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 .diff-modal-header {
@@ -27,7 +31,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 20px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--glass-border);
 }
 
 .diff-modal-header h2 {
@@ -58,9 +62,11 @@
 }
 
 .diff-info {
-  background: var(--bg-tertiary);
+  background: rgba(26, 31, 58, 0.4);
+  backdrop-filter: blur(5px);
+  border: 1px solid var(--glass-border);
   padding: 15px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin-bottom: 20px;
 }
 
@@ -70,8 +76,10 @@
 }
 
 .diff-viewer {
-  background: #1e1e1e;
-  border-radius: 8px;
+  background: rgba(10, 14, 39, 0.6);
+  backdrop-filter: blur(5px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
   padding: 15px;
   font-family: 'Courier New', monospace;
   font-size: 13px;
@@ -121,18 +129,19 @@
   justify-content: flex-end;
   gap: 12px;
   padding: 20px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--glass-border);
 }
 
 .btn-reject,
 .btn-approve {
   padding: 10px 24px;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  backdrop-filter: blur(5px);
 }
 
 .btn-reject {
@@ -142,6 +151,8 @@
 
 .btn-reject:hover {
   background: #c82333;
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);
+  transform: translateY(-2px);
 }
 
 .btn-approve {
@@ -151,4 +162,6 @@
 
 .btn-approve:hover {
   background: #218838;
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+  transform: translateY(-2px);
 }

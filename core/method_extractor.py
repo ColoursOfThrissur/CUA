@@ -45,6 +45,13 @@ class MethodExtractor:
         
         return methods
     
+    def extract_method_block(self, code: str, method_name: str) -> Optional[str]:
+        """Extract complete method as text block"""
+        methods = self.extract_methods(code)
+        if method_name in methods:
+            return methods[method_name]['code']
+        return None
+    
     def extract_imports(self, code: str) -> str:
         """Extract all import statements"""
         lines = code.split('\n')

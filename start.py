@@ -14,7 +14,7 @@ def start_cua():
     
     try:
         api_process = subprocess.Popen(
-            [sys.executable, "api/server.py"],
+            [sys.executable, "-m", "uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", str(config.api.port), "--reload"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )

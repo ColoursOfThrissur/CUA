@@ -38,6 +38,7 @@ async def start_loop(request: StartLoopRequest):
     
     loop_instance.custom_focus = request.custom_prompt if request.custom_prompt else None
     loop_instance.dry_run = request.dry_run if request.dry_run else False
+    loop_instance.continuous_mode = False  # Single run
     
     result = await loop_instance.start_loop()
     
@@ -46,10 +47,29 @@ async def start_loop(request: StartLoopRequest):
     
     return result
 
+@router.post("/start-continuous")
+async def start_continuous():
+    """Start continuous improvement mode - runs until stopped"""
+    if not loop_instance:
+        raise HTTPException(status_code=503, detail="Loop not initialized")
+    
+    if loop_instance.state.status.value == "running":
+        raise HTTPException(status_code=409, detail="Loop already running")
+    
+    loop_instance.continuous_mode = True
+    result = await loop_instance.start_loop()
+    
+    return {"success": True, "mode": "continuous", "message": "Continuous mode started"}
+
 @router.post("/stop")
 async def stop_loop(request: StopLoopRequest):
     if not loop_instance:
         raise HTTPException(status_code=503, detail="Loop not initialized")
+    
+    # Check if in critical section
+    if request.mode == "immediate" and hasattr(loop_instance, 'in_critical_section'):
+        if loop_instance.in_critical_section:
+            return {"success": False, "message": "In critical section, waiting for safe stop point"}
     
     result = await loop_instance.stop_loop(request.mode)
     return result
@@ -87,9 +107,20 @@ async def get_status():
             "message": "Self-improvement loop not initialized. Check server logs."
         }
     
-    status = loop_instance.get_status()
-    status['pending_approvals'] = loop_instance.pending_approvals
-    return status
+    # Non-blocking status retrieval
+    try:
+        status = loop_instance.get_status()
+        status['pending_approvals'] = loop_instance.pending_approvals
+        return status
+    except Exception as e:
+        return {
+            "status": "error",
+            "running": False,
+            "iteration": 0,
+            "maxIterations": 10,
+            "logs": [],
+            "error": str(e)
+        }
 
 @router.post("/clear-logs")
 async def clear_logs():
@@ -132,6 +163,39 @@ async def get_logs():
     if not loop_instance:
         return {"logs": []}
     return {"logs": loop_instance.logs}
+
+@router.get("/debug/llm-test")
+async def test_llm():
+    """Test if LLM is responding"""
+    if not loop_instance:
+        return {"error": "Loop not initialized"}
+    
+    try:
+        from core.logging_system import get_logger
+        logger = get_logger("debug")
+        
+        # Test simple call
+        logger.info(f"Testing LLM: {loop_instance.llm_client.model}")
+        response = loop_instance.llm_client._call_llm("Say 'test'", temperature=0.1, expect_json=False)
+        
+        if response:
+            return {
+                "success": True,
+                "model": loop_instance.llm_client.model,
+                "response_length": len(response),
+                "response_preview": response[:200]
+            }
+        else:
+            return {
+                "success": False,
+                "model": loop_instance.llm_client.model,
+                "error": "No response from LLM"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @router.post("/export/{proposal_id}")
 async def export_proposal(proposal_id: str):

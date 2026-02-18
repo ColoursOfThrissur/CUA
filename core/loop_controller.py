@@ -35,6 +35,7 @@ class LoopController:
         max_iterations=None
     ):
         from core.config_manager import get_config
+        from core.event_bus import get_event_bus
         config = get_config()
         
         self.llm_client = llm_client
@@ -45,7 +46,9 @@ class LoopController:
         self.plan_history = plan_history
         self.analytics = analytics
         self.max_iterations = max_iterations or config.improvement.max_iterations
+        self.max_retries = 3  # Max 3 retries per stage
         self.config = config
+        self.event_bus = get_event_bus()
         
         self.state = LoopState(
             status=LoopStatus.IDLE,
@@ -66,6 +69,13 @@ class LoopController:
         self.iteration_history = []
         self.task_queue = []  # Queue of tasks from LLM
         self.task_attempts = {}  # Track attempts per task
+        self.file_cooldown = {}  # Track recently failed files: {file: iteration}
+        self.continuous_mode = False  # Continuous improvement mode
+        self.in_critical_section = False  # Track if in critical operation
+        
+        # Retry coordinator for sandbox failures
+        from core.retry_coordinator import RetryCoordinator
+        self.retry_coordinator = RetryCoordinator(max_retries=3)
     
     def add_log(self, log_type: str, message: str, proposal_id: Optional[str] = None):
         """Add log entry with automatic truncation"""
@@ -78,11 +88,15 @@ class LoopController:
         self.logs.append(log_entry)
         
         # Truncate to prevent memory leak
-        max_logs = self.config.improvement.max_logs_display * 2  # Keep 2x for history
+        max_logs = self.config.improvement.max_logs_display * 2
         if len(self.logs) > max_logs:
             self.logs = self.logs[-max_logs:]
         
         print(f"[LOOP] {log_type}: {message}")
+        
+        # Emit log event for real-time UI updates
+        asyncio.create_task(self.event_bus.emit('log_added', log_entry))
+        
         return log_entry
     
     async def start_loop(self):
@@ -111,9 +125,14 @@ class LoopController:
         self.state.emergency_stop = False
         self.logs = []
         self.preview_proposals = []
-        self.custom_focus = None  # Clear any previous focus
+        # Clear iteration_history on new loop start - fresh session
+        self.iteration_history = []
+        # Clear feature tracker for fresh session
+        self.task_analyzer.feature_tracker.clear_history()
+        # DON'T clear custom_focus - it was set by API before start_loop()
         
         self.add_log("start", f"Loop started (max {self.max_iterations} iterations)")
+        asyncio.create_task(self.event_bus.emit('loop_started', {'max_iterations': self.max_iterations}))
         asyncio.create_task(self._run_loop())
         
         return {"status": "started", "max_iterations": self.max_iterations}
@@ -121,25 +140,43 @@ class LoopController:
     async def stop_loop(self, mode: str = "graceful"):
         """Stop loop"""
         if mode == "immediate":
+            # Check critical section
+            if self.in_critical_section:
+                self.add_log("warning", "In critical section - waiting for safe stop...")
+                self.state.stop_requested = True
+                self.state.status = LoopStatus.STOPPING
+                return {"status": "stopping", "mode": "deferred", "reason": "critical_section"}
+            
             self.state.emergency_stop = True
             self.state.status = LoopStatus.STOPPED
+            self.continuous_mode = False
             self.add_log("stop", "Emergency stop")
             return {"status": "stopped", "mode": "immediate"}
         else:
             self.state.stop_requested = True
             self.state.status = LoopStatus.STOPPING
+            self.continuous_mode = False
             self.add_log("stop", "Stop requested")
             return {"status": "stopping", "mode": "graceful"}
     
     async def _run_loop(self):
         """Main loop execution"""
         try:
-            while self.state.current_iteration < self.max_iterations:
-                if self.state.emergency_stop:
+            while True:  # Continuous mode support
+                # Check stop at start of each iteration
+                if self.state.stop_requested or self.state.emergency_stop:
+                    break
+                
+                # Check if should continue
+                if not self.continuous_mode and self.state.current_iteration >= self.max_iterations:
                     break
                 
                 self.state.current_iteration += 1
                 self.add_log("iteration", f"Iteration {self.state.current_iteration}: Analyzing...")
+                asyncio.create_task(self.event_bus.emit('iteration_started', {'iteration': self.state.current_iteration}))
+                
+                # Update feature tracker iteration
+                self.task_analyzer.feature_tracker.set_iteration(self.state.current_iteration)
                 
                 iteration_start = time.time()
                 
@@ -155,24 +192,30 @@ class LoopController:
                         pass
                     
                     self.add_log("info", "Analyzing for new task batch...")
+                    # Get files on cooldown to exclude
+                    excluded_files = [
+                        f for f, iter_num in self.file_cooldown.items()
+                        if self.state.current_iteration - iter_num < 3
+                    ]
                     tasks = self.task_analyzer.analyze_and_propose_tasks(
                         focus=self.custom_focus,
                         failed_suggestions=self.failed_suggestions,
-                        iteration_history=self.iteration_history.copy()
+                        iteration_history=self.iteration_history.copy(),
+                        excluded_files=excluded_files
                     )
                     
                     if not tasks:
-                        self.add_log("info", "No improvements needed")
+                        self.add_log("info", "No improvements needed - all tools complete")
                         # Restore original model
                         try:
                             self.llm_client.set_model(original_model)
                         except Exception:
                             pass
-                        await asyncio.sleep(2)
-                        continue
+                        # Stop loop - nothing left to improve
+                        break
                     
-                    self.task_queue = tasks[:5]  # Max 5 tasks per batch
-                    self.add_log("info", f"Queued {len(self.task_queue)} tasks")
+                    self.task_queue = tasks[:1]  # SINGLE-SHOT: Only 1 task
+                    self.add_log("info", f"Selected 1 task: {tasks[0].get('suggestion', '')[:60]}")
                     
                     # Restore model after analysis
                     try:
@@ -186,8 +229,23 @@ class LoopController:
                     
                 analysis = self.task_queue.pop(0)
                 
+                # CRITICAL: Clear previous errors when starting new task
+                self.proposal_generator.clear_errors()
+                
+                # Check file cooldown (skip if failed in last 3 iterations)
+                files_affected = analysis.get('files_affected', [])
+                target_file = files_affected[0] if files_affected else None
+                if target_file and target_file in self.file_cooldown:
+                    cooldown_iter = self.file_cooldown[target_file]
+                    if self.state.current_iteration - cooldown_iter < 3:
+                        self.add_log("info", f"Skipping {target_file} (cooldown) - getting new task")
+                        # Clear queue and add to excluded files for next analysis
+                        self.task_queue = []
+                        self.state.current_iteration -= 1
+                        continue
+                
                 # Check if task failed too many times
-                task_id = hash(str(analysis.get('files_affected', [])))
+                task_id = hash(f"{analysis.get('files_affected', [])}::{analysis.get('suggestion', '')[:50]}")
                 if self.task_attempts.get(task_id, 0) >= 3:
                     self.add_log("info", f"Skipping task (3 attempts): {analysis.get('suggestion', '')[:50]}")
                     # Don't count as iteration - try next task
@@ -205,10 +263,48 @@ class LoopController:
                 except Exception:
                     pass
                 
-                # Generate proposal
-                proposal = self.proposal_generator.generate_proposal(analysis)
+                # RETRY LOOP: Code generation + validation (max 3 attempts)
+                self.retry_coordinator.start_retry_cycle('code_generation')
+                proposal = None
                 
-                if not proposal or not self._validate_proposal_structure(proposal):
+                # Log multi-method tasks
+                methods_to_modify = analysis.get('methods_to_modify', [])
+                if len(methods_to_modify) > 1:
+                    self.add_log("info", f"Multi-method task: {len(methods_to_modify)} methods")
+                
+                for attempt in range(1, self.max_retries + 1):
+                    if self.state.stop_requested or self.state.emergency_stop:
+                        break
+                    
+                    self.add_log("info", f"Code generation attempt {attempt}/{self.max_retries}...")
+                    
+                    # Modify analysis on retry to give LLM different context
+                    if attempt > 1:
+                        # Add attempt number to force different approach
+                        analysis_copy = analysis.copy()
+                        analysis_copy['suggestion'] = f"{analysis['suggestion']} (Attempt {attempt}: Try different approach)"
+                        proposal = self.proposal_generator.generate_proposal(analysis_copy)
+                    else:
+                        proposal = self.proposal_generator.generate_proposal(analysis)
+                    
+                    if proposal and self._validate_proposal_structure(proposal):
+                        self.add_log("success", f"Valid proposal generated on attempt {attempt}")
+                        break
+                    else:
+                        error_msg = "Invalid proposal structure" if proposal else "Proposal generation failed"
+                        self.add_log("error", f"Validation failed (attempt {attempt}/{self.max_retries}): {error_msg}")
+                        
+                        if attempt < self.max_retries:
+                            # Feed error back to LLM with specific guidance
+                            formatted_error = self.retry_coordinator.format_error_for_llm(error_msg, {})
+                            self.proposal_generator.add_error(formatted_error)
+                        else:
+                            self.add_log("error", "Max retries exhausted for code generation")
+                            proposal = None
+                
+                self.retry_coordinator.reset()
+                
+                if not proposal:
                     self.add_log("error", "Failed to generate valid proposal")
                     # Restore original model
                     try:
@@ -221,8 +317,20 @@ class LoopController:
                         "task": analysis.get('suggestion', 'Unknown')[:80],
                         "file": analysis.get('files_affected', ['unknown'])[0],
                         "result": "validation_fail",
-                        "error": "Invalid proposal structure"
+                        "error": "Invalid proposal structure",
+                        "category": analysis.get('category', 'core'),
+                        "methods_modified": analysis.get('methods_to_modify', [])
                     })
+                    
+                    # Track validation failure
+                    self.task_analyzer.feature_tracker.add_feature(
+                        file=analysis.get('files_affected', ['unknown'])[0],
+                        feature=analysis.get('suggestion', 'Unknown')[:80],
+                        category=analysis.get('category', 'core'),
+                        iteration=self.state.current_iteration,
+                        result="failure",
+                        methods=analysis.get('methods_to_modify', [])
+                    )
                     continue
                 
                 # Restore original model after code generation
@@ -246,13 +354,51 @@ class LoopController:
                     if not approved:
                         continue
                 
-                # Test in sandbox
-                self.add_log("testing", "Running in sandbox...")
-                sandbox_result = self.sandbox_tester.test_proposal(proposal, timeout=self.config.improvement.sandbox_timeout)
+                # Test in sandbox with retry (max 3 attempts)
+                self.retry_coordinator.start_retry_cycle('sandbox_test')
+                sandbox_result = None
                 
-                if not sandbox_result['success']:
+                for attempt in range(1, self.max_retries + 1):
+                    if self.state.stop_requested or self.state.emergency_stop:
+                        break
+                    
+                    self.add_log("testing", f"Sandbox test attempt {attempt}/{self.max_retries}...")
+                    sandbox_result = self.sandbox_tester.test_proposal(proposal, timeout=self.config.improvement.sandbox_timeout)
+                    
+                    if sandbox_result['success']:
+                        self.add_log("success", f"Tests passed on attempt {attempt}")
+                        break
+                    else:
+                        error_msg = sandbox_result.get('output', 'Unknown error')[:500]
+                        self.add_log("error", f"Sandbox failed (attempt {attempt}/{self.max_retries})")
+                        
+                        if attempt < self.max_retries:
+                            # Regenerate entire proposal with sandbox error feedback
+                            context = {
+                                'baseline_passed': sandbox_result.get('baseline_passed', 0),
+                                'tests_passed': sandbox_result.get('tests_passed', 0)
+                            }
+                            formatted_error = self.retry_coordinator.format_error_for_llm(error_msg, context)
+                            self.proposal_generator.add_error(formatted_error)
+                            
+                            # Regenerate complete proposal (goes through all steps again)
+                            self.add_log("info", f"Regenerating proposal with test feedback...")
+                            proposal = self.proposal_generator.generate_proposal(analysis)
+                            
+                            if not proposal or not self._validate_proposal_structure(proposal):
+                                self.add_log("error", "Proposal regeneration failed")
+                                break
+                        else:
+                            self.add_log("error", "Max retries exhausted")
+                
+                self.retry_coordinator.reset()
+                
+                if not sandbox_result or not sandbox_result['success']:
                     error_msg = sandbox_result.get('output', 'Unknown error')
                     self.add_log("error", f"Sandbox failed: {error_msg}")
+                    
+                    # Add file to cooldown
+                    self.file_cooldown[target_file] = self.state.current_iteration
                     
                     # Pass error to proposal generator with limit
                     self.proposal_generator.add_error(f"Sandbox: {error_msg}")
@@ -267,8 +413,20 @@ class LoopController:
                         "task": proposal['description'][:80],
                         "file": proposal['files_changed'][0],
                         "result": "sandbox_fail",
-                        "error": error_msg[:100]
+                        "error": error_msg[:100],
+                        "category": analysis.get('category', 'core'),
+                        "methods_modified": analysis.get('methods_to_modify', [])
                     })
+                    
+                    # Track failure in feature tracker
+                    self.task_analyzer.feature_tracker.add_feature(
+                        file=proposal['files_changed'][0],
+                        feature=proposal['description'][:80],
+                        category=analysis.get('category', 'core'),
+                        iteration=self.state.current_iteration,
+                        result="failure",
+                        methods=analysis.get('methods_to_modify', [])
+                    )
                     
                     # Record analytics
                     duration = time.time() - iteration_start
@@ -286,8 +444,13 @@ class LoopController:
                 if self.dry_run:
                     self._handle_dry_run(proposal, risk_score, sandbox_result)
                 else:
-                    self.add_log("info", "Applying changes...")
-                    apply_result = await self._apply_changes(proposal)
+                    # CRITICAL SECTION: File write operation
+                    self.in_critical_section = True
+                    try:
+                        self.add_log("info", "Applying changes...")
+                        apply_result = await self._apply_changes(proposal)
+                    finally:
+                        self.in_critical_section = False
                     
                     # Save to history
                     plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.state.current_iteration}"
@@ -316,8 +479,21 @@ class LoopController:
                         "task": proposal['description'][:80],
                         "file": proposal['files_changed'][0],
                         "result": result_status,
-                        "error": error_msg[:100] if error_msg else ""
+                        "error": error_msg[:100] if error_msg else "",
+                        "category": analysis.get('category', 'core'),
+                        "methods_modified": analysis.get('methods_to_modify', [])
                     })
+                    
+                    # Track feature in task_analyzer's feature tracker
+                    if result_status == "success":
+                        self.task_analyzer.feature_tracker.add_feature(
+                            file=proposal['files_changed'][0],
+                            feature=proposal['description'][:80],
+                            category=analysis.get('category', 'core'),
+                            iteration=self.state.current_iteration,
+                            result="success",
+                            methods=analysis.get('methods_to_modify', [])
+                        )
                     
                     # Record analytics
                     duration = time.time() - iteration_start
@@ -330,6 +506,13 @@ class LoopController:
                         duration,
                         None if apply_result['success'] else "apply_failure"
                     )
+                    
+                    # Emit task completion event
+                    asyncio.create_task(self.event_bus.emit('task_completed', {
+                        'iteration': self.state.current_iteration,
+                        'success': apply_result['success'],
+                        'description': proposal['description'][:80]
+                    }))
                 
                 if self.state.stop_requested:
                     self.add_log("stop", "Loop stopped gracefully")
@@ -340,6 +523,11 @@ class LoopController:
                 if recent_failures >= 5:
                     self.add_log("error", "Circuit breaker: 5 consecutive failures - stopping loop")
                     break
+                
+                # In continuous mode, reset iteration counter after max_iterations
+                if self.continuous_mode and self.state.current_iteration >= self.max_iterations:
+                    self.add_log("info", f"Continuous mode: Starting new cycle")
+                    self.state.current_iteration = 0
                 
                 # Rate limiting
                 await asyncio.sleep(self.config.improvement.rate_limit_delay)
@@ -495,6 +683,7 @@ class LoopController:
                 self.add_log("stop", f"Loop completed {self.state.current_iteration} iterations")
         
         self.state.status = LoopStatus.STOPPED
+        asyncio.create_task(self.event_bus.emit('loop_stopped', {'iterations': self.state.current_iteration}))
     
     def approve_proposal(self, proposal_id: str) -> bool:
         """Approve pending proposal with locking"""

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { Rocket, RotateCw, Search, Lightbulb, Pause, CheckCircle, XCircle, TestTube, Check, AlertTriangle, Square, Save, Trash2 } from 'lucide-react';
 import './SelfImprovementLog.css';
 
 function SelfImprovementLog({ logs, onApprove, onReject, onViewDiff, onClearLogs, onSaveLogs }) {
@@ -10,19 +11,19 @@ function SelfImprovementLog({ logs, onApprove, onReject, onViewDiff, onClearLogs
 
   const getLogIcon = (type) => {
     const icons = {
-      start: '🚀',
-      iteration: '🔄',
-      analysis: '🔍',
-      proposal: '💡',
-      approval_needed: '⏸',
-      approved: '✅',
-      rejected: '❌',
-      testing: '🧪',
-      success: '✓',
-      error: '⚠',
-      stop: '⏹'
+      start: <Rocket size={16} />,
+      iteration: <RotateCw size={16} />,
+      analysis: <Search size={16} />,
+      proposal: <Lightbulb size={16} />,
+      approval_needed: <Pause size={16} />,
+      approved: <CheckCircle size={16} />,
+      rejected: <XCircle size={16} />,
+      testing: <TestTube size={16} />,
+      success: <Check size={16} />,
+      error: <AlertTriangle size={16} />,
+      stop: <Square size={16} />
     };
-    return icons[type] || '•';
+    return icons[type] || <Check size={16} />;
   };
 
   const getLogClass = (type) => {
@@ -38,10 +39,10 @@ function SelfImprovementLog({ logs, onApprove, onReject, onViewDiff, onClearLogs
         <h3>Self-Improvement Activity Log</h3>
         <div className="log-header-actions">
           <button className="btn-icon" onClick={onSaveLogs} title="Save logs">
-            💾
+            <Save size={16} />
           </button>
           <button className="btn-icon" onClick={onClearLogs} title="Clear logs">
-            🗑️
+            <Trash2 size={16} />
           </button>
         </div>
       </div>

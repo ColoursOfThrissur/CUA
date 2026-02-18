@@ -168,17 +168,17 @@ class TestStateMachineExecutor:
     
     def test_execution_stops_on_failure(self, executor, tmp_path):
         """Test execution stops when step fails"""
-        from core.plan_schema import ExecutionPlanSchema, PlanStepSchema, ToolName, OperationName
+        from planner.plan_parser import ExecutionPlan, PlanStep
         
         # Create plan with invalid operation
-        plan = ExecutionPlanSchema(
+        plan = ExecutionPlan(
             plan_id="fail_plan",
             analysis="Plan that will fail because file doesn't exist",
             steps=[
-                PlanStepSchema(
+                PlanStep(
                     step_id="step_1",
-                    tool=ToolName.FILESYSTEM_TOOL,
-                    operation=OperationName.READ_FILE,
+                    tool="filesystem_tool",
+                    operation="read_file",
                     parameters={"path": str(tmp_path / "nonexistent.txt")},
                     reasoning="This will fail because file doesn't exist"
                 )

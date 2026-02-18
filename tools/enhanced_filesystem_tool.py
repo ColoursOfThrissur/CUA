@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any
 from tools.tool_interface import BaseTool
+from tools.tool_result import ToolResult, ResultStatus
 from tools.tool_capability import ToolCapability, Parameter, ParameterType, SafetyLevel
 
 class FilesystemTool(BaseTool):
@@ -15,11 +16,20 @@ class FilesystemTool(BaseTool):
     def __init__(self, allowed_roots: List[str] = None):
         from core.config_manager import get_config
         try:
+            if allowed_roots is not None:
+                if not allowed_roots:
+                    raise ValueError("allowed_roots cannot be an empty list.")
+                if not isinstance(allowed_roots, list) or not all(isinstance(root, str) for root in allowed_roots):
+                    raise ValueError("allowed_roots must be a list of strings representing valid paths.")
+                import os
+                for root in allowed_roots:
+                    if not os.path.isdir(root):
+                        raise ValueError(f"The path '{root}' is not a valid directory.")
             self.allowed_roots = allowed_roots or get_config().security.allowed_roots
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             raise ValueError(f"Error initializing FilesystemTool: {e}")
         super().__init__()
-    
+        
     def register_capabilities(self):
         """Register filesystem capabilities."""
         
@@ -91,10 +101,14 @@ class FilesystemTool(BaseTool):
         """Handle read file capability."""
         if not self._validate_path(path):
             raise ValueError(f"Path '{path}' is outside allowed roots: {self.allowed_roots}")
-        
+
         if not os.path.exists(path):
             raise FileNotFoundError(f"File '{path}' not found")
-        
+
+        # Check file permissions
+        if not os.access(path, os.R_OK):
+            raise PermissionError(f"Permission denied to read file: {path}")
+
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
     
@@ -102,29 +116,37 @@ class FilesystemTool(BaseTool):
         """Handle write file capability."""
         if not self._validate_path(path):
             raise ValueError(f"Path '{path}' is outside allowed roots: {self.allowed_roots}")
-        
-        # Create directory if it doesn't exist
+
+        # Check and create directory with write permissions
         dirpath = os.path.dirname(path)
         if dirpath and dirpath != '.':
+            abs_dirpath = os.path.abspath(dirpath)
             try:
+                if not os.access(abs_dirpath, os.W_OK):
+                    raise PermissionError(f"Directory '{dirpath}' does not have write permissions")
                 os.makedirs(dirpath, exist_ok=True)
             except OSError as e:
                 raise IOError(f"Failed to create directory '{dirpath}': {e}")
-        
+
+        # Check file write permissions
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path) and not os.access(abs_path, os.W_OK):
+            raise PermissionError(f"File '{path}' does not have write permissions")
+
         # Write content to file with error handling
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
         except Exception as e:
             raise IOError(f"Error writing to file '{path}': {e}")
-        
+
         return f"Content written successfully to {path}"
     
     def _handle_list_directory(self, path: str = ".") -> List[str]:
         """Handle list directory capability."""
         if not self._validate_path(path):
             raise ValueError(f"Path '{path}' is outside allowed roots: {self.allowed_roots}")
-        
+
         try:
             with os.scandir(path) as entries:
                 items = [entry.name + "/" if entry.is_dir() else entry.name for entry in entries]
@@ -134,8 +156,11 @@ class FilesystemTool(BaseTool):
             raise PermissionError(f"Permission denied to access directory '{path}'") from None
         except OSError as e:
             raise OSError(f"An error occurred while accessing directory '{path}': {e}") from None
-        
-        return sorted(items)
+
+        # Sort items by name, directories first
+        items.sort(key=lambda x: (not x.endswith('/'), x))
+
+        return items
     
     def execute(self, operation: str, parameters: Dict[str, Any]):
         """Execute a registered capability."""

@@ -4,6 +4,7 @@ Production Logging System - Structured JSON logs with levels
 
 import json
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -17,7 +18,7 @@ class LogLevel(Enum):
     CRITICAL = "critical"
 
 class StructuredLogger:
-    """JSON structured logger for production"""
+    """JSON structured logger with proper timestamps"""
     
     def __init__(self, log_dir: str = "./logs", service_name: str = "cua"):
         self.log_dir = Path(log_dir)
@@ -26,26 +27,32 @@ class StructuredLogger:
         
         # Setup file handler
         log_file = self.log_dir / f"{service_name}.log"
-        self.file_handler = logging.FileHandler(log_file)
+        self.file_handler = logging.FileHandler(log_file, encoding='utf-8')
         self.file_handler.setLevel(logging.DEBUG)
+        
+        # Setup console handler for immediate feedback
+        self.console_handler = logging.StreamHandler(sys.stdout)
+        self.console_handler.setLevel(logging.INFO)
         
         # Setup logger
         self.logger = logging.getLogger(service_name)
         self.logger.setLevel(logging.DEBUG)
+        self.logger.handlers.clear()
         self.logger.addHandler(self.file_handler)
+        self.logger.addHandler(self.console_handler)
+        self.logger.propagate = False
     
     def _log(self, level: LogLevel, message: str, **context):
-        """Write structured log entry"""
-        
+        """Write structured log with current timestamp"""
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "service": self.service_name,
             "level": level.value,
             "message": message,
             **context
         }
         
-        log_line = json.dumps(log_entry)
+        log_line = json.dumps(log_entry, ensure_ascii=False)
         
         if level == LogLevel.DEBUG:
             self.logger.debug(log_line)
@@ -90,12 +97,12 @@ class StructuredLogger:
         """Log error with context"""
         self.error("error_occurred", error_type=error_type, error_message=error_message, **context)
 
-# Global logger instance
-_logger: Optional[StructuredLogger] = None
+# Global logger instances per service
+_loggers: Dict[str, StructuredLogger] = {}
 
 def get_logger(service_name: str = "cua") -> StructuredLogger:
-    """Get or create global logger"""
-    global _logger
-    if _logger is None:
-        _logger = StructuredLogger(service_name=service_name)
-    return _logger
+    """Get or create logger for service"""
+    global _loggers
+    if service_name not in _loggers:
+        _loggers[service_name] = StructuredLogger(service_name=service_name)
+    return _loggers[service_name]
