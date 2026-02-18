@@ -2,6 +2,10 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Clear any cached bad imports
+if 'core.permission_gate' in sys.modules:
+    del sys.modules['core.permission_gate']
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -115,13 +119,16 @@ if SYSTEM_AVAILABLE:
         
         # Set instances for routers
         if ROUTERS_AVAILABLE:
+            print(f"[DEBUG] Setting loop instance: {improvement_loop is not None}")
             set_loop_instance(improvement_loop)
             set_llm_client(llm_client)
             set_scheduler(scheduler)
         
         print("CUA system initialized successfully")
     except Exception as e:
+        import traceback
         print(f"System initialization failed: {e}")
+        traceback.print_exc()
         SYSTEM_AVAILABLE = False
 
 # Session storage
@@ -348,42 +355,44 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         last_log_count = 0
         while True:
-            if improvement_loop:
-                status = improvement_loop.get_status()
-                current_logs = status.get('logs', [])
-                
-                # Send new logs immediately
-                if len(current_logs) > last_log_count:
-                    new_logs = current_logs[last_log_count:]
-                    for log in new_logs:
-                        await websocket.send_text(json.dumps({
-                            "type": "new_log",
-                            "data": log,
-                            "timestamp": time.time()
-                        }))
-                    last_log_count = len(current_logs)
-                
-                # Send full status update
-                pending = {}
-                if hasattr(improvement_loop, 'pending_approvals'):
-                    pending = improvement_loop.pending_approvals or {}
-                
-                await websocket.send_text(json.dumps({
-                    "type": "improvement_status",
-                    "data": {
-                        **status,
-                        "pending_approvals": pending
-                    },
-                    "timestamp": time.time()
-                }))
-                
-                await asyncio.sleep(0.5)  # Check every 500ms
-            else:
-                await asyncio.sleep(2)
+            try:
+                if improvement_loop:
+                    status = improvement_loop.get_status()
+                    current_logs = status.get('logs', [])
+                    
+                    # Send new logs immediately
+                    if len(current_logs) > last_log_count:
+                        new_logs = current_logs[last_log_count:]
+                        for log in new_logs:
+                            await websocket.send_text(json.dumps({
+                                "type": "new_log",
+                                "data": log,
+                                "timestamp": time.time()
+                            }))
+                        last_log_count = len(current_logs)
+                    
+                    # Send full status update
+                    pending = {}
+                    if hasattr(improvement_loop, 'pending_approvals'):
+                        pending = improvement_loop.pending_approvals or {}
+                    
+                    await websocket.send_text(json.dumps({
+                        "type": "improvement_status",
+                        "data": {
+                            **status,
+                            "pending_approvals": pending
+                        },
+                        "timestamp": time.time()
+                    }))
+                    
+                    await asyncio.sleep(0.5)  # Check every 500ms
+                else:
+                    await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                # Graceful shutdown
+                break
     except Exception as e:
         print(f"WebSocket error: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
         if websocket in connections:
             connections.remove(websocket)
@@ -405,4 +414,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, shutdown_handler)
     
     print("Starting CUA Autonomous Agent API Server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    
+    try:
+        import asyncio
+        asyncio.run(server.serve())
+    except (KeyboardInterrupt, SystemExit):
+        pass

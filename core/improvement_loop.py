@@ -43,12 +43,56 @@ class SelfImprovementLoop:
         
         # Expose controller properties for compatibility
         self.max_iterations = max_iterations
-        self.state = self.controller.state
-        self.logs = self.controller.logs
-        self.pending_approvals = self.controller.pending_approvals
-        self.custom_focus = None
-        self.dry_run = False
-        self.preview_proposals = self.controller.preview_proposals
+    
+    @property
+    def state(self):
+        """Dynamic property - always read from controller"""
+        return self.controller.state
+    
+    @property
+    def logs(self):
+        """Dynamic property - always read from controller"""
+        return self.controller.logs
+    
+    @logs.setter
+    def logs(self, value):
+        """Allow setting logs on controller"""
+        self.controller.logs = value
+    
+    @property
+    def pending_approvals(self):
+        """Dynamic property - always read from controller"""
+        return self.controller.pending_approvals
+    
+    @property
+    def approval_lock(self):
+        """Dynamic property - always read from controller"""
+        return self.controller.approval_lock
+    
+    @property
+    def preview_proposals(self):
+        """Dynamic property - always read from controller"""
+        return self.controller.preview_proposals
+    
+    @property
+    def custom_focus(self):
+        """Get custom focus from controller"""
+        return self.controller.custom_focus
+    
+    @custom_focus.setter
+    def custom_focus(self, value):
+        """Set custom focus on controller"""
+        self.controller.custom_focus = value
+    
+    @property
+    def dry_run(self):
+        """Get dry_run from controller"""
+        return self.controller.dry_run
+    
+    @dry_run.setter
+    def dry_run(self, value):
+        """Set dry_run on controller"""
+        self.controller.dry_run = value
     
     def add_log(self, log_type: str, message: str, proposal_id=None):
         """Delegate to controller"""
@@ -56,8 +100,6 @@ class SelfImprovementLoop:
     
     async def start_loop(self):
         """Delegate to controller"""
-        self.controller.custom_focus = self.custom_focus
-        self.controller.dry_run = self.dry_run
         return await self.controller.start_loop()
     
     async def stop_loop(self, mode: str = "graceful"):

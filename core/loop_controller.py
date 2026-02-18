@@ -64,6 +64,8 @@ class LoopController:
         self.failed_suggestions = []
         self.retry_count = {}
         self.iteration_history = []
+        self.task_queue = []  # Queue of tasks from LLM
+        self.task_attempts = {}  # Track attempts per task
     
     def add_log(self, log_type: str, message: str, proposal_id: Optional[str] = None):
         """Add log entry with automatic truncation"""
@@ -109,6 +111,7 @@ class LoopController:
         self.state.emergency_stop = False
         self.logs = []
         self.preview_proposals = []
+        self.custom_focus = None  # Clear any previous focus
         
         self.add_log("start", f"Loop started (max {self.max_iterations} iterations)")
         asyncio.create_task(self._run_loop())
@@ -140,33 +143,61 @@ class LoopController:
                 
                 iteration_start = time.time()
                 
-                # Switch to analysis model (Mistral for reasoning)
-                original_model = self.llm_client.model
-                try:
-                    analysis_model = self.config.llm.analysis_model
-                    self.llm_client.set_model(analysis_model)
-                    self.add_log("info", f"Using {analysis_model} for analysis")
-                except Exception:
-                    pass
-                
-                # Analyze system (pass history BEFORE adding current iteration)
-                analysis = self.task_analyzer.analyze_and_propose_task(
-                    focus=self.custom_focus,
-                    failed_suggestions=self.failed_suggestions,
-                    iteration_history=self.iteration_history.copy()
-                )
-                
-                if not analysis:
-                    self.add_log("info", "No improvements needed")
-                    # Restore original model
+                # Get task from queue or analyze for new batch
+                if not self.task_queue:
+                    # Switch to analysis model (Mistral for reasoning)
+                    original_model = self.llm_client.model
+                    try:
+                        analysis_model = self.config.llm.analysis_model
+                        self.llm_client.set_model(analysis_model)
+                        self.add_log("info", f"Using {analysis_model} for analysis")
+                    except Exception:
+                        pass
+                    
+                    self.add_log("info", "Analyzing for new task batch...")
+                    tasks = self.task_analyzer.analyze_and_propose_tasks(
+                        focus=self.custom_focus,
+                        failed_suggestions=self.failed_suggestions,
+                        iteration_history=self.iteration_history.copy()
+                    )
+                    
+                    if not tasks:
+                        self.add_log("info", "No improvements needed")
+                        # Restore original model
+                        try:
+                            self.llm_client.set_model(original_model)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(2)
+                        continue
+                    
+                    self.task_queue = tasks[:5]  # Max 5 tasks per batch
+                    self.add_log("info", f"Queued {len(self.task_queue)} tasks")
+                    
+                    # Restore model after analysis
                     try:
                         self.llm_client.set_model(original_model)
                     except Exception:
                         pass
-                    await asyncio.sleep(2)
+                
+                # Pop next task
+                if not self.task_queue:  # Safety check
+                    continue
+                    
+                analysis = self.task_queue.pop(0)
+                
+                # Check if task failed too many times
+                task_id = hash(str(analysis.get('files_affected', [])))
+                if self.task_attempts.get(task_id, 0) >= 3:
+                    self.add_log("info", f"Skipping task (3 attempts): {analysis.get('suggestion', '')[:50]}")
+                    # Don't count as iteration - try next task
+                    self.state.current_iteration -= 1
                     continue
                 
+                self.task_attempts[task_id] = self.task_attempts.get(task_id, 0) + 1
+                
                 # Switch to code model (Qwen for code generation)
+                original_model = self.llm_client.model
                 try:
                     code_model = self.config.llm.code_model
                     self.llm_client.set_model(code_model)
@@ -226,14 +257,9 @@ class LoopController:
                     # Pass error to proposal generator with limit
                     self.proposal_generator.add_error(f"Sandbox: {error_msg}")
                     
-                    # Track failures
+                    # Track failures (keep for backward compatibility)
                     suggestion_key = str(analysis.get('files_affected', []))
                     self.retry_count[suggestion_key] = self.retry_count.get(suggestion_key, 0) + 1
-                    
-                    if self.retry_count[suggestion_key] >= self.config.improvement.max_retries:
-                        self.failed_suggestions.append(suggestion_key)
-                        self.add_log("info", f"Marking as failed after {self.config.improvement.max_retries} attempts")
-                        self.proposal_generator.clear_errors()
                     
                     # Add to history BEFORE next iteration
                     self.iteration_history.append({

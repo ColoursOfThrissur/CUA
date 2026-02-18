@@ -96,6 +96,10 @@ class ProposalGenerator:
         if not file_path.endswith('.py'):
             return None
         
+        # CRITICAL: Reject JSON-like responses (LLM confusion)
+        if code.strip().startswith('{') and '"modified_method"' in code:
+            return "BLOCKED: LLM returned JSON instead of Python code"
+        
         # Protected files from config
         protected_files = self.config.improvement.protected_files
         

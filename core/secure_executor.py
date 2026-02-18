@@ -2,7 +2,7 @@ import time
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from core.plan_validator import PlanValidator, PlanValidationResult
-from core.permission_gate import PermissionGate
+from core.session_permissions import PermissionGate
 from tools.capability_registry import CapabilityRegistry
 
 @dataclass

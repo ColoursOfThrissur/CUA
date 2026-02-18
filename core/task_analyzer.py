@@ -20,22 +20,15 @@ class TaskAnalyzer:
         except ImportError:
             pass
     
-    def analyze_and_propose_task(
+    def analyze_and_propose_tasks(
         self, 
         focus: Optional[str] = None,
         failed_suggestions: List[str] = None,
         iteration_history: List[Dict] = None
-    ) -> Optional[Dict]:
+    ) -> List[Dict]:
         """
-        Analyze system and propose next task
-        Returns: {
-            'issue': str,
-            'suggestion': str,
-            'priority': str,
-            'files_affected': [str],
-            'target_tool': Optional[str],
-            'user_override': bool
-        }
+        Analyze system and propose multiple tasks (batch mode)
+        Returns: List of task dicts
         """
         context = self.analyzer.get_codebase_context()
         test_files = context['test_coverage']['test_files']
@@ -55,8 +48,8 @@ class TaskAnalyzer:
         repeated_count = self._count_repeated_tasks(iteration_history or [])
         blocked_tasks = self._extract_blocked_tasks(iteration_history or [])
         
-        # Build prompt
-        prompt_text = self._build_analysis_prompt(
+        # Build prompt for batch mode
+        prompt_text = self._build_batch_analysis_prompt(
             tools_info, 
             test_files, 
             focus,
@@ -77,47 +70,54 @@ class TaskAnalyzer:
             self.llm_logger.log_interaction(
                 prompt=prompt,
                 response=response or "<empty>",
-                metadata={"phase": "analysis", "temperature": temperature, "focus": focus, "repeated_count": repeated_count}
+                metadata={"phase": "analysis_batch", "temperature": temperature, "focus": focus, "repeated_count": repeated_count}
             )
             
             if not response:
-                return None
+                return []
             
-            # Extract and validate JSON
-            analysis = self.llm_client._extract_json(response)
-            if not analysis or 'target_file' not in analysis:
-                return None
+            # Extract JSON array
+            tasks_raw = self.llm_client._extract_json(response)
+            if not tasks_raw:
+                return []
             
-            # ENFORCE blocked files - reject if LLM suggests blocked file
-            target_file = analysis.get('target_file', '')
-            if blocked_tasks:
-                # Check exact file match
-                for blocked in blocked_tasks:
-                    # Extract file path from blocked string
-                    if '(' in blocked:
-                        blocked_file = blocked.split('(')[0].strip()
-                    else:
-                        blocked_file = blocked.strip()
-                    
-                    if target_file == blocked_file:
-                        # LLM ignored block - force different file
-                        available_files = [t['file'] for t in tools_info if t['file'] != target_file]
-                        if available_files:
-                            analysis['target_file'] = available_files[0]
-                            analysis['description'] = f"Review code quality in {available_files[0]}"
-                            self.llm_logger.log_interaction(
-                                prompt="blocked_file_override",
-                                response=f"Redirected from {target_file} to {available_files[0]}",
-                                metadata={"phase": "analysis", "blocked": blocked_file}
-                            )
-                        break
+            # Handle both array and single object
+            if isinstance(tasks_raw, list):
+                tasks = tasks_raw
+            else:
+                tasks = [tasks_raw]
             
-            # Interpret task and build result
-            return self._interpret_task(analysis, focus)
+            # Validate and interpret each task
+            result_tasks = []
+            for task in tasks:
+                if 'target_file' not in task:
+                    continue
+                
+                # Check blocked files
+                target_file = task.get('target_file', '')
+                if self._is_blocked(target_file, blocked_tasks):
+                    continue
+                
+                interpreted = self._interpret_task(task, focus)
+                if interpreted:
+                    result_tasks.append(interpreted)
+            
+            return result_tasks
             
         except Exception as e:
-            self.llm_logger.log_error(str(e), {"phase": "analysis", "focus": focus})
-            return None
+            self.llm_logger.log_error(str(e), {"phase": "analysis_batch", "focus": focus})
+            return []
+    
+    def _is_blocked(self, target_file: str, blocked_tasks: List[str]) -> bool:
+        """Check if file is blocked"""
+        for blocked in blocked_tasks:
+            if '(' in blocked:
+                blocked_file = blocked.split('(')[0].strip()
+            else:
+                blocked_file = blocked.strip()
+            if target_file == blocked_file:
+                return True
+        return False
     
     def _get_tools_info(self, test_files: List[str]) -> List[Dict]:
         """Extract tool information with class names and operations"""
@@ -196,7 +196,7 @@ class TaskAnalyzer:
         
         return list(set(blocked))
     
-    def _build_analysis_prompt(
+    def _build_batch_analysis_prompt(
         self,
         tools_info: List[Dict],
         test_files: List[str],
@@ -206,7 +206,7 @@ class TaskAnalyzer:
         blocked_tasks: List[str],
         static_issues: List[Dict] = None
     ) -> str:
-        """Build analysis prompt for LLM with code snippets"""
+        """Build batch analysis prompt requesting array of tasks"""
         
         # Format static issues if available
         issues_section = ""
@@ -216,45 +216,13 @@ class TaskAnalyzer:
                 issues_section += f"{i}. **{issue['file']}:{issue['line']}** [{issue['severity'].upper()}]\n"
                 issues_section += f"   - {issue['code']}: {issue['message']}\n"
         
-        if focus:
-            # User-directed mode - show code snippets
-            code_snippets = self._get_code_snippets(tools_info)
-            return f"""User request: "{focus}"
-
-## Available Tools with Code Preview:
-{code_snippets}{issues_section}
-
-## Existing Tests:
-{json.dumps(test_files, indent=2)}
-
-## Your Task:
-Interpret the user's request and determine the best approach.
-Look at the code snippets and static analysis issues to identify SPECIFIC problems:
-- Missing error handling
-- Hardcoded values that should be configurable
-- Security vulnerabilities (SQL injection, path traversal, etc.)
-- Performance issues (inefficient loops, memory leaks)
-- Missing validation
-
-## Output Format (JSON only):
-{{
-  "task_type": "create_test|modify_tool|create_tool|fix_bug",
-  "target_file": "tools/exact_name.py",
-  "test_file": "tests/unit/test_name.py",
-  "description": "SPECIFIC issue found and how to fix it",
-  "priority": "high"
-}}
-
-Respond with ONLY valid JSON:"""
-        
-        # Autonomous mode with code analysis
         blocked_section = ""
         if blocked_tasks:
-            blocked_section = f"\n\n## DO NOT SUGGEST (already done or failed 3+ times):\n{json.dumps(blocked_tasks, indent=2)}\n\nCRITICAL: If you see a task in Previous Iterations with result='success', DO NOT suggest it again!\nCRITICAL: If you see the same task repeated 3+ times, DO NOT suggest it again!"
+            blocked_section = f"\n\n## DO NOT SUGGEST (already done or failed 3+ times):\n{json.dumps(blocked_tasks, indent=2)}"
         
         code_snippets = self._get_code_snippets(tools_info)
         
-        return f"""Analyze this codebase and decide what improvement would add the most value.
+        return f"""Analyze this codebase and identify 3-5 improvements ordered by priority.
 
 ## Available Tool Classes with Code Preview:
 {code_snippets}{issues_section}
@@ -262,39 +230,41 @@ Respond with ONLY valid JSON:"""
 ## Existing Tests:
 {json.dumps(test_files, indent=2)}
 
-## Recent Failures (avoid these):
-{json.dumps(failed_suggestions[-5:], indent=2) if failed_suggestions else 'None'}
-
 ## Previous Iterations:
 {json.dumps(iteration_history[-5:], indent=2) if iteration_history else 'None - First iteration'}{blocked_section}
 
 ## Your Task:
-Analyze the CODE SNIPPETS and STATIC ANALYSIS ISSUES above to identify SPECIFIC problems:
-1. **PRIORITY**: Fix issues found by static analysis first (concrete, actionable)
+Analyze the CODE SNIPPETS and STATIC ANALYSIS ISSUES to identify 3-5 SPECIFIC improvements:
+1. **PRIORITY**: Fix issues found by static analysis first
 2. Security vulnerabilities (SQL injection, XSS, path traversal, SSRF)
 3. Missing error handling or validation
-4. Hardcoded values that should be in config
-5. Performance issues (inefficient algorithms, memory leaks)
-6. Code quality issues (duplicated code, complex logic)
+4. Code quality issues
 
-IMPORTANT RULES:
-1. Look at Previous Iterations - if a task has result='success', DO NOT suggest it again
-2. If you see the same task repeated multiple times, suggest something DIFFERENT
-3. Be SPECIFIC - mention the exact issue you found in the code
-4. Do NOT suggest async/await features (too complex)
-5. Do NOT suggest threading/multiprocessing
-6. Focus on simple, practical improvements
+IMPORTANT:
+- Return an ARRAY of 3-5 tasks ordered by priority (highest first)
+- Each task should target a DIFFERENT file
+- Be SPECIFIC about the exact issue in the code
+- Do NOT suggest tasks from blocked list
 
-## Output Format (JSON only):
-{{
-  "task_type": "fix_bug|improve_code|add_validation",
-  "target_file": "exact/path/from/lists/above.py",
-  "test_file": "tests/unit/test_name.py",
-  "description": "SPECIFIC issue: [describe exact problem in code] - Fix: [how to fix it]",
-  "priority": "low|medium|high"
-}}
+## Output Format (JSON array only):
+[
+  {{
+    "task_type": "fix_bug|improve_code|add_validation",
+    "target_file": "exact/path/from/lists/above.py",
+    "test_file": "tests/unit/test_name.py",
+    "description": "SPECIFIC issue and fix",
+    "priority": "high|medium|low"
+  }},
+  {{
+    "task_type": "fix_bug",
+    "target_file": "different/file.py",
+    "test_file": "tests/unit/test_file.py",
+    "description": "Another specific issue",
+    "priority": "high"
+  }}
+]
 
-Respond with ONLY valid JSON:"""
+Respond with ONLY a valid JSON array:"""
     
     def _get_code_snippets(self, tools_info: List[Dict]) -> str:
         """Get code snippets from tools for LLM analysis"""
@@ -334,6 +304,13 @@ Respond with ONLY valid JSON:"""
         """Interpret LLM response and determine files to modify"""
         
         target = analysis.get('target_file')
+        if not target:
+            return None
+        
+        # Normalize path separators for current OS
+        import os
+        target = target.replace('/', os.sep).replace('\\', os.sep)
+        
         task_type = analysis.get('task_type', 'create_test')
         
         # Validate target exists

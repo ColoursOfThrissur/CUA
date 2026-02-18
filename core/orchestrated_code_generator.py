@@ -102,8 +102,11 @@ class OrchestratedCodeGenerator:
                 break
         result_code = '\n'.join(lines)
         
+        from core.logging_system import get_logger
+        logger = get_logger("code_generator")
+        
         logger.info("Validating complete code...")
-        validation_result = self._validate_complete_code(result_code)
+        validation_result = self._validate_complete_code(result_code, logger)
         if not validation_result:
             logger.error("Validation failed")
             logger.debug(f"Last 500 chars:\n{result_code[-500:]}")
@@ -432,7 +435,7 @@ Output COMPLETE test file:""")
         
         return True
     
-    def _validate_complete_code(self, code: str) -> bool:
+    def _validate_complete_code(self, code: str, logger) -> bool:
         """Validate complete file and clean trailing placeholders"""
         
         # Remove trailing placeholder comments
