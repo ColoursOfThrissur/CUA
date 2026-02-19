@@ -26,7 +26,7 @@ class OrchestratedCodeGenerator:
         success, code, error, _ = self.generate_code_with_plan(user_request, target_file, target_tool, previous_errors)
         return success, code, error
     
-    def generate_code_with_plan(self, user_request: str, target_file: str, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None, user_override: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+    def generate_code_with_plan(self, user_request: str, target_file: str, target_tool: Optional[str] = None, previous_errors: Optional[List[str]] = None, user_override: Optional[str] = None, base_code: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
         """
         Generate code using intelligent strategy selection
         Returns: (success, complete_code, error_message, methods_to_modify)
@@ -55,11 +55,11 @@ class OrchestratedCodeGenerator:
         elif strategy == "insert":
             method_name = self._extract_method_name(task)
             if method_name:
-                original_code = self.analyzer.get_file_content(target_file)
+                original_code = base_code if base_code is not None else self.analyzer.get_file_content(target_file)
                 return self._insert_new_method(task, target_file, method_name, original_code, previous_errors or [])
         
         # Default: method rewrite
-        return self._generate_method_rewrite(task, target_file, previous_errors or [])
+        return self._generate_method_rewrite(task, target_file, previous_errors or [], base_code=base_code)
 
     def _select_strategy(self, task: str, target_file: str) -> str:
         """
@@ -68,110 +68,46 @@ class OrchestratedCodeGenerator:
         """
         task_lower = task.lower()
         
-        # Incremental: Adding features to existing methods without full rewrite
-        incremental_keywords = [
+        # Refactoring: Always use rewrite (needs to modify existing + add new)
+        refactoring_keywords = ['refactor', 'extract helper', 'extract method', 'extract private', 'split method']
+        if any(kw in task_lower for kw in refactoring_keywords):
+            return "rewrite"
+        
+        # Modifying existing method: use rewrite
+        modify_keywords = [
             'add logging', 'add timeout', 'add validation', 'add error handling',
             'add retry', 'add caching', 'add monitoring', 'add metrics',
             'add parameter', 'add argument', 'add check', 'add support for',
-            'comprehensive logging', 'logging for debugging', 'add async'
+            'comprehensive logging', 'logging for debugging', 'add async',
+            'modify', 'update', 'change', 'improve', 'fix'
         ]
         
-        for keyword in incremental_keywords:
+        for keyword in modify_keywords:
             if keyword in task_lower:
-                return "rewrite"  # Changed: use rewrite for reliability
+                return "rewrite"
         
-        # Insert: Creating new methods
-        if 'add new method' in task_lower or 'create method' in task_lower:
-            return "insert"
+        # Insert: ONLY for explicitly creating new methods
+        if 'add new method' in task_lower or 'create new method' in task_lower:
+            method_name = self._extract_method_name(task)
+            if method_name:
+                original_code = self.analyzer.get_file_content(target_file)
+                if original_code:
+                    methods = self.extractor.extract_methods(original_code)
+                    if method_name not in methods:
+                        return "insert"
         
-        # Check if method doesn't exist (insert)
-        method_name = self._extract_method_name(task)
-        if method_name:
-            original_code = self.analyzer.get_file_content(target_file)
-            if original_code:
-                methods = self.extractor.extract_methods(original_code)
-                if method_name not in methods:
-                    return "insert"
-        
-        # Default: rewrite for fixes, refactors, major changes
+        # Default: rewrite (safest)
         return "rewrite"
     
     def _generate_incremental_modification(self, task: str, target_file: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
         """
-        Generate incremental modifications using block-based approach with fallbacks
-        Strategy: Block → Line → Full method rewrite
+        DISABLED: Block-based approach causes too many syntax errors.
+        Always fallback to full method rewrite for reliability.
         """
         from core.logging_system import get_logger
         logger = get_logger("code_generator")
         
-        logger.info("Using incremental modification strategy")
-        
-        original_code = self.analyzer.get_file_content(target_file)
-        methods = self.extractor.extract_methods(original_code)
-        
-        if not methods:
-            logger.error(f"No methods found in {target_file}")
-            return False, None, "No methods found in file", None
-        
-        # Identify target method
-        method_name = self._extract_method_name(task)
-        if not method_name or method_name not in methods:
-            # Try to find method mentioned in task
-            for m in methods.keys():
-                if m in task or m.lstrip('_') in task:
-                    method_name = m
-                    break
-            # If still not found, use smart selection based on task type
-            if not method_name or method_name not in methods:
-                # For caching/performance features, target execution method
-                if any(keyword in task.lower() for keyword in ['caching', 'cache', 'performance', 'timeout', 'retry']):
-                    for preferred in ['_execute', 'execute', '_handle', 'run', '_get', '_post']:
-                        if preferred in methods:
-                            method_name = preferred
-                            break
-                # For other features, prefer execution methods over __init__
-                if not method_name:
-                    for preferred in ['_execute', 'execute', '_handle', 'run', '_get', '_post']:
-                        if preferred in methods:
-                            method_name = preferred
-                            break
-                # Last resort: first non-init method
-                if not method_name:
-                    non_init = [m for m in methods.keys() if m != '__init__']
-                    method_name = non_init[0] if non_init else list(methods.keys())[0]
-        
-        logger.info(f"Target method: {method_name}")
-        
-        # STRATEGY 1: Block-based modification (preferred)
-        logger.info("Trying block-based modification")
-        success, code, error = self.block_generator.generate_block_modification(
-            task, target_file, method_name, original_code, previous_errors
-        )
-        
-        if success and code:
-            # Validate block result
-            if self._validate_syntax(code):
-                logger.info("Block-based modification succeeded")
-                return True, code, None, [method_name]
-            else:
-                logger.warning(f"Block produced invalid code: {self._get_syntax_error(code)}")
-        else:
-            logger.warning(f"Block-based failed: {error}")
-        
-        # STRATEGY 2: Line-based modification (fallback)
-        logger.info("Trying line-based modification")
-        success, code, error = self._generate_line_modification(
-            task, target_file, method_name, original_code, previous_errors
-        )
-        
-        if success:
-            logger.info("Line-based modification succeeded")
-            return True, code, None, [method_name]
-        
-        logger.warning(f"Line-based failed: {error}")
-        
-        # STRATEGY 3: Full method rewrite (last resort)
-        logger.info("Falling back to full method rewrite")
+        logger.info("Incremental modification disabled - using full rewrite")
         return self._generate_method_rewrite(task, target_file, previous_errors)
     
     def _generate_line_modification(self, task: str, target_file: str, method_name: str,
@@ -262,14 +198,14 @@ Modifications:""", expect_json=False)
         
         return '\n'.join(lines)
     
-    def _generate_method_rewrite(self, task: str, target_file: str, previous_errors: List[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
+    def _generate_method_rewrite(self, task: str, target_file: str, previous_errors: List[str], base_code: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str], Optional[List[str]]]:
         """Generate method rewrite or insert new method"""
         from core.logging_system import get_logger
         logger = get_logger("code_generator")
         
         logger.info("Using method rewrite strategy")
         
-        original_code = self.analyzer.get_file_content(target_file)
+        original_code = base_code if base_code is not None else self.analyzer.get_file_content(target_file)
         methods = self.extractor.extract_methods(original_code)
         
         if not methods:
@@ -279,24 +215,65 @@ Modifications:""", expect_json=False)
         # Identify target method
         method_name = self._extract_method_name(task)
         
+        # CRITICAL: Fail explicitly if method name cannot be extracted
+        if not method_name:
+            line_hint = self._extract_target_line(task)
+            if line_hint is not None:
+                for name, info in methods.items():
+                    start = int(info.get('start_line', -1))
+                    end = int(info.get('end_line', -1))
+                    if start <= line_hint <= end:
+                        method_name = name
+                        logger.info(f"Inferred method '{method_name}' from line hint {line_hint}")
+                        break
+                if not method_name and methods:
+                    # Fallback: pick the nearest method start for line-hint-only tasks.
+                    nearest_name = None
+                    nearest_distance = None
+                    for name, info in methods.items():
+                        start = int(info.get('start_line', -1))
+                        if start < 0:
+                            continue
+                        distance = abs(start - line_hint)
+                        if nearest_distance is None or distance < nearest_distance:
+                            nearest_distance = distance
+                            nearest_name = name
+                    if nearest_name:
+                        method_name = nearest_name
+                        logger.info(f"Inferred nearest method '{method_name}' from line hint {line_hint}")
+            if not method_name:
+                logger.error(f"Could not extract method name from task: {task[:100]}")
+                logger.error(f"Available methods: {list(methods.keys())}")
+                return False, None, "Could not infer target method from task description", None
+        
+        logger.info(f"Extracted method name: {method_name}")
+        logger.info(f"Available methods: {list(methods.keys())}")
+
+        explicit_targets = self._extract_explicit_method_targets(task, list(methods.keys()))
+        if explicit_targets and method_name not in explicit_targets:
+            logger.error(f"Method extraction mismatch. extracted={method_name}, explicit_targets={explicit_targets}")
+            return False, None, f"Method extraction mismatch: expected one of {explicit_targets}, got {method_name}", None
+        
         # Check if method exists
-        if method_name and method_name not in methods:
+        if method_name not in methods:
             # NEW METHOD - use insert strategy
             logger.info(f"Method {method_name} doesn't exist - using insert strategy")
             return self._insert_new_method(task, target_file, method_name, original_code, previous_errors)
         
         # Method already exists - check if it needs modification
-        if method_name and method_name in methods:
-            # Verify if task is actually needed
-            method_code = methods[method_name]['code']
-            if self._is_already_implemented(task, method_code):
-                logger.info(f"Method {method_name} already implements requested feature - skipping")
-                return False, None, f"Feature already implemented in {method_name}", [method_name]
+        if method_name in methods:
+            # Skip "already implemented" check for refactoring tasks
+            task_lower = task.lower()
+            is_refactoring = any(kw in task_lower for kw in ['refactor', 'extract helper', 'extract method', 'reduce duplication'])
+            
+            if not is_refactoring:
+                # Verify if task is actually needed (only for non-refactoring)
+                method_code = methods[method_name]['code']
+                if self._is_already_implemented(task, method_code):
+                    logger.info(f"Method {method_name} already implements requested feature - skipping")
+                    return False, None, f"Feature already implemented in {method_name}", [method_name]
         
         # EXISTING METHOD - use rewrite strategy
-        if not method_name or method_name not in methods:
-            method_name = list(methods.keys())[0]
-        
         method_info = methods[method_name]
         current_method = method_info['code']
         
@@ -305,10 +282,45 @@ Modifications:""", expect_json=False)
         if previous_errors:
             error_context = "\n\nPREVIOUS ERRORS:\n" + "\n".join(f"- {e}" for e in previous_errors[-2:])
         
-        # Check if caching task - needs special prompt
-        is_caching_task = any(kw in task.lower() for kw in ['add caching', 'add cache', 'caching mechanism'])
+        # Check if refactoring task - needs special prompt
+        is_refactoring_task = any(kw in task.lower() for kw in ['refactor', 'extract helper', 'extract method', 'extract private'])
+        is_caching_task = 'cach' in task.lower() or 'ttl' in task.lower()
         
-        if is_caching_task:
+        if is_refactoring_task:
+            prompt = self.llm_client._format_prompt(f"""Refactor this method by extracting helper.
+
+Task: {task}
+
+Current method:
+```python
+{current_method}
+```
+{error_context}
+
+Rules:
+1. Output BOTH the MODIFIED {method_name} method AND the NEW helper method
+2. The modified {method_name} MUST call the helper method
+3. Both methods with ZERO indentation
+4. No class definition, no imports
+5. Complete implementation, no placeholders
+6. Helper method should be AFTER the main method
+
+Example format:
+```python
+def main_method(self, data):
+    validated = self._validate_data(data)
+    return self.process(validated)
+
+def _validate_data(self, data):
+    if not data:
+        raise ValueError("Empty data")
+    return data.strip()
+```
+
+IMPORTANT: You MUST return BOTH methods. Do NOT return only one method.
+
+Refactored methods:""", expect_json=False)
+        elif is_caching_task:
             prompt = self.llm_client._format_prompt(f"""Add caching to this method.
 
 Task: {task}
@@ -379,10 +391,9 @@ Modified method:""", expect_json=False)
         for attempt in range(2):
             # Increase temperature on retry to get different output
             temp = 0.2 if attempt == 0 else 0.4
-            # Increase tokens for multi-method tasks
-            method_count = len(task.split('method')) - 1
-            if method_count > 1 or 'add' in task.lower() and 'method' in task.lower():
-                max_tokens = 3072  # Large buffer for multiple methods
+            # Increase tokens significantly for refactoring (needs 2 full methods)
+            if is_refactoring_task:
+                max_tokens = 4096  # Large buffer for refactored method + helper
             else:
                 max_tokens = 1536
             
@@ -401,10 +412,8 @@ Modified method:""", expect_json=False)
             # CRITICAL: Check if LLM returned nested methods (common Qwen error)
             import re
             found_methods = re.findall(r'^\s*def (\w+)\(', code, re.MULTILINE)
-            if len(found_methods) > 1:
-                logger.warning(f"Attempt {attempt+1}: LLM returned {len(found_methods)} methods: {found_methods}")
-                prompt += f"\n\nERROR: You returned {len(found_methods)} methods. Output ONLY 'def {method_name}', not other methods."
-                continue
+            
+            # Skip duplicate check - we'll handle it later
             
             # CRITICAL: Check if LLM added class definition
             if 'class ' in code and f'def {method_name}' in code:
@@ -442,11 +451,55 @@ Modified method:""", expect_json=False)
             found_methods = re.findall(r'^\s*def (\w+)\(', code, re.MULTILINE)
             
             if len(found_methods) > 1:
-                # Split and handle multiple methods
-                modified_methods, new_methods = self._split_methods(code, method_name)
-                result_code = self.integrator.integrate_methods(original_code, modified_methods)
-                if new_methods:
-                    result_code = self.integrator.add_new_methods(result_code, new_methods)
+                # For refactoring: this is expected, split and integrate
+                if is_refactoring_task:
+                    logger.info(f"Refactoring returned {len(found_methods)} methods: {found_methods} - this is correct")
+                    modified_methods, new_methods = self._split_methods(code, method_name)
+
+                    existing_method_names = set(methods.keys())
+                    promoted_replacements = {
+                        name: method_code
+                        for name, method_code in new_methods.items()
+                        if name in existing_method_names
+                    }
+                    truly_new_methods = {
+                        name: method_code
+                        for name, method_code in new_methods.items()
+                        if name not in existing_method_names
+                    }
+                    if promoted_replacements:
+                        modified_methods = {**modified_methods, **promoted_replacements}
+
+                    result_code = self.integrator.integrate_methods(original_code, modified_methods)
+                    if truly_new_methods:
+                        result_code = self.integrator.add_new_methods(result_code, truly_new_methods)
+
+                    expected_methods = list(modified_methods.keys()) + list(truly_new_methods.keys())
+                    if not self.integrator.verify_expected_methods(result_code, expected_methods):
+                        logger.warning(f"Attempt {attempt+1}: Integrated code missing expected methods: {expected_methods}")
+                        prompt += "\n\nERROR: Integrated result missing expected methods. Keep method names stable and complete."
+                        continue
+                    
+                    # Validate result
+                    if not self._validate_syntax(result_code):
+                        error_msg = self._get_syntax_error(result_code)
+                        logger.warning(f"Attempt {attempt+1}: Syntax error after refactoring: {error_msg}")
+                        prompt += f"\n\nERROR: {error_msg}\n\nFix the syntax."
+                        continue
+
+                    compat_ok, compat_msg = self._validate_internal_call_compatibility(result_code)
+                    if not compat_ok:
+                        logger.warning(f"Attempt {attempt+1}: Call compatibility error after refactoring: {compat_msg}")
+                        prompt += f"\n\nERROR: {compat_msg}\n\nKeep helper signatures backward-compatible with all call sites."
+                        continue
+                    
+                    logger.info(f"Refactoring completed successfully with {len(found_methods)} methods")
+                    return True, result_code, None, [method_name]
+                else:
+                    # Not refactoring: reject multiple methods
+                    logger.warning(f"Attempt {attempt+1}: LLM returned {len(found_methods)} methods: {found_methods}")
+                    prompt += f"\n\nERROR: You returned {len(found_methods)} methods. Output ONLY 'def {method_name}', not other methods."
+                    continue
             else:
                 # Single method - direct replacement
                 result_code = self.integrator.integrate_methods(original_code, {method_name: code})
@@ -459,6 +512,12 @@ Modified method:""", expect_json=False)
                 lines = result_code.split('\n')
                 numbered = '\n'.join([f"{i+1:3d}: {line}" for i, line in enumerate(lines[:50])])
                 prompt += f"\n\nERROR: {error_msg}\n\nYour code (first 50 lines):\n{numbered}\n\nFix the indentation/syntax."
+                continue
+
+            compat_ok, compat_msg = self._validate_internal_call_compatibility(result_code)
+            if not compat_ok:
+                logger.warning(f"Attempt {attempt+1}: Call compatibility error: {compat_msg}")
+                prompt += f"\n\nERROR: {compat_msg}\n\nKeep helper signatures backward-compatible with all call sites."
                 continue
             
             logger.info(f"Method {method_name} rewritten successfully")
@@ -712,6 +771,37 @@ Complete test file:""", expect_json=False)
                 return response[start:end].strip()
         
         return None
+
+    def _extract_explicit_method_targets(self, task: str, available_methods: Optional[List[str]] = None) -> List[str]:
+        """Extract explicitly named target methods from task text."""
+        import re
+        targets = []
+        stopwords = {
+            'to', 'for', 'with', 'from', 'into', 'by', 'and', 'or',
+            'the', 'a', 'an', 'in', 'on', 'of', 'at', 'as'
+        }
+        patterns = [
+            r"\bmodify\s+([_a-zA-Z][\w_]*)\(\)",
+            r"\bmodify\s+([_a-zA-Z][\w_]*)\s+method",
+            r"\brefactor\s+(?:the\s+)?([_a-zA-Z][\w_]*)\s+method\b",
+            r"\bupdate\s+(?:the\s+)?([_a-zA-Z][\w_]*)\s+method\b",
+            r"\bchange\s+(?:the\s+)?([_a-zA-Z][\w_]*)\s+method\b",
+            r"\b([_a-zA-Z][\w_]*)\(\)",
+        ]
+        available = set(available_methods or [])
+        for pattern in patterns:
+            for match in re.finditer(pattern, task, re.IGNORECASE):
+                name = match.group(1)
+                if not name:
+                    continue
+                lower_name = name.lower()
+                if lower_name in stopwords:
+                    continue
+                if available and name not in available:
+                    continue
+                if name not in targets:
+                    targets.append(name)
+        return targets
     
     def _validate_method(self, code: str, method_name: str) -> bool:
         """Validate method"""
@@ -729,6 +819,113 @@ Complete test file:""", expect_json=False)
             return True
         except:
             return False
+
+    def _validate_internal_call_compatibility(self, code: str) -> Tuple[bool, str]:
+        """Detect helper signature/call mismatches before sandbox tests."""
+        try:
+            import ast
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return False, f"Syntax error: line {e.lineno}: {e.msg}"
+        except Exception as e:
+            return False, str(e)
+
+        class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)), None)
+        if not class_node:
+            return True, "ok"
+
+        method_defs = {}
+        for node in class_node.body:
+            if isinstance(node, ast.FunctionDef):
+                args = node.args.args[1:] if node.args.args else []
+                total_positional = len(args)
+                defaults = node.args.defaults or []
+                required_positional = max(0, total_positional - len(defaults))
+                method_defs[node.name] = {
+                    "required_positional": required_positional,
+                    "total_positional": total_positional,
+                    "param_names": [a.arg for a in args],
+                }
+
+        for func in [n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef)]:
+            for call in [n for n in ast.walk(func) if isinstance(n, ast.Call)]:
+                if not isinstance(call.func, ast.Attribute):
+                    continue
+                if not isinstance(call.func.value, ast.Name) or call.func.value.id != "self":
+                    continue
+                target = call.func.attr
+                if target not in method_defs:
+                    continue
+                spec = method_defs[target]
+
+                positional_given = len(call.args)
+                kw_names = {kw.arg for kw in call.keywords if kw.arg}
+                for name in spec["param_names"][:spec["required_positional"]]:
+                    if name in kw_names:
+                        positional_given += 1
+
+                if positional_given < spec["required_positional"]:
+                    return (
+                        False,
+                        f"Method '{target}' requires {spec['required_positional']} args but call in '{func.name}' provides fewer"
+                    )
+
+                # Guard against refactor regressions where FAILURE path forgets error_message
+                # due to positional argument misuse in result helper calls.
+                target_lower = target.lower()
+                if not target.startswith('_') or 'result' not in target_lower:
+                    continue
+
+                status_failure = False
+
+                def _is_failure_node(node) -> bool:
+                    if not isinstance(node, ast.Attribute):
+                        return False
+                    if node.attr.upper() != "FAILURE":
+                        return False
+                    if isinstance(node.value, ast.Name) and node.value.id.lower() in {"resultstatus"}:
+                        return True
+                    return isinstance(node.value, ast.Attribute) and node.value.attr.lower() == "resultstatus"
+
+                if len(call.args) >= 2 and _is_failure_node(call.args[1]):
+                    status_failure = True
+                for kw in call.keywords:
+                    if kw.arg == "status" and _is_failure_node(kw.value):
+                        status_failure = True
+                        break
+
+                if not status_failure:
+                    continue
+
+                has_error_kw = any(kw.arg == "error_message" for kw in call.keywords if kw.arg)
+                if has_error_kw:
+                    continue
+
+                error_index = -1
+                if "error_message" in spec["param_names"]:
+                    error_index = spec["param_names"].index("error_message")
+
+                # If helper defines error_message but this FAILURE call doesn't pass it,
+                # it's likely to regress expected failure behavior.
+                if error_index >= 0:
+                    if error_index >= len(call.args):
+                        return (
+                            False,
+                            f"FAILURE call to '{target}' in '{func.name}' is missing error_message"
+                        )
+                    error_arg = call.args[error_index]
+                    if isinstance(error_arg, ast.Constant) and isinstance(error_arg.value, str):
+                        if not error_arg.value.strip():
+                            return (
+                                False,
+                                f"FAILURE call to '{target}' in '{func.name}' has empty error_message"
+                            )
+                    else:
+                        return (
+                            False,
+                            f"FAILURE call to '{target}' in '{func.name}' should pass explicit error_message"
+                        )
+        return True, "ok"
     
     def _infer_task_type(self, task: str) -> str:
         """Infer task type from description"""
@@ -743,11 +940,47 @@ Complete test file:""", expect_json=False)
     def _extract_method_name(self, task: str) -> Optional[str]:
         """Extract method name from task"""
         import re
-        patterns = [r'method (\w+)', r'function (\w+)', r'def (\w+)', r'(\w+)\(\)']
+        
+        # Prefer explicit method in Task section to avoid matching
+        # helper context snippets later in the prompt.
+        task_section = task
+        task_match = re.search(r"Task:\s*(.+?)(?:\n\nCurrent code:|\n\ncurrent code:|\Z)", task, re.DOTALL | re.IGNORECASE)
+        if task_match:
+            task_section = task_match.group(1)
+        
+        # Blacklist common English words that aren't method names
+        blacklist = {'to', 'by', 'named', 'definition', 'method', 'function', 'the', 'a', 'an', 'in', 'on', 'at', 'for', 'with', 'from'}
+        
+        patterns = [
+            r"\bmodify\s+([_a-zA-Z][\w_]*)\(\)",  # Modify _post()
+            r"\bmodify\s+([_a-zA-Z][\w_]*)\s+method",  # Modify _post method
+            r"named [`'\"]([\w_]+)[`'\"]",  # named `_method_name`
+            r"method [`'\"]([\w_]+)[`'\"]",  # method '_method_name'
+            r"function [`'\"]([\w_]+)[`'\"]",  # function '_method_name'
+            r"\bthe ([_a-zA-Z][\w_]*) method",  # the _extract method
+            r"\brefactor (?:the )?([_a-zA-Z][\w_]*) method",  # refactor the _extract method
+            r"\bdef ([_a-zA-Z][\w_]*)",  # def _method_name
+            r"\bcreate ([_a-zA-Z][\w_]*) method",  # create _method_name method
+            r"\badd ([_a-zA-Z][\w_]*) method",  # add _method_name method
+            r"([_a-zA-Z][\w_]*)\(\)",  # _method_name()
+        ]
+        
         for pattern in patterns:
-            match = re.search(pattern, task)
+            match = re.search(pattern, task_section, re.IGNORECASE)
             if match:
-                return match.group(1)
+                name = match.group(1)
+                # Validate: must start with letter/underscore, not in blacklist
+                if name and name.lower() not in blacklist and re.match(r'^[_a-zA-Z][\w_]*$', name):
+                    return name
+        
+        # Fallback to full prompt scan if task section had no match
+        for pattern in patterns:
+            match = re.search(pattern, task, re.IGNORECASE)
+            if match:
+                name = match.group(1)
+                if name and name.lower() not in blacklist and re.match(r'^[_a-zA-Z][\w_]*$', name):
+                    return name
+        
         return None
     
     def _get_syntax_error(self, code: str) -> str:
@@ -760,6 +993,17 @@ Complete test file:""", expect_json=False)
             return f"Line {e.lineno}: {e.msg}"
         except Exception as e:
             return str(e)
+
+    def _extract_target_line(self, task: str) -> Optional[int]:
+        """Extract target line number from task strings like 'line 35'."""
+        import re
+        match = re.search(r"\bline\s+(\d+)\b", task, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
     
     def _is_already_implemented(self, task: str, method_code: str) -> bool:
         """Check if task is already implemented in method"""

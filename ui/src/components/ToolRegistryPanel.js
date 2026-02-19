@@ -103,7 +103,12 @@ function ToolRegistryPanel({ apiUrl }) {
           )}
           {syncResult.failed && syncResult.failed.length > 0 && (
             <div style={{ marginTop: '10px', fontSize: '13px', color: '#fca5a5' }}>
-              Failed: {syncResult.failed.map(f => f.tool || f).join(', ')}
+              Failed: {syncResult.failed.map((f) => {
+                if (typeof f === 'string') return f;
+                if (f.file && f.reason) return `${f.file}: ${f.reason}`;
+                if (f.tool && f.error) return `${f.tool}: ${f.error}`;
+                return JSON.stringify(f);
+              }).join(' | ')}
             </div>
           )}
         </div>

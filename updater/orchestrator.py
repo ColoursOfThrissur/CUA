@@ -29,11 +29,29 @@ class UpdateOrchestrator:
         self.update_gate = UpdateGate()
         self.audit_logger = AuditLogger()
         self.atomic_applier = AtomicApplier(repo_path)
+        
+        # Idempotency checker
+        from core.idempotency_checker import IdempotencyChecker
+        self.idempotency_checker = IdempotencyChecker()
     
-    def propose_update(self, patch_content: str, changed_files: list, diff_lines: int) -> UpdateResult:
-        """Process update proposal through full pipeline"""
+    def propose_update(self, patch_content: str, changed_files: list, diff_lines: int, description: str = "") -> UpdateResult:
+        """Process update proposal through full pipeline with idempotency check"""
         
         update_id = str(uuid4())[:8]
+        
+        # Step 0: Check idempotency
+        if changed_files and description:
+            is_dup, reason = self.idempotency_checker.is_duplicate(changed_files[0], description)
+            if is_dup:
+                return UpdateResult(
+                    success=False,
+                    update_id=update_id,
+                    risk_score=None,
+                    approval_status="duplicate",
+                    test_passed=False,
+                    applied=False,
+                    error=f"Duplicate change: {reason}"
+                )
         
         # Step 1: Score risk
         risk_score = self.risk_scorer.score_update(changed_files, diff_lines)
@@ -114,6 +132,10 @@ class UpdateOrchestrator:
         
         # Step 4: Apply atomically
         apply_success, apply_error = self.atomic_applier.apply_update(patch_content, update_id)
+        
+        # Record change if successful
+        if apply_success and changed_files and description:
+            self.idempotency_checker.record_change(changed_files[0], description, update_id)
         
         # Step 5: Audit log
         audit_id = self.audit_logger.log_update(

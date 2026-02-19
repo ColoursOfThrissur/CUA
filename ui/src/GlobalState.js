@@ -43,6 +43,7 @@ export const GlobalStateProvider = ({ children }) => {
   });
 
   const [ws, setWs] = useState(null);
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
   // Persist to localStorage on change
   useEffect(() => {
@@ -132,7 +133,7 @@ export const GlobalStateProvider = ({ children }) => {
                 break;
 
               case 'pending_tool_added':
-                fetch('http://localhost:8000/pending-tools/list')
+                fetch(`${API_URL}/pending-tools/list`)
                   .then(r => r.json())
                   .then(data => updateState({ pendingTools: data.pending_tools }))
                   .catch(console.error);

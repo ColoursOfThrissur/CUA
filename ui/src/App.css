@@ -92,6 +92,24 @@
   overflow: hidden;
 }
 
+.tools-tab-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.tools-tab-creator {
+  flex: 0 0 auto;
+  overflow: auto;
+}
+
+.tools-tab-panels {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 @media (max-width: 1024px) {
   .main-content {
     flex-direction: column;

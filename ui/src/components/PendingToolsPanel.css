@@ -1,7 +1,11 @@
 .pending-tools-panel {
   padding: 20px;
-  max-width: 1200px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin: 0 auto;
+  max-width: 1200px;
 }
 
 .panel-header {
@@ -47,6 +51,10 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .tool-card {
@@ -167,6 +175,10 @@ code.detail-value {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+  position: sticky;
+  bottom: 0;
+  padding-top: 10px;
+  background: linear-gradient(180deg, rgba(18, 23, 43, 0) 0%, rgba(18, 23, 43, 0.92) 35%);
 }
 
 .tool-actions button {
@@ -217,4 +229,15 @@ code.detail-value {
   background: rgba(108, 117, 125, 0.3);
   color: var(--text-muted);
   cursor: not-allowed;
+}
+
+@media (max-width: 1024px) {
+  .tool-actions {
+    flex-wrap: wrap;
+    justify-content: stretch;
+  }
+
+  .tool-actions button {
+    flex: 1 1 100%;
+  }
 }

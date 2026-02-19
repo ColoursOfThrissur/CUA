@@ -1,5 +1,5 @@
-import React from 'react';
-import { Play, Pause, Square, Repeat } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Play, Pause, Square, Repeat, Zap, Wrench } from 'lucide-react';
 import TaskManagerPanel from './TaskManagerPanel';
 import SelfImprovementLog from './SelfImprovementLog';
 import CollapsibleSection from './CollapsibleSection';
@@ -22,6 +22,23 @@ function AgentControlPanel({
   onClearLogs,
   onSaveLogs
 }) {
+  const [evolutionMode, setEvolutionMode] = useState(false);
+
+  useEffect(() => {
+    if (loopStatus.evolution_mode !== undefined) {
+      setEvolutionMode(loopStatus.evolution_mode);
+    }
+  }, [loopStatus.evolution_mode]);
+
+  const toggleEvolution = async () => {
+    const endpoint = evolutionMode ? '/improvement/evolution/disable' : '/improvement/evolution/enable';
+    try {
+      await fetch(`http://localhost:8000${endpoint}`, { method: 'POST' });
+      setEvolutionMode(!evolutionMode);
+    } catch (err) {
+      console.error('Failed to toggle evolution mode:', err);
+    }
+  };
   return (
     <div className="agent-control-panel">
       <div className="control-section">
@@ -52,11 +69,21 @@ function AgentControlPanel({
           )}
 
           <div className="control-actions">
+            {!loopStatus.running && (
+              <button 
+                className="control-btn" 
+                onClick={toggleEvolution}
+                style={{background: evolutionMode ? '#10b981' : '#6b7280', marginBottom: '8px'}}
+              >
+                {evolutionMode ? <Zap size={16} /> : <Wrench size={16} />}
+                {evolutionMode ? 'Evolution Mode' : 'Deterministic Mode'}
+              </button>
+            )}
             {!loopStatus.running ? (
               <>
                 <button className="control-btn primary" onClick={onStartLoop}>
                   <Play size={16} />
-                  Start (5 iterations)
+                  Start (1 iteration)
                 </button>
                 <button className="control-btn primary" onClick={onStartContinuous} style={{background: '#8b5cf6'}}>
                   <Repeat size={16} />

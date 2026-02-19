@@ -98,6 +98,43 @@ class SandboxRunner:
                 
                 # Run tests in sandbox
                 logger.info("Running tests in sandbox...")
+                
+                # PHASE 2B: Coverage delta check
+                coverage_before = None
+                coverage_after = None
+                
+                if patch_content:  # Only check coverage delta if applying a patch
+                    logger.info("Running baseline coverage...")
+                    coverage_before = self._run_coverage(sandbox_path, timeout, changed_file)
+                    
+                    # Apply patch after baseline coverage
+                    if patch_content.startswith("FILE_REPLACE:"):
+                        logger.info("Applying simple file replacement...")
+                        lines = patch_content.split('\n', 1)
+                        if len(lines) == 2:
+                            file_path = lines[0].replace("FILE_REPLACE:", "").strip()
+                            new_content = lines[1]
+                            target_file = sandbox_path / file_path
+                            target_file.parent.mkdir(parents=True, exist_ok=True)
+                            target_file.write_text(new_content, encoding='utf-8')
+                            logger.info(f"Replaced {file_path} successfully")
+                    
+                    logger.info("Running post-patch coverage...")
+                    coverage_after = self._run_coverage(sandbox_path, timeout, changed_file)
+                    
+                    # Check coverage delta
+                    if coverage_before and coverage_after:
+                        delta = coverage_after - coverage_before
+                        logger.info(f"Coverage delta: {delta:+.1f}% (before: {coverage_before:.1f}%, after: {coverage_after:.1f}%)")
+                        
+                        if delta < -2.0:  # More than 2% drop
+                            logger.error(f"Coverage dropped by {abs(delta):.1f}% - rejecting patch")
+                            return SandboxResult(
+                                success=False,
+                                test_output=f"Coverage dropped from {coverage_before:.1f}% to {coverage_after:.1f}%",
+                                error=f"Coverage delta: {delta:+.1f}% (threshold: -2.0%)"
+                            )
+                
                 test_result = self._run_tests(sandbox_path, timeout, changed_file)
                 logger.info(f"Test result: success={test_result.success}")
                 
@@ -167,7 +204,7 @@ class SandboxRunner:
             # Skip known broken tests - run only critical security and working tool tests
             skip_tests = [
                 "test_analyze_llm_logs.py",
-                "test_capability_registry.py", 
+                "test_capability_registry.py",
                 "test_filesystem_tool_paths.py",
                 "test_http_tool.py",
                 "test_llm_retry.py::TestLLMRetryLoop::test_invalid_json_retries",
@@ -300,3 +337,60 @@ class SandboxRunner:
             errors.append("\nAssertion failures - logic error in implementation")
         
         return "\n".join(errors) if errors else "Test failed - see full output below"
+    
+    def _run_coverage(self, sandbox_path: Path, timeout: int, changed_file: str = None) -> Optional[float]:
+        """Run coverage and return percentage"""
+        from core.logging_system import get_logger
+        logger = get_logger("sandbox_runner")
+        
+        try:
+            # Check if pytest-cov is available
+            check = subprocess.run(
+                ["python", "-m", "pytest", "--cov", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if check.returncode != 0:
+                logger.warning("pytest-cov not installed, skipping coverage check")
+                return None
+            
+            # Run coverage with skip list
+            test_path = "tests/unit/"
+            skip_tests = [
+                "test_analyze_llm_logs.py",
+                "test_capability_registry.py",
+                "test_filesystem_tool_paths.py",
+                "test_http_tool.py",
+                "test_shell_tool_async_execution.py",
+                "test_shell_tool_extended.py"
+            ]
+            ignore_args = [f"--ignore={test}" for test in skip_tests]
+            
+            if changed_file:
+                file_name = Path(changed_file).stem
+                test_file = f"tests/unit/test_{file_name}.py"
+                if (sandbox_path / test_file).exists():
+                    test_path = test_file
+                    ignore_args = []  # Don't skip if testing specific file
+            
+            result = subprocess.run(
+                ["python", "-m", "pytest", test_path, "--cov=.", "--cov-report=term-missing", "-q"] + ignore_args,
+                cwd=sandbox_path,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            # Parse coverage percentage from output
+            import re
+            match = re.search(r'TOTAL\s+\d+\s+\d+\s+(\d+)%', result.stdout)
+            if match:
+                coverage = float(match.group(1))
+                return coverage
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Coverage check failed: {e}")
+            return None

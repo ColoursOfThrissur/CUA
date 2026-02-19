@@ -5,9 +5,11 @@ Prevents runtime modification and validates integrity
 
 import hashlib
 import os
+import json
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 class RiskLevel(Enum):
     SAFE = "safe"
@@ -46,6 +48,29 @@ class ImmutableBrainStem:
         return tuple(get_config().security.blocked_extensions)
     _SAFE_OPERATIONS = ("read_file", "list_directory", "get", "parse", "validate")
     _RISKY_OPERATIONS = ("write_file", "delete_file", "execute_command", "post", "put", "delete")
+
+    @staticmethod
+    def _get_dynamic_operation_safety() -> Dict[str, str]:
+        """Load operation->safety_level map from synced registry, if available."""
+        registry_file = Path("data/tool_registry.json")
+        if not registry_file.exists():
+            return {}
+        try:
+            payload = json.loads(registry_file.read_text(encoding="utf-8"))
+            tools = payload.get("tools", {})
+            operation_safety: Dict[str, str] = {}
+            for tool_data in tools.values():
+                for op_name, op_data in (tool_data.get("operations") or {}).items():
+                    if not op_name:
+                        continue
+                    safety = str(op_data.get("safety_level", "")).lower().strip()
+                    if safety:
+                        operation_safety[op_name] = safety
+                    else:
+                        operation_safety.setdefault(op_name, "medium")
+            return operation_safety
+        except Exception:
+            return {}
     
     # CRITICAL: Precomputed checksum - MUST be set before deployment
     # Generate with: python -c "import hashlib; print(hashlib.sha256(open('core/immutable_brain_stem.py','rb').read()).hexdigest())"
@@ -160,11 +185,20 @@ class ImmutableBrainStem:
         elif operation in ImmutableBrainStem._RISKY_OPERATIONS:
             risk_level = RiskLevel.MEDIUM
         else:
-            return ValidationResult(
-                is_valid=False,
-                risk_level=RiskLevel.HIGH,
-                reason=f"Unknown operation: {operation}"
-            )
+            dynamic_safety = ImmutableBrainStem._get_dynamic_operation_safety()
+            if operation not in dynamic_safety:
+                return ValidationResult(
+                    is_valid=False,
+                    risk_level=RiskLevel.HIGH,
+                    reason=f"Unknown operation: {operation}"
+                )
+            safety = dynamic_safety.get(operation, "medium")
+            if safety == "low":
+                risk_level = RiskLevel.LOW
+            elif safety in {"high", "critical"}:
+                risk_level = RiskLevel.HIGH
+            else:
+                risk_level = RiskLevel.MEDIUM
         
         # Validate paths in parameters
         for key, value in parameters.items():

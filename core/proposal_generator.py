@@ -3,6 +3,9 @@ Proposal Generator - Generates code proposals with validation
 """
 from typing import Optional, Dict, Tuple
 from pathlib import Path
+import ast
+import hashlib
+import json
 
 class ProposalGenerator:
     def __init__(self, llm_client, system_analyzer, patch_generator, update_orchestrator):
@@ -21,6 +24,12 @@ class ProposalGenerator:
         # Create step planner
         from core.step_planner import StepPlanner
         self.step_planner = StepPlanner(llm_client)
+        
+        # Output validator
+        from core.output_validator import OutputValidator
+        self.output_validator = OutputValidator()
+        self._blocked_history_path = Path("data/proposal_block_history.json")
+        self._blocked_history = self._load_blocked_history()
     
     def add_error(self, error: str):
         """Add error with size limit"""
@@ -34,7 +43,18 @@ class ProposalGenerator:
         self.previous_errors = []
     
     def generate_proposal(self, analysis: Dict) -> Optional[Dict]:
-        """Generate proposal with syntax and security validation"""
+        """Generate proposal with syntax, security, and semantic validation"""
+        # CRITICAL: Check if modifying protected interface
+        from core.interface_protector import InterfaceProtector
+        protector = InterfaceProtector()
+        
+        target_file = analysis.get('files_affected', [''])[0]
+        if protector.is_protected(target_file):
+            from core.logging_system import get_logger
+            logger = get_logger("proposal_generator")
+            logger.error(f"BLOCKED: {target_file} is a protected interface")
+            return None
+        
         proposal = self._generate_incremental_proposal(analysis)
         if not proposal:
             return None
@@ -62,6 +82,21 @@ class ProposalGenerator:
             logger.error(f"Syntax validation failed: Line {e.lineno}: {e.msg}")
             return None
         
+        # PHASE 1B: Critic stage - semantic validation
+        from core.code_critic import CodeCritic
+        critic = CodeCritic()
+        methods = analysis.get('methods_to_modify', [])
+        method_name = methods[0] if methods else 'execute'
+        
+        critic_result = critic.critique(raw_code, original_code, method_name)
+        if not critic_result.valid:
+            from core.logging_system import get_logger
+            logger = get_logger("proposal_generator")
+            logger.error(f"Critic rejected: {', '.join(critic_result.issues)}")
+            if critic_result.warnings:
+                logger.warning(f"Warnings: {', '.join(critic_result.warnings)}")
+            return None
+        
         # Security validation
         security_error = self._validate_code(raw_code, target_file)
         if security_error:
@@ -70,11 +105,26 @@ class ProposalGenerator:
             logger.error(f"Security validation failed: {security_error}")
             return None
         
+        # PHASE 2C: Behavioral drift detection
+        from core.behavior_validator import BehaviorValidator
+        behavior_validator = BehaviorValidator()
+        drift = behavior_validator.validate_change(original_code, raw_code, method_name)
+        
+        if drift.has_drift and drift.severity in ['major', 'breaking']:
+            from core.logging_system import get_logger
+            logger = get_logger("proposal_generator")
+            logger.warning(f"Behavioral drift detected ({drift.severity}): {', '.join(drift.changes)}")
+            # Don't reject, but flag for approval
+            proposal['requires_approval'] = True
+            proposal['drift_detected'] = drift.changes
+        
         # Add validation metadata
         proposal['validation'] = {
             'syntax_valid': True,
             'security_valid': True,
-            'code_changed': True
+            'code_changed': True,
+            'critic_confidence': critic_result.confidence,
+            'behavioral_drift': drift.severity if drift.has_drift else 'none'
         }
         
         return proposal
@@ -95,6 +145,11 @@ class ProposalGenerator:
         
         target_file = files_affected[0]
         target_tool = analysis.get('target_tool')
+        blocked_signature_prefix = self._blocked_task_key(target_file, analysis.get('suggestion', ''))
+        # If this task repeatedly hits blocked validation recently, skip early.
+        if self._blocked_history.get(blocked_signature_prefix, 0) >= 3:
+            logger.warning(f"Skipping repeatedly blocked task for {target_file}")
+            return None
         
         logger.info(f"Generating proposal for {target_file}")
         
@@ -117,6 +172,11 @@ class ProposalGenerator:
             return None
         
         logger.info(f"Code generated ({len(raw_code)} chars)")
+
+        # Fast structural gate before expensive validation/retry loops.
+        if not self._is_structurally_valid_python(raw_code):
+            logger.error("Generated code failed structural validation before retry stage")
+            return None
         
         # Step 3: Validate with retry
         raw_code = self._validate_with_retry(raw_code, target_file, analysis, target_tool, user_override, logger)
@@ -137,6 +197,19 @@ class ProposalGenerator:
             "raw_code": raw_code,
             "methods_to_modify": analysis.get('methods_to_modify', [])
         }
+
+    def _is_structurally_valid_python(self, code: str) -> bool:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                if not node.body:
+                    return False
+                if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                    return False
+        return True
 
     
     def _validate_code(self, code: str, file_path: str) -> Optional[str]:
@@ -243,12 +316,11 @@ class ProposalGenerator:
                 if pattern in code:
                     return f"SSRF vulnerability: {pattern}. Fix: {fix}"
         
-        # SQL injection patterns - exclude static analyzers
-        if 'execute(' in code and any(x in code for x in ['f"', "f'", ' + ']):
-            if 'sql' in code.lower() or 'query' in code.lower():
-                # Exclude static analyzers and pattern detection tools
-                if 'static_analyzer' not in file_path and 'analyzer' not in file_path and '_detect_patterns' not in code and 'detect_issues' not in code:
-                    return "Potential SQL injection - use parameterized queries"
+        # SQL injection patterns - AST/context based to avoid false positives.
+        if self._has_dynamic_sql_execute(code):
+            # Exclude static analyzers and pattern detection tools
+            if 'static_analyzer' not in file_path and 'analyzer' not in file_path and '_detect_patterns' not in code and 'detect_issues' not in code:
+                return "Potential SQL injection - use parameterized queries"
         
         # Path traversal - exclude analyzers and validators
         if 'open(' in code or 'Path(' in code:
@@ -385,10 +457,9 @@ Complete file with new methods:""", expect_json=False)
         return None
     
     def _generate_modify_incremental(self, steps, target_file, target_tool, user_override, original_code, logger):
-        """Generate code - single-shot for simple tasks, multi-step for complex"""
+        """Generate code with output validation"""
         
         if len(steps) == 1:
-            # Simple task - single shot
             logger.info("Single-shot generation")
             step = steps[0]
             
@@ -397,22 +468,28 @@ Complete file with new methods:""", expect_json=False)
                 target_file,
                 target_tool=target_tool,
                 previous_errors=self.previous_errors,
-                user_override=None  # Don't override detailed step descriptions
+                user_override=None
             )
             
             if success and step_code:
+                # Validate output
+                valid, msg = self.output_validator.validate_method_code(step_code)
+                if not valid:
+                    logger.error(f"Output validation failed: {msg}")
+                    return None
                 logger.info("Code generation completed")
                 return step_code
             else:
                 logger.error(f"Code generation failed: {error}")
                 return None
         
-        # Complex task - multi-step with incremental merge
+        # Complex task - multi-step with sequential apply-and-verify
         logger.info(f"Multi-step generation: {len(steps)} steps")
-        
-        from core.incremental_code_builder import IncrementalCodeBuilder
-        builder = IncrementalCodeBuilder(original_code, self.llm_client)
-        
+
+        from core.code_integrator import CodeIntegrator
+        integrator = CodeIntegrator()
+        current_code = original_code
+
         for i, step in enumerate(steps, 1):
             logger.info(f"Step {i}/{len(steps)}: {step[:60]}")
             
@@ -422,11 +499,23 @@ Complete file with new methods:""", expect_json=False)
                     target_file,
                     target_tool=target_tool,
                     previous_errors=self.previous_errors,
-                    user_override=None  # Don't override detailed step descriptions
+                    user_override=None,  # Don't override detailed step descriptions
+                    base_code=current_code
                 )
                 
                 if success and step_code:
-                    builder.add_step(step, step_code)
+                    if step_code.strip() == current_code.strip():
+                        logger.info(f"Step {i} already applied; no file changes detected")
+                        break
+
+                    if not integrator.verify_expected_methods(step_code, []):
+                        logger.warning(f"Step {i} attempt {attempt+1} produced unparsable code")
+                        if attempt == 1:
+                            logger.error(f"Step {i} failed after 2 attempts")
+                            return None
+                        continue
+
+                    current_code = step_code
                     logger.info(f"Step {i} completed")
                     break
                 else:
@@ -434,16 +523,9 @@ Complete file with new methods:""", expect_json=False)
                     if attempt == 1:
                         logger.error(f"Step {i} failed after 2 attempts")
                         return None
-        
-        # Merge all steps incrementally
-        logger.info(f"Merging {len(steps)} steps...")
-        merged_code = builder.merge_all_changes()
-        if not merged_code:
-            logger.error("Merge failed")
-            return None
-        
-        logger.info(f"Merge completed ({len(merged_code)} chars)")
-        return merged_code
+
+        logger.info(f"Sequential apply completed ({len(current_code)} chars)")
+        return current_code
     
     def _validate_with_retry(self, raw_code, target_file, analysis, target_tool, user_override, logger):
         """Validate code with retry and regeneration"""
@@ -455,6 +537,11 @@ Complete file with new methods:""", expect_json=False)
             logger.warning(f"Validation attempt {attempt+1}: {validation_error}")
             
             if "BLOCKED:" in validation_error:
+                signature = self._blocked_signature(target_file, analysis.get('suggestion', ''), validation_error)
+                blocked_count = self._increment_blocked_signature(signature)
+                task_key = self._blocked_task_key(target_file, analysis.get('suggestion', ''))
+                self._increment_blocked_signature(task_key)
+                logger.error(f"Validation blocked (repeat #{blocked_count})")
                 logger.error("Validation blocked")
                 return None
             
@@ -474,6 +561,81 @@ Complete file with new methods:""", expect_json=False)
                 return None
         
         return raw_code
+
+    def _blocked_signature(self, file_path: str, suggestion: str, validation_error: str) -> str:
+        raw = f"{file_path}|{suggestion.strip().lower()}|{validation_error.strip().lower()}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _blocked_task_key(self, file_path: str, suggestion: str) -> str:
+        raw = f"{file_path}|{suggestion.strip().lower()}|blocked_any"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _load_blocked_history(self) -> Dict[str, int]:
+        if not self._blocked_history_path.exists():
+            return {}
+        try:
+            with open(self._blocked_history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k): int(v) for k, v in data.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _save_blocked_history(self):
+        self._blocked_history_path.parent.mkdir(parents=True, exist_ok=True)
+        # Keep only most recent signatures to bound file size.
+        if len(self._blocked_history) > 1000:
+            items = list(self._blocked_history.items())[-1000:]
+            self._blocked_history = dict(items)
+        with open(self._blocked_history_path, "w", encoding="utf-8") as f:
+            json.dump(self._blocked_history, f, indent=2)
+
+    def _increment_blocked_signature(self, signature: str) -> int:
+        new_count = int(self._blocked_history.get(signature, 0)) + 1
+        self._blocked_history[signature] = new_count
+        self._save_blocked_history()
+        return new_count
+
+    def _has_dynamic_sql_execute(self, code: str) -> bool:
+        """
+        Detect dynamic SQL execution patterns with AST analysis.
+        This avoids false positives from method names like `_query`.
+        """
+        try:
+            tree = ast.parse(code)
+        except Exception:
+            return False
+
+        sql_tokens = ("select ", "insert ", "update ", "delete ", "drop ", "create ", "alter ", "where ", " from ")
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr.lower() != "execute":
+                continue
+            if not node.args:
+                continue
+
+            first_arg = node.args[0]
+            # f-strings or string concatenation in execute() are suspicious.
+            if isinstance(first_arg, ast.JoinedStr):
+                return True
+            if isinstance(first_arg, ast.BinOp) and isinstance(first_arg.op, ast.Add):
+                return True
+
+            # Literal SQL is okay; dynamic format placeholders are not.
+            if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                literal = first_arg.value.lower()
+                if any(tok in literal for tok in sql_tokens):
+                    continue
+            if isinstance(first_arg, ast.Call):
+                # e.g. "...{}".format(user_input)
+                if isinstance(first_arg.func, ast.Attribute) and first_arg.func.attr == "format":
+                    return True
+        return False
     
     def _patch_with_retry(self, raw_code, target_file, analysis, target_tool, user_override, logger):
         """Generate patch with retry - distinguish code vs process errors"""
@@ -521,4 +683,3 @@ Complete file with new methods:""", expect_json=False)
                 return response[start:end].strip()
         
         return None
-

@@ -36,6 +36,7 @@ class LoopController:
     ):
         from core.config_manager import get_config
         from core.event_bus import get_event_bus
+        from core.evolution_bridge import EvolutionBridge
         config = get_config()
         
         self.llm_client = llm_client
@@ -76,6 +77,9 @@ class LoopController:
         # Retry coordinator for sandbox failures
         from core.retry_coordinator import RetryCoordinator
         self.retry_coordinator = RetryCoordinator(max_retries=3)
+        
+        # Evolution system integration
+        self.evolution_bridge = EvolutionBridge(llm_client)
     
     def add_log(self, log_type: str, message: str, proposal_id: Optional[str] = None):
         """Add log entry with automatic truncation"""
@@ -100,9 +104,25 @@ class LoopController:
         return log_entry
     
     async def start_loop(self):
-        """Start improvement loop"""
+        """Start improvement loop with baseline gate"""
         if self.state.status == LoopStatus.RUNNING:
             return {"error": "Loop already running"}
+        
+        # CRITICAL: Baseline health check
+        from core.baseline_health_checker import BaselineHealthChecker
+        health_checker = BaselineHealthChecker()
+        
+        self.add_log("info", "Running baseline health check...")
+        baseline_ok, message, failures = health_checker.check_baseline()
+        
+        if not baseline_ok:
+            self.add_log("error", f"BASELINE FAILURE: {message}")
+            for failure in failures[:5]:
+                self.add_log("error", f"  - {failure}")
+            self.add_log("error", "Loop cannot start - fix baseline first")
+            return {"error": f"Baseline check failed: {message}", "failures": failures}
+        
+        self.add_log("success", "Baseline healthy - starting loop")
         
         # Validate config
         if self.max_iterations <= 0:
@@ -125,10 +145,10 @@ class LoopController:
         self.state.emergency_stop = False
         self.logs = []
         self.preview_proposals = []
-        # Clear iteration_history on new loop start - fresh session
+        # Start with fresh in-memory iteration context for this run.
         self.iteration_history = []
-        # Clear feature tracker for fresh session
-        self.task_analyzer.feature_tracker.clear_history()
+        # Keep feature tracker history across starts to avoid repeatedly
+        # targeting files that were recently improved.
         # DON'T clear custom_focus - it was set by API before start_loop()
         
         self.add_log("start", f"Loop started (max {self.max_iterations} iterations)")
@@ -179,6 +199,31 @@ class LoopController:
                 self.task_analyzer.feature_tracker.set_iteration(self.state.current_iteration)
                 
                 iteration_start = time.time()
+                
+                # Check if should use evolution mode
+                if self.evolution_bridge.should_use_evolution():
+                    self.add_log("info", "Running evolution cycle...")
+                    result = self.evolution_bridge.run_evolution_cycle()
+                    
+                    if result.get('stop_loop'):
+                        self.add_log("error", result['message'])
+                        break
+                    
+                    if result['success']:
+                        self.add_log("success", result['message'])
+                    else:
+                        reason = result.get('reason', '')
+                        stage = result.get('stage', '')
+                        message = result.get('message', 'Evolution cycle failed')
+                        if reason in {'no_insights', 'insight_cooldown', 'duplicate_recent_proposal', 'file_already_modified_this_cycle'}:
+                            self.add_log("info", f"{message}")
+                        else:
+                            if stage:
+                                self.add_log("error", f"{message} (stage={stage}, reason={reason})")
+                            else:
+                                self.add_log("error", f"{message} (reason={reason})")
+                    
+                    continue  # Skip normal flow
                 
                 # Get task from queue or analyze for new batch
                 if not self.task_queue:
@@ -370,24 +415,39 @@ class LoopController:
                         break
                     else:
                         error_msg = sandbox_result.get('output', 'Unknown error')[:500]
-                        self.add_log("error", f"Sandbox failed (attempt {attempt}/{self.max_retries})")
+                        
+                        # CLASSIFY FAILURE
+                        from core.failure_classifier import FailureClassifier, FailureAction
+                        context = {
+                            'baseline_passed': sandbox_result.get('baseline_passed', 0),
+                            'tests_passed': sandbox_result.get('tests_passed', 0)
+                        }
+                        failure_type, action = FailureClassifier.classify(error_msg, context)
+                        
+                        self.add_log("error", f"Sandbox failed (attempt {attempt}/{self.max_retries}): {failure_type.value}")
+                        
+                        # BASELINE FAILURE - STOP IMMEDIATELY
+                        if action == FailureAction.STOP_LOOP:
+                            self.add_log("error", "CRITICAL: Baseline failure detected - stopping loop")
+                            self.state.stop_requested = True
+                            break
+                        
+                        # REJECT - NO RETRY
+                        if action == FailureAction.REJECT:
+                            self.add_log("error", "Failure classified as non-recoverable - rejecting")
+                            break
                         
                         if attempt < self.max_retries:
-                            # Regenerate entire proposal with sandbox error feedback
-                            context = {
-                                'baseline_passed': sandbox_result.get('baseline_passed', 0),
-                                'tests_passed': sandbox_result.get('tests_passed', 0)
-                            }
-                            formatted_error = self.retry_coordinator.format_error_for_llm(error_msg, context)
-                            self.proposal_generator.add_error(formatted_error)
-                            
-                            # Regenerate complete proposal (goes through all steps again)
-                            self.add_log("info", f"Regenerating proposal with test feedback...")
-                            proposal = self.proposal_generator.generate_proposal(analysis)
-                            
-                            if not proposal or not self._validate_proposal_structure(proposal):
-                                self.add_log("error", "Proposal regeneration failed")
-                                break
+                            # Regenerate based on action
+                            if action == FailureAction.REGENERATE:
+                                formatted_error = self.retry_coordinator.format_error_for_llm(error_msg, context)
+                                self.proposal_generator.add_error(formatted_error)
+                                self.add_log("info", f"Regenerating proposal with error feedback...")
+                                proposal = self.proposal_generator.generate_proposal(analysis)
+                                
+                                if not proposal or not self._validate_proposal_structure(proposal):
+                                    self.add_log("error", "Proposal regeneration failed")
+                                    break
                         else:
                             self.add_log("error", "Max retries exhausted")
                 
@@ -448,7 +508,26 @@ class LoopController:
                     self.in_critical_section = True
                     try:
                         self.add_log("info", "Applying changes...")
+                        # Check idempotency before applying
+                        from core.idempotency_checker import IdempotencyChecker
+                        idem_checker = IdempotencyChecker()
+                        is_dup, reason = idem_checker.is_duplicate(
+                            proposal['files_changed'][0],
+                            proposal['description']
+                        )
+                        if is_dup:
+                            self.add_log("error", f"Duplicate change: {reason}")
+                            continue
+                        
                         apply_result = await self._apply_changes(proposal)
+                        
+                        # Record change if successful
+                        if apply_result['success']:
+                            idem_checker.record_change(
+                                proposal['files_changed'][0],
+                                proposal['description'],
+                                f"improvement_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                            )
                     finally:
                         self.in_critical_section = False
                     
@@ -462,6 +541,12 @@ class LoopController:
                         sandbox_result,
                         apply_result
                     )
+                    
+                    if apply_result['success']:
+                        verified, verify_error = self._verify_applied_change(proposal, analysis)
+                        if not verified:
+                            apply_result = {"success": False, "error": f"Apply verification failed: {verify_error}"}
+                            self.add_log("error", apply_result["error"])
                     
                     if apply_result['success']:
                         self.add_log("success", "Changes applied successfully")
@@ -480,9 +565,17 @@ class LoopController:
                         "file": proposal['files_changed'][0],
                         "result": result_status,
                         "error": error_msg[:100] if error_msg else "",
+                        "stage": "applied" if result_status == "success" else "apply_failed",
                         "category": analysis.get('category', 'core'),
                         "methods_modified": analysis.get('methods_to_modify', [])
                     })
+                    self._record_attempt_terminal_state(
+                        proposal=proposal,
+                        analysis=analysis,
+                        sandbox_result=sandbox_result,
+                        apply_result=apply_result,
+                        result_status=result_status
+                    )
                     
                     # Track feature in task_analyzer's feature tracker
                     if result_status == "success":
@@ -684,6 +777,55 @@ class LoopController:
         
         self.state.status = LoopStatus.STOPPED
         asyncio.create_task(self.event_bus.emit('loop_stopped', {'iterations': self.state.current_iteration}))
+
+    def _verify_applied_change(self, proposal: Dict, analysis: Dict) -> tuple[bool, str]:
+        """Verify that applied change is reflected in target file and syntax remains valid."""
+        try:
+            files_changed = proposal.get('files_changed', [])
+            if not files_changed:
+                return False, "No target file in proposal"
+            target_file = files_changed[0]
+            from pathlib import Path
+            p = Path(target_file)
+            if not p.exists():
+                return False, f"Target file missing after apply: {target_file}"
+            content = p.read_text(encoding="utf-8")
+            if target_file.endswith(".py"):
+                import ast
+                ast.parse(content)
+            expected_methods = analysis.get('methods_to_modify', []) or []
+            for method in expected_methods:
+                if method and f"def {method}(" not in content:
+                    return False, f"Expected method not found after apply: {method}"
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _record_attempt_terminal_state(self, proposal: Dict, analysis: Dict, sandbox_result: Dict, apply_result: Dict, result_status: str):
+        """Emit normalized terminal state for observability."""
+        terminal_state = {
+            "iteration": self.state.current_iteration,
+            "file": (proposal.get("files_changed") or ["unknown"])[0],
+            "description": proposal.get("description", "")[:160],
+            "methods": analysis.get("methods_to_modify", []),
+            "generated": True,
+            "sandbox_passed": bool(sandbox_result.get("success", False)),
+            "applied": bool(apply_result.get("success", False)),
+            "status": result_status,
+        }
+        self.add_log("info", f"Terminal state: {terminal_state['status']} | file={terminal_state['file']} | applied={terminal_state['applied']}")
+        try:
+            self.analytics.record_terminal_state(
+                iteration=terminal_state["iteration"],
+                file_path=terminal_state["file"],
+                status=terminal_state["status"],
+                generated=terminal_state["generated"],
+                sandbox_passed=terminal_state["sandbox_passed"],
+                applied=terminal_state["applied"],
+            )
+        except Exception:
+            pass
+        asyncio.create_task(self.event_bus.emit('attempt_terminal_state', terminal_state))
     
     def approve_proposal(self, proposal_id: str) -> bool:
         """Approve pending proposal with locking"""
@@ -719,3 +861,12 @@ class LoopController:
             "dry_run": self.dry_run,
             "preview_count": len(self.preview_proposals)
         }
+    
+    def set_evolution_mode(self, enabled: bool):
+        """Toggle between deterministic and evolution mode"""
+        if enabled:
+            self.evolution_bridge.enable_evolution_mode()
+            self.add_log("info", "Evolution mode ENABLED - LLM can propose freely")
+        else:
+            self.evolution_bridge.disable_evolution_mode()
+            self.add_log("info", "Evolution mode DISABLED - deterministic mode")

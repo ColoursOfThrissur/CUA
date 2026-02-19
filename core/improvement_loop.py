@@ -1,5 +1,5 @@
 """
-Self-Improvement Loop - Compatibility wrapper for new modular architecture
+Self-Improvement Loop - Enhanced with Hybrid Improvement Engine
 """
 from core.loop_controller import LoopController, LoopStatus, LoopState
 from core.task_analyzer import TaskAnalyzer
@@ -10,9 +10,15 @@ from core.patch_generator import PatchGenerator
 from core.plan_history import PlanHistory
 from core.improvement_analytics import ImprovementAnalytics
 from core.llm_logger import LLMLogger
+from core.hybrid_improvement_engine import HybridImprovementEngine
+from core.pending_tools_manager import PendingToolsManager
+import logging
+import asyncio
+
+logger = logging.getLogger(__name__)
 
 class SelfImprovementLoop:
-    """Compatibility wrapper - delegates to new modular components"""
+    """Enhanced with Hybrid Improvement Engine"""
     
     def __init__(self, llm_client, orchestrator, max_iterations=10, libraries_manager=None):
         # Initialize components
@@ -24,6 +30,14 @@ class SelfImprovementLoop:
         self.analytics = ImprovementAnalytics()
         self.llm_logger = LLMLogger()
         self.libraries_manager = libraries_manager
+        self._pending_tools_manager = PendingToolsManager()
+        
+        # Initialize hybrid engine with dependencies
+        self.hybrid_engine = HybridImprovementEngine(
+            llm_client=llm_client,
+            orchestrator=orchestrator
+        )
+        logger.info("Hybrid Improvement Engine initialized with dependencies")
         
         # Initialize new modular components
         self.task_analyzer = TaskAnalyzer(llm_client, self.analyzer, self.llm_logger)
@@ -94,6 +108,21 @@ class SelfImprovementLoop:
     def dry_run(self, value):
         """Set dry_run on controller"""
         self.controller.dry_run = value
+
+    @property
+    def continuous_mode(self):
+        """Get continuous_mode from controller"""
+        return self.controller.continuous_mode
+
+    @continuous_mode.setter
+    def continuous_mode(self, value):
+        """Set continuous_mode on controller"""
+        self.controller.continuous_mode = value
+
+    @property
+    def in_critical_section(self):
+        """Get in_critical_section from controller"""
+        return self.controller.in_critical_section
     
     @property
     def task_manager(self):
@@ -102,15 +131,45 @@ class SelfImprovementLoop:
     
     @property
     def pending_tools_manager(self):
-        """Pending tools manager removed - return None for compatibility"""
-        return None
+        """Pending tools manager for user approval workflow."""
+        return self._pending_tools_manager
     
     def add_log(self, log_type: str, message: str, proposal_id=None):
         """Delegate to controller"""
         return self.controller.add_log(log_type, message, proposal_id)
     
     async def start_loop(self):
-        """Delegate to controller"""
+        """Enhanced start with hybrid engine"""
+        # Validate custom_focus before running hybrid engine
+        if self.controller.custom_focus:
+            try:
+                logger.info(f"Running hybrid engine with focus: {self.controller.custom_focus[:50]}...")
+                result = await asyncio.to_thread(
+                    self.hybrid_engine.analyze_and_improve,
+                    custom_prompt=self.controller.custom_focus,
+                    max_iterations=3
+                )
+                
+                # Validate result structure
+                if not result or not isinstance(result, dict):
+                    logger.warning("Hybrid engine returned invalid result (None or not dict)")
+                elif result.get('status') == 'success' and result.get('proposal'):
+                    logger.info(f"Hybrid engine succeeded: {result.get('target_file', 'unknown')}")
+                    # Inject proposal into controller preview
+                    if hasattr(self.controller, '_inject_proposal'):
+                        self.controller._inject_proposal(result['proposal'])
+                    else:
+                        logger.warning("Controller missing _inject_proposal method")
+                else:
+                    logger.info(f"Hybrid engine skipped: {result.get('status', 'unknown')} - {result.get('message', 'no message')}")
+                
+            except Exception as e:
+                logger.error(f"Hybrid engine failed: {e}", exc_info=True)
+                # Don't let hybrid failure block normal loop
+        else:
+            logger.info("Skipping hybrid engine - no custom focus set")
+        
+        # Continue with normal loop
         return await self.controller.start_loop()
     
     async def stop_loop(self, mode: str = "graceful"):
@@ -128,4 +187,12 @@ class SelfImprovementLoop:
     def get_status(self):
         """Delegate to controller"""
         return self.controller.get_status()
-
+    
+    def set_evolution_mode(self, enabled: bool):
+        """Delegate to controller"""
+        return self.controller.set_evolution_mode(enabled)
+    
+    @property
+    def evolution_bridge(self):
+        """Access evolution bridge from controller"""
+        return self.controller.evolution_bridge

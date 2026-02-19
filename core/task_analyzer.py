@@ -19,6 +19,14 @@ class TaskAnalyzer:
         self.feature_tracker = FeatureTracker()
         self.gap_analyzer = FeatureGapAnalyzer()
         
+        # PHASE 2A: Dependency analysis
+        from core.dependency_analyzer import DependencyAnalyzer
+        self.dependency_analyzer = DependencyAnalyzer()
+        
+        # PHASE 3C: Failure learning
+        from core.failure_learner import FailureLearner
+        self.failure_learner = FailureLearner()
+        
         try:
             from tools.static_analyzer import StaticAnalyzer
             self.static_analyzer = StaticAnalyzer()
@@ -68,7 +76,7 @@ class TaskAnalyzer:
         for attempt in range(3):
             # STAGE 1: Discovery (always run to select file)
             selected_tool = self._analyze_stage1_discovery(
-                tools_info, focus, blocked_tasks, static_issues, repeated_count
+                tools_info, focus, blocked_tasks, static_issues, repeated_count, iteration_history or []
             )
             
             if not selected_tool:
@@ -78,7 +86,7 @@ class TaskAnalyzer:
             
             # STAGE 2: Implementation
             task = self._analyze_stage2_implementation(
-                selected_tool, tools_info, test_files, focus, blocked_tasks
+                selected_tool, tools_info, test_files, focus, blocked_tasks, iteration_history or []
             )
             
             if task:
@@ -99,18 +107,28 @@ class TaskAnalyzer:
         return []
     
     def _analyze_stage1_discovery(
-        self, tools_info, focus, blocked_tasks, static_issues, repeated_count
+        self, tools_info, focus, blocked_tasks, static_issues, repeated_count, iteration_history
     ) -> Optional[Dict]:
-        """Stage 1: Score tools and let LLM pick from top candidates"""
+        """Stage 1: Score tools and select file"""
         from core.logging_system import get_logger
         logger = get_logger("task_analyzer")
         
         # Score and filter tools
-        scored_tools = self._score_tools(tools_info, blocked_tasks)
+        scored_tools = self._score_tools(tools_info, blocked_tasks, iteration_history or [])
         if not scored_tools:
             return None
         
-        # Get top 3 candidates
+        # MODE A: Autonomous (no user intent) - DETERMINISTIC
+        if not focus:
+            # Pick highest score WITHOUT LLM
+            best_tool, best_score = scored_tools[0]
+            logger.info(f"Autonomous mode: Selected {best_tool['file']} (score: {best_score})")
+            return {
+                'target_file': best_tool['file'],
+                'reasoning': f"Highest priority (score: {best_score}, maturity: {best_tool['maturity']})"
+            }
+        
+        # MODE B: Intent-Driven - LLM for semantic mapping
         top_candidates = scored_tools[:3]
         
         # Build prompt with only top candidates
@@ -171,7 +189,23 @@ Output JSON:
             if not selection or 'target_file' not in selection:
                 return None
             
+            # METADATA CONSISTENCY CHECK
             target_file = selection['target_file']
+            reasoning = selection.get('reasoning', '').lower()
+            
+            # Find the tool in scored list
+            selected_tool_info = None
+            for tool, score in top_candidates:
+                if tool['file'] == target_file:
+                    selected_tool_info = tool
+                    break
+            
+            if selected_tool_info:
+                # Check for fabricated reasoning
+                if 'lacks test' in reasoning or 'no test' in reasoning or 'missing test' in reasoning:
+                    if selected_tool_info['has_test']:
+                        logger.warning(f"LLM fabricated reasoning - {target_file} HAS tests")
+                        return None
             if self._is_blocked(target_file, blocked_tasks) or self._is_protected(target_file):
                 return None
             
@@ -182,13 +216,31 @@ Output JSON:
             return None
     
     def _analyze_stage2_implementation(
-        self, selected_tool, tools_info, test_files, focus, blocked_tasks
+        self, selected_tool, tools_info, test_files, focus, blocked_tasks, iteration_history
     ) -> Optional[Dict]:
-        """Stage 2: Analyze gaps and suggest specific feature from highest priority category"""
+        """Stage 2: Analyze gaps and suggest specific feature with early risk estimation"""
         from core.logging_system import get_logger
         logger = get_logger("task_analyzer")
         
         target_file = selected_tool['target_file']
+        
+        # EARLY RISK ESTIMATION - before expensive LLM call
+        blast_radius_data = self.dependency_analyzer.calculate_blast_radius(target_file)
+        blast_radius = blast_radius_data['total_affected']
+        change_type = 'add_feature'
+        risk_weight = self.failure_learner.get_risk_weight(target_file, change_type)
+        
+        # Check if core module
+        is_core = blast_radius_data['is_core_module']
+        
+        # Calculate early risk score
+        early_risk = risk_weight * 0.4 + (blast_radius / 10) * 0.3 + (0.3 if is_core else 0)
+        
+        if early_risk > 0.7:
+            logger.warning(f"Skipping {target_file} - early risk too high: {early_risk:.2f}")
+            return None
+        
+        logger.info(f"{target_file}: early_risk={early_risk:.2f}, blast_radius={blast_radius}, failure_weight={risk_weight:.2f}")
         
         # Get FULL file content
         full_content = self.analyzer.get_file_content(target_file)
@@ -274,16 +326,35 @@ CRITICAL:
 1. Pick ONE feature from the suggested list above
 2. These suggestions are already verified as NOT implemented
 3. Provide specific implementation details
-4. If you believe ALL suggestions are already implemented despite filtering, set already_implemented=true
+4. Feature must modify ONLY ONE existing method (max 80 lines)
+5. Feature must NOT change public API
+6. Feature must NOT introduce async/await
+7. Feature must improve safety, validation, or reliability
+8. If you believe ALL suggestions are already implemented despite filtering, set already_implemented=true
+
+ALLOWED CATEGORIES ONLY:
+- input_validation (validate parameters before use)
+- error_handling (add try/catch, better error messages)
+- logging (add debug/info logs for troubleshooting)
+- security (sanitize inputs, prevent injection)
+- timeout_handling (add timeout parameters)
+- parameter_validation (check types, ranges, formats)
+- performance (targeted performance improvements with clear scope)
+- refactoring (small structural cleanup with concrete impact)
+
+FORBIDDEN:
+- caching (unless tool does heavy external I/O like HTTP)
+- async/await (unless already async)
 
 JSON output:
 {{
   "task_type": "add_feature",
   "target_file": "{target_file}",
   "test_file": "tests/unit/{test_file_name}",
-  "description": "Add timeout parameter to all HTTP methods",
+  "description": "Add timeout parameter to _get method",
   "category": "{priority_category}",
-  "methods_to_modify": ["_get", "_post"],
+  "methods_to_modify": ["_get"],
+  "max_lines_expected": 40,
   "priority": "high",
   "already_implemented": false
 }}
@@ -303,6 +374,12 @@ JSON output:
             if not task_data or 'description' not in task_data:
                 return None
             
+            # CRITICAL: Validate output structure
+            from core.output_validator import OutputValidator
+            if not OutputValidator.validate_task_analysis(task_data):
+                logger.info("Task analysis failed validation (vague/async/too large)")
+                return None
+            
             # Check if already implemented
             if task_data.get('already_implemented', False):
                 logger.info(f"All features in {priority_category} category already implemented")
@@ -318,6 +395,14 @@ JSON output:
             )
             if is_dup:
                 logger.info(f"Duplicate feature detected: {reason}")
+                self.feature_tracker.add_feature(
+                    file=target_file,
+                    feature=task_data.get('description', '')[:120] or "duplicate_feature",
+                    category=task_data.get('category', 'core'),
+                    iteration=self.feature_tracker.current_iteration,
+                    result="duplicate",
+                    methods=task_data.get('methods_to_modify', [])
+                )
                 return None
             
             # SANITY CHECK: Does feature make sense for this tool?
@@ -325,11 +410,87 @@ JSON output:
                 logger.info(f"Feature doesn't make sense for {target_file}")
                 return None
             
+            # CONSTRAINT CHECK: Validate max_lines_expected
+            max_lines = task_data.get('max_lines_expected', 999)
+            if max_lines > 120:
+                logger.info(f"Feature too large: {max_lines} lines (max 120)")
+                return None
+            
+            # CONSTRAINT CHECK: Keep scope bounded
+            methods = task_data.get('methods_to_modify', [])
+            if len(methods) > 3:
+                logger.info(f"Feature modifies {len(methods)} methods (max 3)")
+                return None
+            
+            # REPETITION GUARD: Check if same category used recently
+            category = task_data.get('category', '')
+            recent_categories = [h.get('category') for h in (iteration_history or [])[-3:] if h.get('file') == target_file]
+            if recent_categories.count(category) >= 2:
+                logger.info(f"Category '{category}' repeated {recent_categories.count(category)} times - rejecting")
+                return None
+            
+            # DUPLICATE INTERACTION PREVENTION
+            desc_lower = task_data.get('description', '').lower()
+            recent_descriptions = [h.get('task', '').lower() for h in (iteration_history or [])[-5:] if h.get('file') == target_file]
+            for recent_desc in recent_descriptions:
+                # Check for similar descriptions (>70% overlap)
+                if recent_desc and len(recent_desc) > 10:
+                    overlap = sum(1 for word in desc_lower.split() if word in recent_desc.split())
+                    similarity = overlap / max(len(desc_lower.split()), len(recent_desc.split()))
+                    if similarity > 0.7:
+                        logger.info(f"Duplicate interaction detected (similarity: {similarity:.2f})")
+                        return None
+            
+            # METHOD SUITABILITY CHECK
+            if methods:
+                method_name = methods[0]
+                
+                # Check if method exists in file
+                if f'def {method_name}' not in full_content:
+                    logger.info(f"Method {method_name} does not exist in {target_file}")
+                    return None
+                
+                # ABSTRACT METHOD SAFETY CHECK
+                from core.abstract_method_checker import AbstractMethodChecker
+                abstract_checker = AbstractMethodChecker()
+                if abstract_checker.is_abstract_method(target_file, method_name):
+                    logger.info(f"Cannot modify abstract method {method_name}")
+                    return None
+                
+                # CONSTRUCTOR MODIFICATION BLOCK
+                if method_name == '__init__':
+                    # Only allow logging and parameter_validation in __init__
+                    if category not in ['logging', 'parameter_validation']:
+                        logger.info(f"Category '{category}' not allowed in __init__ (only logging/parameter_validation)")
+                        return None
+                
+                # Block caching in __init__
+                if method_name == '__init__' and 'cach' in task_data.get('description', '').lower():
+                    logger.info("Caching in __init__ not allowed")
+                    return None
+                # Block return in __init__
+                if method_name == '__init__' and 'return' in task_data.get('description', '').lower():
+                    logger.info("Return in __init__ not allowed")
+                    return None
+            
             # Ensure required fields
             if 'methods_to_modify' not in task_data:
                 task_data['methods_to_modify'] = []
             if 'category' not in task_data:
                 task_data['category'] = priority_category
+            
+            # PHASE 2A: Add blast radius analysis
+            blast_radius_data = self.dependency_analyzer.calculate_blast_radius(target_file)
+            task_data['blast_radius'] = blast_radius_data['total_affected']
+            task_data['is_core_module'] = blast_radius_data['is_core_module']
+            
+            # PHASE 3C: Check failure history
+            change_type = task_data.get('task_type', 'add_feature')
+            risk_weight = self.failure_learner.get_risk_weight(target_file, change_type)
+            if risk_weight > 0.5:
+                logger.warning(f"{target_file} has high failure rate ({risk_weight}) for {change_type}")
+                task_data['high_risk'] = True
+                task_data['risk_weight'] = risk_weight
             
             logger.info(f"Stage 2: Created task for {target_file} - {task_data['description'][:60]}")
             return self._interpret_task(task_data, focus)
@@ -414,10 +575,13 @@ JSON output:
         
         return tools_info
     
-    def _score_tools(self, tools_info: List[Dict], blocked_tasks: List[str]) -> List[tuple]:
+    def _score_tools(self, tools_info: List[Dict], blocked_tasks: List[str], iteration_history: List[Dict] = None) -> List[tuple]:
         """Score tools by maturity and cooldown - focus on immature tools"""
         from core.logging_system import get_logger
         logger = get_logger("task_analyzer")
+        
+        if iteration_history is None:
+            iteration_history = []
         
         scored = []
         current_iteration = self.feature_tracker.current_iteration
@@ -437,10 +601,24 @@ JSON output:
                 logger.info(f"Skipping {file} (cooldown until iteration {cooldown_until})")
                 continue
             
+            # CRITICAL: Check if file was modified in last 3 iterations
+            recent_mods = [h for h in iteration_history[-3:] if h.get('file') == file]
+            if recent_mods:
+                logger.info(f"Skipping {file} (modified in last 3 iterations)")
+                continue
+            
             # Calculate maturity score
             maturity_level, priority_score = self.feature_tracker.get_file_maturity(
                 file, tool['method_count']
             )
+
+            # Down-rank files with repeated recent non-success outcomes.
+            recent_negatives = self.feature_tracker.get_recent_negative_count(file, current_iteration, window=8)
+            if recent_negatives >= 3:
+                logger.info(f"Skipping {file} (recent negative outcomes: {recent_negatives})")
+                continue
+            if recent_negatives > 0:
+                priority_score -= (recent_negatives * 15)
             
             # Bonus for missing tests
             if not tool['has_test']:
@@ -546,25 +724,26 @@ JSON output:
         """Check if feature makes sense for this tool"""
         desc_lower = description.lower()
         
+        # CRITICAL: Block caching for stateless tools
+        if 'caching' in desc_lower or 'cache' in desc_lower or 'ttl' in desc_lower:
+            # Only allow caching for heavy I/O tools
+            is_heavy_io = any(x in file_content for x in ['requests.', 'http.client', 'urllib', 'socket'])
+            if not is_heavy_io:
+                return False
+        
         # Shell tool specific checks
         if 'shell_tool' in target_file:
-            # Shell commands are stateless - caching doesn't make sense
             if 'caching' in desc_lower or 'cache' in desc_lower:
                 if 'subprocess.run' in file_content and 'pwd' in file_content:
                     return False
-            # Shell tool uses subprocess.run which is synchronous - async doesn't help
-            if 'async' in desc_lower or 'await' in desc_lower:
-                return False
         
         # HTTP tool specific checks
         if 'http_tool' in target_file:
-            # Don't add features that already exist
             if 'timeout' in desc_lower and 'timeout=' in file_content:
                 return False
         
         # File tool specific checks
         if 'file' in target_file and 'tool' in target_file:
-            # Don't add path validation if it already exists
             if 'path validation' in desc_lower and '_validate_path' in file_content:
                 return False
         

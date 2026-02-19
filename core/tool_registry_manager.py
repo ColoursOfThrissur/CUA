@@ -109,6 +109,58 @@ Respond with only valid JSON."""
         """Get info for specific tool"""
         registry = self.get_registry()
         return registry.get("tools", {}).get(tool_name)
+
+    def update_tool(self, tool_data: Dict) -> bool:
+        """Upsert a single tool entry and persist registry."""
+        if not tool_data:
+            return False
+
+        tool_name = (tool_data.get("name") or "").strip()
+        if not tool_name:
+            return False
+
+        registry = self.get_registry()
+        if "tools" not in registry:
+            registry["tools"] = {}
+
+        merged = dict(tool_data)
+        merged["last_updated"] = datetime.now().isoformat()
+
+        # Remove stale aliases that point to the same source file.
+        source_norm = str(merged.get("source_file", "")).replace("\\", "/")
+        if source_norm:
+            for existing_name in list(registry["tools"].keys()):
+                existing_source = str(registry["tools"][existing_name].get("source_file", "")).replace("\\", "/")
+                if existing_name != tool_name and existing_source and existing_source == source_norm:
+                    del registry["tools"][existing_name]
+
+        registry["tools"][tool_name] = merged
+        registry["last_sync"] = merged["last_updated"]
+
+        with open(self.registry_path, 'w') as f:
+            json.dump(registry, f, indent=2)
+
+        return True
+
+    def prune_tools_not_in_sources(self, keep_sources: List[str]) -> int:
+        """Remove registry entries whose source_file is not in keep_sources."""
+        registry = self.get_registry()
+        tools = registry.get("tools", {})
+        keep = {str(p).replace("\\", "/") for p in keep_sources}
+
+        removed = 0
+        for tool_name in list(tools.keys()):
+            source = str(tools[tool_name].get("source_file", "")).replace("\\", "/")
+            if source and source not in keep:
+                del tools[tool_name]
+                removed += 1
+
+        if removed:
+            registry["tools"] = tools
+            registry["last_sync"] = datetime.now().isoformat()
+            with open(self.registry_path, 'w') as f:
+                json.dump(registry, f, indent=2)
+        return removed
     
     def get_all_capabilities_text(self) -> str:
         """Get formatted text of all capabilities for LLM prompts"""

@@ -49,10 +49,19 @@ class RiskScorer:
     
     SAFE_PATTERNS = {"README", "CHANGELOG", ".md", "docs/", "examples/", "tests/"}
     
-    def score_update(self, changed_files: List[str], diff_lines: int) -> RiskScore:
+    def __init__(self):
+        # PHASE 2A: Initialize dependency analyzer
+        from core.dependency_analyzer import DependencyAnalyzer
+        self.dependency_analyzer = DependencyAnalyzer()
+        
+        # PHASE 3C: Initialize failure learner
+        from core.failure_learner import FailureLearner
+        self.failure_learner = FailureLearner()
+    
+    def score_update(self, changed_files: List[str], diff_lines: int, change_type: str = "unknown") -> RiskScore:
         reasons = []
         critical_files = []
-        score = 0
+        score = 0.0  # Use float for normalization
         
         # Check for blocked files (including renames)
         for file in changed_files:
@@ -79,58 +88,84 @@ class RiskScorer:
                         requires_approval=True
                     )
         
-        high_risk_found = []
+        # Calculate individual risk factors (normalized 0-1)
+        blast_radius_score = 0.0
+        core_module_score = 0.0
+        failure_history_score = 0.0
+        
+        # PHASE 2A: Calculate blast radius for each file
+        total_blast_radius = 0
         for file in changed_files:
-            normalized = file.replace("\\", "/")
-            if normalized in self.HIGH_RISK_FILES:
-                high_risk_found.append(file)
-                score += 30
+            blast_radius = self.dependency_analyzer.calculate_blast_radius(file)
+            total_blast_radius += blast_radius['total_affected']
+            
+            if blast_radius['is_core_module']:
+                core_module_score = 1.0
+                reasons.append(f"Core module: {file}")
+                critical_files.append(file)
+            elif blast_radius['total_affected'] > 10:
+                blast_radius_score = max(blast_radius_score, 0.8)
+                reasons.append(f"High blast radius: {file} affects {blast_radius['total_affected']} files")
+            elif blast_radius['total_affected'] > 5:
+                blast_radius_score = max(blast_radius_score, 0.5)
         
-        if high_risk_found:
-            reasons.append(f"High-risk files: {', '.join(high_risk_found)}")
-            critical_files.extend(high_risk_found)
-        
-        medium_risk_found = []
+        # PHASE 3C: Check failure history
         for file in changed_files:
-            normalized = file.replace("\\", "/")
-            if normalized in self.MEDIUM_RISK_FILES:
-                medium_risk_found.append(file)
-                score += 15
+            risk_weight = self.failure_learner.get_risk_weight(file, change_type)
+            if risk_weight > 0.5:
+                failure_history_score = max(failure_history_score, risk_weight)
+                reasons.append(f"High failure rate for {file} ({change_type})")
         
-        if medium_risk_found:
-            reasons.append(f"Medium-risk files: {', '.join(medium_risk_found)}")
+        # Other factors
+        lines_score = min(1.0, diff_lines / 500)
+        files_score = min(1.0, len(changed_files) / 10)
         
-        if diff_lines > 500:
-            score += 25
-            reasons.append(f"Large diff: {diff_lines} lines")
-        elif diff_lines > 200:
-            score += 15
-            reasons.append(f"Moderate diff: {diff_lines} lines")
-        elif diff_lines > 50:
-            score += 5
+        # Weighted combination (normalized)
+        weights = {
+            'blast_radius': 0.25,
+            'core_module': 0.25,
+            'failure_history': 0.25,
+            'lines': 0.125,
+            'files': 0.125
+        }
         
-        if len(changed_files) > 10:
-            score += 20
-            reasons.append(f"Many files changed: {len(changed_files)}")
-        elif len(changed_files) > 5:
-            score += 10
+        base_score = (
+            blast_radius_score * weights['blast_radius'] +
+            core_module_score * weights['core_module'] +
+            failure_history_score * weights['failure_history'] +
+            lines_score * weights['lines'] +
+            files_score * weights['files']
+        )
         
+        # Multiplicative escalation for combined high-risk factors
+        if core_module_score > 0.5 and blast_radius_score > 0.5:
+            base_score *= 1.5
+            reasons.append("Multiplicative risk: core module + high blast radius")
+        
+        if failure_history_score > 0.5 and core_module_score > 0.5:
+            base_score *= 1.3
+            reasons.append("Multiplicative risk: failure history + core module")
+        
+        # Check for safe patterns
         all_safe = all(
             any(pattern in file for pattern in self.SAFE_PATTERNS)
             for file in changed_files
         )
         
         if all_safe:
-            score = max(0, score - 20)
+            base_score *= 0.5
             reasons.append("Only documentation/tests changed")
         
-        if score >= 60:
+        # Convert to 0-100 scale
+        final_score = int(min(100, base_score * 100))
+        
+        if final_score >= 60:
             level = UpdateRiskLevel.HIGH
             requires_approval = True
-        elif score >= 35:
+        elif final_score >= 35:
             level = UpdateRiskLevel.MEDIUM
             requires_approval = True
-        elif score >= 15:
+        elif final_score >= 15:
             level = UpdateRiskLevel.LOW
             requires_approval = False
         else:
@@ -139,7 +174,7 @@ class RiskScorer:
         
         return RiskScore(
             level=level,
-            score=score,
+            score=final_score,
             reasons=reasons if reasons else ["Minimal changes"],
             critical_files=critical_files,
             requires_approval=requires_approval

@@ -10,6 +10,7 @@ import SelfImprovementLog from './components/SelfImprovementLog';
 import StagingPreviewModal from './components/StagingPreviewModal';
 import CombinedToolsPanel from './components/CombinedToolsPanel';
 import CodePreviewModal from './components/CodePreviewModal';
+import ToolCreator from './components/ToolCreator';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import ScheduleManager from './components/ScheduleManager';
 import HistoryViewer from './components/HistoryViewer';
@@ -39,6 +40,12 @@ function AppContent() {
   const [showStagingModal, setShowStagingModal] = useState(false);
   const [stagingParentId, setStagingParentId] = useState(null);
   const [codePreview, setCodePreview] = useState(null);
+
+  const refreshPendingTools = async () => {
+    const listRes = await fetch(`${API_URL}/pending-tools/list`);
+    const listData = await listRes.json();
+    globalState.updateState({ pendingTools: listData.pending_tools || [] });
+  };
 
   useEffect(() => {
     // Fetch available models on mount
@@ -91,7 +98,7 @@ function AppContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          max_iterations: 5,
+          max_iterations: 1,
           custom_prompt: customPrompt || null,
           dry_run: dryRun
         })
@@ -293,17 +300,16 @@ function AppContent() {
         method: 'POST'
       });
       const data = await response.json();
-      if (data.success) {
+      if (response.ok && data.success) {
         toast.success(`Tool activated: ${data.tool_name}`);
-        // Fetch updated list
-        const listRes = await fetch(`${API_URL}/pending-tools/list`);
-        const listData = await listRes.json();
-        globalState.updateState({ pendingTools: listData.pending_tools || [] });
+        await refreshPendingTools();
+        await fetch(`${API_URL}/api/tools/sync`, { method: 'POST' });
       } else {
-        toast.error(`Failed to activate tool: ${data.error}`);
+        toast.error(`Failed to activate tool: ${data.detail || data.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Error approving tool:', error);
+      toast.error(`Failed to activate tool: ${error.message}`);
     }
   };
 
@@ -318,9 +324,7 @@ function AppContent() {
       });
       const data = await response.json();
       if (data.success) {
-        const listRes = await fetch(`${API_URL}/pending-tools/list`);
-        const listData = await listRes.json();
-        globalState.updateState({ pendingTools: listData.pending_tools || [] });
+        await refreshPendingTools();
       }
     } catch (error) {
       console.error('Error rejecting tool:', error);
@@ -484,13 +488,20 @@ function AppContent() {
                 />
               )}
               {activeTab === 'tools' && (
-                <CombinedToolsPanel 
-                  pendingTools={globalState.pendingTools}
-                  onApprove={handleApproveTool}
-                  onReject={handleRejectTool}
-                  onViewCode={handleViewCode}
-                  apiUrl={API_URL}
-                />
+                <div className="tools-tab-layout">
+                  <div className="tools-tab-creator">
+                    <ToolCreator onCreated={refreshPendingTools} />
+                  </div>
+                  <div className="tools-tab-panels">
+                    <CombinedToolsPanel 
+                      pendingTools={globalState.pendingTools}
+                      onApprove={handleApproveTool}
+                      onReject={handleRejectTool}
+                      onViewCode={handleViewCode}
+                      apiUrl={API_URL}
+                    />
+                  </div>
+                </div>
               )}
               {activeTab === 'analytics' && <AnalyticsDashboard />}
               {activeTab === 'scheduler' && <ScheduleManager />}

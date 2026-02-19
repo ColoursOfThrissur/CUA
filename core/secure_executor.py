@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from core.plan_validator import PlanValidator, PlanValidationResult
 from core.session_permissions import PermissionGate
+from core.tool_orchestrator import ToolOrchestrator
 from tools.capability_registry import CapabilityRegistry
 
 @dataclass
@@ -23,6 +24,7 @@ class SecureExecutor:
         self.validator = PlanValidator()
         self.permission_gate = PermissionGate()
         self.security_violations = []
+        self.tool_orchestrator = ToolOrchestrator()
     
     def execute_plan_secure(self, plan) -> SecureExecutionResult:
         """Execute plan with full security validation."""
@@ -58,7 +60,7 @@ class SecureExecutor:
                 break
             
             # Execute step
-            step_result = self._execute_step_secure(step)
+            step_result = self._execute_step_secure(step, step_results)
             step_results.append(step_result)
             
             if step_result["success"]:
@@ -83,7 +85,7 @@ class SecureExecutor:
             security_violations=self.security_violations
         )
     
-    def _execute_step_secure(self, step) -> Dict:
+    def _execute_step_secure(self, step, prior_step_results: Optional[List[Dict]] = None) -> Dict:
         """Execute single step with security monitoring."""
         
         step_start = time.time()
@@ -109,8 +111,23 @@ class SecureExecutor:
                     "execution_time": time.time() - step_start
                 }
             
+            context = self._build_parameter_context(prior_step_results or [])
+            orchestration = self.tool_orchestrator.execute_tool_step(
+                tool=tool,
+                tool_name=step.tool,
+                operation=step.operation,
+                parameters=step.parameters,
+                context=context,
+            )
+            if not orchestration.success and orchestration.missing_required:
+                return {
+                    "success": False,
+                    "error": orchestration.error or "Missing required parameters",
+                    "execution_time": time.time() - step_start,
+                }
+
             # Execute with monitoring
-            result = tool.execute(step.operation, step.parameters)
+            result = orchestration.raw_result
             
             return {
                 "success": result.status.value == "success" if hasattr(result, 'status') else result.success,
@@ -126,3 +143,14 @@ class SecureExecutor:
                 "error": str(e),
                 "execution_time": time.time() - step_start
             }
+
+    def _build_parameter_context(self, prior_step_results: List[Dict]) -> Dict:
+        """Collect context from successful prior step outputs."""
+        context: Dict = {}
+        for item in prior_step_results:
+            if not item.get("success"):
+                continue
+            data = item.get("data")
+            if isinstance(data, dict):
+                context.update(data)
+        return context

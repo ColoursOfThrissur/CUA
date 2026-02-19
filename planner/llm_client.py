@@ -7,7 +7,7 @@ import json
 import requests
 import yaml
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from core.plan_schema import (
     ExecutionPlanSchema, 
     validate_plan_json, 
@@ -73,26 +73,21 @@ class LLMClient:
         """
         
         self.validation_errors = []
-        
-        # Get available tools from registry file if available
-        tools_description = "filesystem_tool, http_tool, json_tool, shell_tool"
-        try:
-            from core.tool_registry_manager import ToolRegistryManager
-            registry_mgr = ToolRegistryManager()
-            tools_description = registry_mgr.get_all_capabilities_text()
-        except:
-            # Fallback to schema generator
-            if self.registry:
-                from core.schema_generator import get_tool_descriptions
-                tools_description = get_tool_descriptions(self.registry)
+        contracts = self._build_tool_contracts()
+        tools_description = self._format_tool_contracts_for_prompt(contracts)
+        planning_constraints = self._build_planning_constraints(user_request, contracts)
         
         # Build prompt with model-specific format
         prompt = self._format_prompt(
-            LLM_PROMPT_TEMPLATE.format(
+            (
+                LLM_PROMPT_TEMPLATE.format(
                 schema=self.schema,
                 tools=tools_description,
                 examples=FEW_SHOT_EXAMPLES,
                 user_request=user_request
+                )
+                + "\n\nADDITIONAL PLANNING CONSTRAINTS:\n"
+                + planning_constraints
             ),
             expect_json=True  # Plan generation expects JSON
         )
@@ -114,12 +109,26 @@ class LLMClient:
                     # Add extraction hint to prompt
                     prompt += "\n\nERROR: Could not parse JSON. Wrap output in ```json fence and ensure valid JSON syntax."
                     continue
+
+                # Normalize common nested parameter shapes against required keys.
+                self._normalize_plan_parameters(plan_json, contracts)
                 
                 # Validate against Pydantic schema
                 is_valid, plan, error = validate_plan_json(plan_json)
                 
                 if is_valid:
-                    return True, plan, None
+                    semantic_ok, semantic_error = self._validate_plan_semantics(
+                        plan_json,
+                        contracts,
+                        user_request=user_request,
+                    )
+                    if semantic_ok:
+                        return True, plan, None
+                    self.validation_errors.append(f"Attempt {attempt+1}: {semantic_error}")
+                    prompt += (
+                        f"\n\nSEMANTIC VALIDATION ERROR: {semantic_error}\n"
+                        "Regenerate the full plan. Each step parameters must match the selected tool operation contract exactly."
+                    )
                 else:
                     # Log validation error
                     self.validation_errors.append(f"Attempt {attempt+1}: {error}")
@@ -136,6 +145,196 @@ class LLMClient:
         # All retries exhausted
         error_log = "\n".join(self.validation_errors)
         return False, None, f"Failed to generate valid plan after {self.max_retries} attempts:\n{error_log}"
+
+    def _build_tool_contracts(self) -> Dict[str, Dict[str, Dict[str, List[str]]]]:
+        """Build per-tool operation contracts with explicit parameter requirements."""
+        contracts: Dict[str, Dict[str, Dict[str, List[str]]]] = {}
+
+        if self.registry:
+            for tool in self.registry.tools:
+                tool_name = tool.__class__.__name__
+                ops: Dict[str, Dict[str, List[str]]] = {}
+                for op_name, capability in (tool.get_capabilities() or {}).items():
+                    params = [p.name for p in (capability.parameters or [])]
+                    required = [p.name for p in (capability.parameters or []) if p.required]
+                    ops[op_name] = {"parameters": params, "required": required}
+                if ops:
+                    contracts[tool_name] = ops
+
+        # Merge in synced registry snapshot (prefer richer op definitions).
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            registry_mgr = ToolRegistryManager()
+            snapshot = registry_mgr.get_registry().get("tools", {})
+            for tool_name, tool_data in snapshot.items():
+                ops: Dict[str, Dict[str, List[str]]] = contracts.get(tool_name, {})
+                for op_name, op_data in (tool_data.get("operations") or {}).items():
+                    params = list(op_data.get("parameters") or [])
+                    required = list(op_data.get("required") or [])
+                    existing = ops.get(op_name, {"parameters": [], "required": []})
+                    existing_params = list(existing.get("parameters") or [])
+                    existing_required = list(existing.get("required") or [])
+
+                    # Prefer source with non-empty params/required; merge unique keys.
+                    merged_params = existing_params or params
+                    if existing_params and params:
+                        merged_params = list(dict.fromkeys(existing_params + params))
+                    merged_required = existing_required or required
+                    if existing_required and required:
+                        merged_required = list(dict.fromkeys(existing_required + required))
+
+                    ops[op_name] = {"parameters": merged_params, "required": merged_required}
+                if ops:
+                    contracts[tool_name] = ops
+        except Exception:
+            pass
+
+        return contracts
+
+    def _format_tool_contracts_for_prompt(self, contracts: Dict[str, Dict[str, Dict[str, List[str]]]]) -> str:
+        """Format contracts for planner prompt with strict parameter-shape guidance."""
+        if not contracts:
+            return "filesystem_tool, http_tool, json_tool, shell_tool"
+
+        lines: List[str] = []
+        for tool_name in sorted(contracts.keys()):
+            lines.append(f"{tool_name}:")
+            for op_name in sorted(contracts[tool_name].keys()):
+                op = contracts[tool_name][op_name]
+                params = op.get("parameters", [])
+                required = op.get("required", [])
+                optional = [p for p in params if p not in required]
+                lines.append(f"  - {op_name}")
+                lines.append(f"    required: {required}")
+                lines.append(f"    optional: {optional}")
+                lines.append("    parameters must be a flat object (no nested wrapper keys).")
+        return "\n".join(lines)
+
+    def _normalize_plan_parameters(self, plan_json: Dict[str, Any], contracts: Dict[str, Dict[str, Dict[str, List[str]]]]):
+        """Normalize common nested shapes like {'contact': {...}} into flat parameter objects."""
+        steps = plan_json.get("steps")
+        if not isinstance(steps, list):
+            return
+
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            tool_name = step.get("tool")
+            operation = step.get("operation")
+            params = step.get("parameters")
+            if not isinstance(params, dict):
+                continue
+            if tool_name not in contracts or operation not in contracts.get(tool_name, {}):
+                continue
+
+            required = contracts[tool_name][operation].get("required", [])
+            if not required:
+                continue
+
+            missing = [r for r in required if r not in params]
+            if not missing:
+                continue
+
+            # Flatten single nested object if it contains the required keys.
+            nested_dicts = [v for v in params.values() if isinstance(v, dict)]
+            if len(nested_dicts) == 1:
+                nested = nested_dicts[0]
+                if all(r in nested for r in required):
+                    merged = dict(nested)
+                    for k, v in params.items():
+                        if not isinstance(v, dict):
+                            merged[k] = v
+                    step["parameters"] = merged
+
+    def _validate_plan_semantics(
+        self,
+        plan_json: Dict[str, Any],
+        contracts: Dict[str, Dict[str, Dict[str, List[str]]]],
+        user_request: str = "",
+    ) -> Tuple[bool, str]:
+        """Validate tool/operation existence and required parameter presence."""
+        if not contracts:
+            return True, ""
+
+        steps = plan_json.get("steps")
+        if not isinstance(steps, list):
+            return False, "Plan JSON missing 'steps' list"
+
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                return False, f"Step {idx} is not an object"
+
+            tool_name = step.get("tool")
+            operation = step.get("operation")
+            params = step.get("parameters", {})
+
+            if tool_name not in contracts:
+                return False, f"Step {idx}: unknown tool '{tool_name}'"
+            if operation not in contracts[tool_name]:
+                return False, f"Step {idx}: unknown operation '{operation}' for tool '{tool_name}'"
+            if not isinstance(params, dict):
+                return False, f"Step {idx}: parameters must be an object"
+
+            required = contracts[tool_name][operation].get("required", [])
+            missing = [name for name in required if name not in params]
+            if missing:
+                return False, (
+                    f"Step {idx}: missing required parameters {missing} "
+                    f"for {tool_name}.{operation}"
+                )
+
+            # Guardrail: reject placeholder/external HTTP plans when user did not provide a URL.
+            tool_lc = str(tool_name).lower()
+            if "http" in tool_lc:
+                url = str(params.get("url", "")).strip().lower()
+                if "example.com" in url:
+                    return False, (
+                        f"Step {idx}: placeholder URL '{params.get('url')}' is not allowed. "
+                        "Use real user-provided URLs or non-HTTP tools."
+                    )
+                if url and not self._request_contains_url(user_request):
+                    return False, (
+                        f"Step {idx}: HTTP operation {tool_name}.{operation} requires a URL in user request. "
+                        "User request did not provide one."
+                    )
+
+        return True, ""
+
+    @staticmethod
+    def _request_contains_url(user_request: str) -> bool:
+        text = (user_request or "").lower()
+        return "http://" in text or "https://" in text
+
+    def _build_planning_constraints(
+        self,
+        user_request: str,
+        contracts: Dict[str, Dict[str, Dict[str, List[str]]]],
+    ) -> str:
+        """Build strict runtime constraints to reduce hallucinated plans."""
+        lines: List[str] = [
+            "- Use only tool names and operations listed in AVAILABLE TOOLS.",
+            "- Do not invent external APIs, domains, or endpoints.",
+            "- Do not use placeholder URLs like api.example.com or example.com.",
+            "- If user request has no URL, do not use HTTP tools.",
+            "- Parameters must be flat object keys matching operation contracts."
+        ]
+
+        request_text = (user_request or "").lower()
+        preferred: List[str] = []
+        for tool_name, ops in contracts.items():
+            op_create = ops.get("create", {})
+            if "contact_id" in [p.lower() for p in op_create.get("parameters", [])]:
+                preferred.append(tool_name)
+
+        if "contact_id" in request_text and preferred:
+            lines.append(
+                f"- For contact_id-style local CRUD requests, prefer these tools first: {preferred}."
+            )
+            lines.append(
+                "- Build steps in create -> get -> list order when user explicitly asks this sequence."
+            )
+
+        return "\n".join(lines)
     
     def generate_response(self, user_message: str, conversation_history: List[Dict[str, str]] = None) -> str:
         """
@@ -155,8 +354,9 @@ class LLMClient:
                 tools_list = []
                 for tool in self.registry.tools:
                     caps = tool.get_capabilities()
-                    ops = ", ".join([cap.operation for cap in caps])
-                    tools_list.append(f"- {tool.name}: {ops}")
+                    ops = ", ".join(sorted(caps.keys()))
+                    tool_name = getattr(tool, "name", tool.__class__.__name__)
+                    tools_list.append(f"- {tool_name}: {ops}")
                 tools_info = "\n".join(tools_list)
         
         # Build conversational prompt
@@ -337,8 +537,7 @@ Respond naturally."""
                 "Connection failed - Ollama not available",
                 {"model": self.model}
             )
-            # Fallback to mock if Ollama not available
-            return self._mock_response(prompt, temperature)
+            return None
         except Exception as e:
             self.llm_logger.log_error(
                 f"Exception: {str(e)}",

@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 import json
 import time
 from pathlib import Path
+from core.tool_orchestrator import ToolOrchestrator
 
 class StepState(Enum):
     PENDING = "pending"
@@ -133,6 +134,7 @@ class StateMachineExecutor:
     def __init__(self, tool_registry, state_manager: StateManager):
         self.registry = tool_registry
         self.state_manager = state_manager
+        self.tool_orchestrator = ToolOrchestrator()
     
     def execute_plan(self, plan, execution_id: str) -> ExecutionState:
         """Execute plan with state tracking"""
@@ -240,8 +242,22 @@ class StateMachineExecutor:
             operation = step.operation
             if hasattr(operation, 'value'):
                 operation = operation.value
-            
-            result = tool.execute(operation, step.parameters)
+
+            orchestration = self.tool_orchestrator.execute_tool_step(
+                tool=tool,
+                tool_name=step.tool,
+                operation=operation,
+                parameters=step.parameters,
+                context=self._build_parameter_context(state),
+            )
+            if not orchestration.success and orchestration.missing_required:
+                step.state = StepState.FAILED
+                step.error = orchestration.error or "Missing required parameters"
+                step.completed_at = time.time()
+                return
+
+            step.parameters = orchestration.resolved_parameters
+            result = orchestration.raw_result
             
             # Standardized success check using ToolResult.is_success()
             if hasattr(result, 'is_success'):
@@ -263,7 +279,17 @@ class StateMachineExecutor:
             step.error = str(e)
         
         step.completed_at = time.time()
-    
+
+    def _build_parameter_context(self, state: ExecutionState) -> Dict[str, Any]:
+        """Collect lightweight context from successful previous steps."""
+        context: Dict[str, Any] = {}
+        for prev in state.steps[: state.current_step_index]:
+            if prev.state != StepState.SUCCESS:
+                continue
+            if isinstance(prev.result, dict):
+                context.update(prev.result)
+        return context
+
     def get_progress(self, state: ExecutionState) -> Dict:
         """Get execution progress"""
         completed = sum(1 for s in state.steps if s.state == StepState.SUCCESS)

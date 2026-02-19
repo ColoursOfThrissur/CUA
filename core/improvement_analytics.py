@@ -37,6 +37,19 @@ class ImprovementAnalytics:
             CREATE INDEX IF NOT EXISTS idx_timestamp 
             ON improvement_metrics(timestamp DESC)
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS attempt_terminal_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                iteration INTEGER,
+                file_path TEXT,
+                status TEXT,
+                generated BOOLEAN,
+                sandbox_passed BOOLEAN,
+                applied BOOLEAN
+            )
+        """)
         
         conn.commit()
         conn.close()
@@ -144,3 +157,27 @@ class ImprovementAnalytics:
             "common_errors": common_errors,
             "daily_trend": daily_trend
         }
+
+    def record_terminal_state(self, iteration: int, file_path: str, status: str, generated: bool, sandbox_passed: bool, applied: bool):
+        """Persist normalized terminal state for each attempt."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO attempt_terminal_states
+                (timestamp, iteration, file_path, status, generated, sandbox_passed, applied)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().timestamp(),
+                iteration,
+                file_path,
+                status,
+                generated,
+                sandbox_passed,
+                applied
+            ))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()

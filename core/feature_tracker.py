@@ -4,6 +4,8 @@ Feature Tracker - Track features added to tools for intelligent improvement sele
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
+import json
 
 class FeatureCategory(Enum):
     SAFETY = "safety"  # Validation, sanitization, error handling
@@ -23,9 +25,11 @@ class FeatureRecord:
     cooldown_until: int
 
 class FeatureTracker:
-    def __init__(self):
+    def __init__(self, history_file: str = "data/feature_tracker.json"):
         self.history: Dict[str, List[FeatureRecord]] = {}
         self.current_iteration = 0
+        self.history_file = Path(history_file)
+        self._load_history()
     
     def set_iteration(self, iteration: int):
         """Update current iteration counter"""
@@ -45,7 +49,7 @@ class FeatureTracker:
         elif result == "failure":
             cooldown = iteration + 5  # 5 iterations after failure
         else:
-            cooldown = iteration + 1  # 1 iteration for duplicates
+            cooldown = iteration + 4  # Longer cooldown for duplicate/no-op attempts
         
         record = FeatureRecord(
             file=file,
@@ -58,6 +62,7 @@ class FeatureTracker:
         )
         
         self.history[file].append(record)
+        self._save_history()
     
     def is_in_cooldown(self, file: str, current_iteration: int, feature_category: str = None) -> Tuple[bool, Optional[int]]:
         """Check if file/feature is in cooldown period"""
@@ -125,6 +130,7 @@ class FeatureTracker:
         """Clear all history (for new loop sessions)"""
         self.history = {}
         self.current_iteration = 0
+        self._save_history()
     
     def get_summary(self, file: str) -> Dict:
         """Get summary of file's improvement history"""
@@ -143,3 +149,67 @@ class FeatureTracker:
             "failed_attempts": len([r for r in records if r.result == "failure"]),
             "categories_covered": self.get_covered_categories(file)
         }
+
+    def get_recent_negative_count(self, file: str, current_iteration: int, window: int = 8) -> int:
+        """Count recent non-success outcomes for selection down-ranking."""
+        if file not in self.history:
+            return 0
+        start_iter = max(0, current_iteration - window)
+        return sum(
+            1 for rec in self.history[file]
+            if rec.iteration >= start_iter and rec.result in {"failure", "duplicate"}
+        )
+    
+    def _load_history(self):
+        if not self.history_file.exists():
+            return
+        try:
+            with open(self.history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        
+        self.current_iteration = int(data.get("current_iteration", 0))
+        raw_history = data.get("history", {})
+        for file, records in raw_history.items():
+            converted = []
+            for rec in records:
+                try:
+                    converted.append(
+                        FeatureRecord(
+                            file=rec["file"],
+                            feature_added=rec["feature_added"],
+                            category=rec["category"],
+                            iteration=int(rec["iteration"]),
+                            result=rec["result"],
+                            methods_modified=list(rec.get("methods_modified", [])),
+                            cooldown_until=int(rec["cooldown_until"]),
+                        )
+                    )
+                except Exception:
+                    continue
+            if converted:
+                self.history[file] = converted
+    
+    def _save_history(self):
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {
+            "current_iteration": self.current_iteration,
+            "history": {
+                file: [
+                    {
+                        "file": rec.file,
+                        "feature_added": rec.feature_added,
+                        "category": rec.category,
+                        "iteration": rec.iteration,
+                        "result": rec.result,
+                        "methods_modified": rec.methods_modified,
+                        "cooldown_until": rec.cooldown_until,
+                    }
+                    for rec in records
+                ]
+                for file, records in self.history.items()
+            },
+        }
+        with open(self.history_file, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, indent=2)

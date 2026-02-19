@@ -14,7 +14,7 @@ from pydantic import BaseModel
 import asyncio
 import json
 import time
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, List
 from uuid import uuid4
 
 # Import CUA system components
@@ -48,16 +48,35 @@ try:
     from api.settings_api import router as settings_router, set_llm_client
     from api.scheduler_api import router as scheduler_router, set_scheduler
     from api.task_manager_api import router as task_manager_router, set_task_manager
-    from api.pending_tools_api import router as pending_tools_router, set_pending_tools_manager, set_tool_registrar
+    from api.pending_tools_api import router as pending_tools_router, set_pending_tools_manager, set_tool_registrar, set_registry_manager_for_pending
     from api.llm_logs_api import router as llm_logs_router
-    from api.tools_api import router as tools_router, set_registry_manager, set_llm_client_for_sync
+    from api.tools_api import (
+        router as tools_router,
+        set_registry_manager,
+        set_llm_client_for_sync,
+        set_runtime_registry,
+        set_tool_registrar_for_sync,
+        refresh_runtime_registry_from_files,
+    )
     from api.libraries_api import router as libraries_router, set_libraries_manager
+    from api.hybrid_api import router as hybrid_router
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
     ROUTERS_AVAILABLE = False
 
 app = FastAPI(title="CUA Autonomous Agent API")
+
+def _get_cors_settings():
+    raw = os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if not origins:
+        origins = ["http://localhost:3000"]
+    allow_credentials = "*" not in origins
+    return origins, allow_credentials
 
 # Include routers
 if ROUTERS_AVAILABLE:
@@ -70,11 +89,14 @@ if ROUTERS_AVAILABLE:
     app.include_router(llm_logs_router)
     app.include_router(tools_router)
     app.include_router(libraries_router)
+    app.include_router(hybrid_router)
+
+cors_origins, cors_allow_credentials = _get_cors_settings()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -141,9 +163,16 @@ if SYSTEM_AVAILABLE:
         
         # Initialize scheduler
         scheduler = ImprovementScheduler()
-        scheduler.set_callback(lambda max_iter, dry: asyncio.create_task(
-            improvement_loop.start_loop() if not dry else improvement_loop.start_loop()
-        ))
+
+        async def _run_scheduled_loop(max_iter: int, dry: bool):
+            improvement_loop.controller.max_iterations = max_iter
+            improvement_loop.dry_run = dry
+            improvement_loop.continuous_mode = False
+            await improvement_loop.start_loop()
+
+        scheduler.set_callback(
+            lambda max_iter, dry: asyncio.create_task(_run_scheduled_loop(max_iter, dry))
+        )
         scheduler.start()
         
         # Set instances for routers
@@ -153,10 +182,13 @@ if SYSTEM_AVAILABLE:
             set_llm_client(llm_client)
             set_scheduler(scheduler)
             set_task_manager(None)
-            set_pending_tools_manager(None)
+            set_pending_tools_manager(improvement_loop.pending_tools_manager)
             set_tool_registrar(tool_registrar)
+            set_registry_manager_for_pending(registry_manager)
             set_registry_manager(registry_manager)
             set_llm_client_for_sync(llm_client)
+            set_runtime_registry(registry)
+            set_tool_registrar_for_sync(tool_registrar)
             set_libraries_manager(libraries_manager)
         
         print("CUA system initialized successfully")
@@ -180,6 +212,109 @@ class ChatResponse(BaseModel):
     success: bool = True
     execution_result: Optional[Dict] = None
     plan: Optional[Dict] = None
+
+def _build_capability_catalog(registry) -> Dict[str, Dict[str, Any]]:
+    catalog: Dict[str, Dict[str, Any]] = {}
+    for cap_name, capability in registry.get_all_capabilities().items():
+        params = [p.name for p in capability.parameters]
+        required = [p.name for p in capability.parameters if p.required]
+        catalog[cap_name] = {
+            "description": capability.description,
+            "parameters": params,
+            "required": required,
+        }
+    return catalog
+
+def _try_simple_regex_execution(registry, message: str):
+    import re
+    if re.search(r'(get|fetch|scrape)\s+(https?://\S+)', message, re.I):
+        url_match = re.search(r'https?://\S+', message)
+        if url_match:
+            return registry.execute_capability('get', url=url_match.group(0))
+    elif re.search(r'(read|show|cat)\s+(.+)', message, re.I):
+        file_match = re.search(r'(read|show|cat)\s+(.+)', message, re.I)
+        if file_match:
+            return registry.execute_capability('read_file', path=file_match.group(2).strip())
+    elif re.search(r'(list|ls)\s*(.+)?', message, re.I):
+        dir_match = re.search(r'(list|ls)\s*(.+)?', message, re.I)
+        path = dir_match.group(2).strip() if dir_match and dir_match.group(2) else '.'
+        return registry.execute_capability('list_directory', path=path)
+    return None
+
+def _infer_capability_call(llm_client, catalog: Dict[str, Dict[str, Any]], message: str) -> Optional[Dict[str, Any]]:
+    capabilities = []
+    for cap_name, meta in catalog.items():
+        capabilities.append({
+            "name": cap_name,
+            "description": meta["description"],
+            "parameters": meta["parameters"],
+            "required": meta["required"],
+        })
+
+    prompt = (
+        "Select exactly one capability for the user message and return JSON only.\n"
+        "If no capability applies, return {\"capability\": \"\", \"arguments\": {}}.\n"
+        f"User message: {message}\n"
+        f"Capabilities: {json.dumps(capabilities)}\n"
+        "Output schema: {\"capability\": \"name\", \"arguments\": {\"key\": \"value\"}}"
+    )
+    try:
+        raw = llm_client._call_llm(prompt, temperature=0.1, max_tokens=300, expect_json=True)
+        parsed = llm_client._extract_json(raw) if raw else None
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
+    except Exception:
+        return None
+
+def _execute_dynamic_capability(registry, llm_client, message: str):
+    catalog = _build_capability_catalog(registry)
+    if not catalog:
+        return None
+
+    inferred = _infer_capability_call(llm_client, catalog, message)
+    if not inferred:
+        return None
+
+    capability = str(inferred.get("capability", "")).strip()
+    arguments = inferred.get("arguments", {})
+    if capability not in catalog or not isinstance(arguments, dict):
+        return None
+
+    missing_required = [k for k in catalog[capability]["required"] if k not in arguments]
+    if missing_required:
+        return None
+
+    return registry.execute_capability(capability, **arguments)
+
+def _needs_runtime_refresh(message: str) -> bool:
+    text = (message or "")
+    lower = text.lower()
+    if "contact_id" in lower or ("create" in lower and "contact" in lower):
+        return True
+    return bool(_extract_referenced_tool_names(text))
+
+def _extract_referenced_tool_names(message: str) -> List[str]:
+    import re
+    names = re.findall(r"\b([A-Za-z][A-Za-z0-9_]*Tool(?:V\d+)?)\b", message or "")
+    # Preserve order while removing duplicates.
+    ordered = list(dict.fromkeys(names))
+    return ordered
+
+def _has_referenced_tools_loaded(registry, message: str) -> bool:
+    referenced = _extract_referenced_tool_names(message)
+    if not referenced:
+        return True
+    loaded = {tool.__class__.__name__ for tool in registry.tools}
+    return all(name in loaded for name in referenced)
+
+def _decision_tool_summary(registry) -> str:
+    lines = []
+    for tool in registry.tools:
+        caps = sorted((tool.get_capabilities() or {}).keys())
+        if caps:
+            lines.append(f"- {tool.__class__.__name__}: {', '.join(caps)}")
+    return "\n".join(lines) if lines else "- no tools loaded"
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -207,14 +342,19 @@ async def chat(request: ChatRequest):
     
     try:
         if SYSTEM_AVAILABLE and registry and llm_client:
+            # Keep runtime registry aligned when user references dynamic tools.
+            if _needs_runtime_refresh(request.message) and not _has_referenced_tools_loaded(registry, request.message):
+                try:
+                    refresh_runtime_registry_from_files()
+                except Exception:
+                    pass
+
             # Let LLM decide: tool execution or conversation
+            tools_overview = _decision_tool_summary(registry)
             decision_prompt = f"""You are CUA, an autonomous agent with tools.
 
 Available tools:
-- filesystem_tool: read_file, write_file, list_directory
-- http_tool: get, post, put, delete
-- json_tool: parse, validate
-- shell_tool: execute_command
+{tools_overview}
 
 User request: "{request.message}"
 
@@ -230,23 +370,9 @@ Respond with only one word: SIMPLE, COMPLEX, or CHAT"""
             
             if decision == "SIMPLE":
                 # Fast path: direct execution without planning
-                import re
-                
-                # Parse simple commands
-                if re.search(r'(get|fetch|scrape)\s+(https?://\S+)', request.message, re.I):
-                    url_match = re.search(r'https?://\S+', request.message)
-                    url = url_match.group(0)
-                    result = registry.execute_capability('http_tool', 'get', {'url': url})
-                elif re.search(r'(read|show|cat)\s+(.+)', request.message, re.I):
-                    file_match = re.search(r'(read|show|cat)\s+(.+)', request.message, re.I)
-                    path = file_match.group(2).strip()
-                    result = registry.execute_capability('filesystem_tool', 'read_file', {'path': path})
-                elif re.search(r'(list|ls)\s*(.+)?', request.message, re.I):
-                    dir_match = re.search(r'(list|ls)\s*(.+)?', request.message, re.I)
-                    path = dir_match.group(2).strip() if dir_match.group(2) else '.'
-                    result = registry.execute_capability('filesystem_tool', 'list_directory', {'path': path})
-                else:
-                    result = None
+                result = _try_simple_regex_execution(registry, request.message)
+                if result is None:
+                    result = _execute_dynamic_capability(registry, llm_client, request.message)
                 
                 if result and result.status.value == "success":
                     summary_prompt = f"""User asked: {request.message}
@@ -263,64 +389,53 @@ Provide a helpful, natural response. Be concise."""
             
             elif decision == "COMPLEX":
                 # Full planning path for complex multi-step tasks
-                # Switch to Mistral for planning
-                original_model = llm_client.model
-                try:
-                    llm_client._unload_model()
-                    llm_client.set_model('mistral:latest')
+                # Generate plan using currently configured planner model.
+                success, plan, error = llm_client.generate_plan(request.message)
                 
-                    # Generate plan using LLM
-                    success, plan, error = llm_client.generate_plan(request.message)
+                if not success:
+                    response_text = f"Failed to generate plan: {error}"
+                    execution_result = {"success": False, "error": error}
+                else:
+                    # Validate plan
+                    validation = plan_validator.validate_plan(plan)
                     
-                    if not success:
-                        response_text = f"Failed to generate plan: {error}"
-                        execution_result = {"success": False, "error": error}
+                    if not validation.is_approved:
+                        response_text = f"Plan rejected: {', '.join(validation.reasons)}"
+                        execution_result = {"success": False, "validation_failed": True}
                     else:
-                        # Validate plan
-                        validation = plan_validator.validate_plan(plan)
+                        # Execute plan
+                        exec_id = str(uuid4())
+                        sm_executor = StateMachineExecutor(registry, state_manager)
+                        exec_state = sm_executor.execute_plan(plan, exec_id)
                         
-                        if not validation.is_approved:
-                            response_text = f"Plan rejected: {', '.join(validation.reasons)}"
-                            execution_result = {"success": False, "validation_failed": True}
-                        else:
-                            # Execute plan
-                            exec_id = str(uuid4())
-                            sm_executor = StateMachineExecutor(registry, state_manager)
-                            exec_state = sm_executor.execute_plan(plan, exec_id)
+                        # Build response from execution results
+                        if exec_state.overall_state == "completed":
+                            results = []
+                            for step in exec_state.steps:
+                                if step.state.value == "success" and step.result:
+                                    results.append(step.result)
                             
-                            # Build response from execution results
-                            if exec_state.overall_state == "completed":
-                                results = []
-                                for step in exec_state.steps:
-                                    if step.state.value == "success" and step.result:
-                                        results.append(step.result)
-                                
-                                if results:
-                                    # Use LLM to generate natural response from results
-                                    summary_prompt = f"""User asked: {request.message}
+                            if results:
+                                # Use LLM to generate natural response from results
+                                summary_prompt = f"""User asked: {request.message}
 
 Tool execution results: {results[0]}
 
 Provide a helpful, natural response to the user based on these results. Be concise."""
-                                    response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
-                                else:
-                                    response_text = "Task completed successfully."
-                                execution_result = {"success": True, "results": results}
+                                response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
                             else:
-                                # Get error details from failed steps
-                                errors = []
-                                for step in exec_state.steps:
-                                    if step.state.value == "failed" and step.error:
-                                        errors.append(f"{step.operation}: {step.error}")
-                                
-                                error_msg = "; ".join(errors) if errors else exec_state.overall_state
-                                response_text = f"Task failed: {error_msg}"
-                                execution_result = {"success": False, "state": exec_state.overall_state, "errors": errors}
-                
-                finally:
-                    # Restore original model
-                    llm_client._unload_model()
-                    llm_client.set_model(original_model)
+                                response_text = "Task completed successfully."
+                            execution_result = {"success": True, "results": results}
+                        else:
+                            # Get error details from failed steps
+                            errors = []
+                            for step in exec_state.steps:
+                                if step.state.value == "failed" and step.error:
+                                    errors.append(f"{step.operation}: {step.error}")
+                            
+                            error_msg = "; ".join(errors) if errors else exec_state.overall_state
+                            response_text = f"Task failed: {error_msg}"
+                            execution_result = {"success": False, "state": exec_state.overall_state, "errors": errors}
             else:
                 # Conversational mode (CHAT)
                 conversation_history = sessions[session_id]["messages"][-10:]
@@ -452,12 +567,16 @@ async def websocket_endpoint(websocket: WebSocket):
         if improvement_loop and websocket.client_state.name == 'CONNECTED':
             try:
                 status = improvement_loop.get_status()
+                pending_tools = []
+                pending_manager = getattr(improvement_loop, "pending_tools_manager", None)
+                if pending_manager:
+                    pending_tools = pending_manager.get_pending_list()
                 await websocket.send_text(json.dumps({
                     "type": "initial_state",
                     "data": {
                         **status,
                         "pending_approvals": improvement_loop.pending_approvals or {},
-                        "pending_tools": []
+                        "pending_tools": pending_tools
                     }
                 }))
             except Exception as e:

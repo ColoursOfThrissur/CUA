@@ -5,6 +5,7 @@ import importlib
 import sys
 from pathlib import Path
 from typing import Dict, Optional, List
+from tools.tool_interface import BaseTool
 
 
 class ToolRegistrar:
@@ -32,15 +33,17 @@ class ToolRegistrar:
             
             # Import module
             module = importlib.import_module(module_name)
-            
-            # Find tool class (assumes class name matches file: calculator_tool.py -> CalculatorTool)
-            tool_class_name = self._get_tool_class_name(tool_path.stem)
-            
-            if not hasattr(module, tool_class_name):
-                return {'success': False, 'error': f'Class {tool_class_name} not found'}
-            
+            tool_class = self._resolve_tool_class(module, tool_path.stem)
+            if not tool_class:
+                return {'success': False, 'error': 'No BaseTool subclass found in module'}
+
+            # Best-effort hot-reload cleanup to avoid stale capability mappings.
+            try:
+                self.registry.unregister_tool(tool_class.__name__)
+            except Exception:
+                pass
+
             # Instantiate tool
-            tool_class = getattr(module, tool_class_name)
             tool_instance = tool_class()
             
             # Register with registry
@@ -51,13 +54,13 @@ class ToolRegistrar:
             self.registered_tools[tool_name] = tool_instance
             
             # Get capabilities
-            capabilities = [cap.name for cap in tool_instance.capabilities]
+            capabilities = list(tool_instance.get_capabilities().keys())
             
             return {
                 'success': True,
                 'tool_name': tool_name,
                 'capabilities': capabilities,
-                'class_name': tool_class_name
+                'class_name': tool_class.__name__
             }
         
         except Exception as e:
@@ -69,8 +72,12 @@ class ToolRegistrar:
             if tool_name not in self.registered_tools:
                 return {'success': False, 'error': 'Tool not registered'}
             
-            # Remove from registry
-            self.registry.tools = [t for t in self.registry.tools if t.name != tool_name]
+            # Remove from registry (best-effort by class name)
+            tool_instance = self.registered_tools[tool_name]
+            class_name = tool_instance.__class__.__name__
+            removed = self.registry.unregister_tool(class_name)
+            if not removed:
+                return {'success': False, 'error': 'Tool not found in capability registry'}
             
             # Remove from tracking
             del self.registered_tools[tool_name]
@@ -83,13 +90,28 @@ class ToolRegistrar:
         """Convert file name to class name: calculator_tool -> CalculatorTool"""
         parts = file_stem.split('_')
         return ''.join(word.capitalize() for word in parts)
+
+    def _resolve_tool_class(self, module, file_stem: str):
+        """Resolve a BaseTool subclass from imported module."""
+        expected = self._get_tool_class_name(file_stem)
+        if hasattr(module, expected):
+            candidate = getattr(module, expected)
+            if isinstance(candidate, type) and issubclass(candidate, BaseTool) and candidate is not BaseTool:
+                return candidate
+
+        # Fallback: first BaseTool subclass defined in module.
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if isinstance(attr, type) and issubclass(attr, BaseTool) and attr is not BaseTool:
+                return attr
+        return None
     
     def get_active_tools(self) -> list:
         """Get list of currently registered tools"""
         return [
             {
                 'name': tool.name,
-                'capabilities': [cap.name for cap in tool.capabilities],
+                'capabilities': list(tool.get_capabilities().keys()),
                 'description': getattr(tool, 'description', '')
             }
             for tool in self.registry.tools

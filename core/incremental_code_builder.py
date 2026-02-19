@@ -1,6 +1,7 @@
 """
 IncrementalCodeBuilder - Accumulates code changes step by step with LLM merge
 """
+import ast
 from typing import Dict, List, Optional
 
 class IncrementalCodeBuilder:
@@ -63,8 +64,27 @@ class IncrementalCodeBuilder:
             # Integrate changed methods into merged code
             if changed_methods:
                 merged = integrator.integrate_methods(merged, changed_methods)
+                if not self._is_structurally_valid_python(merged):
+                    return None
         
+        if not self._is_structurally_valid_python(merged):
+            return None
         return merged
+
+    def _is_structurally_valid_python(self, code: str) -> bool:
+        """Fast structural gate to prevent propagating malformed merges."""
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                if not node.body:
+                    return False
+                if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                    return False
+        return True
     
     def _extract_code(self, response: str) -> Optional[str]:
         """Extract code from LLM response"""

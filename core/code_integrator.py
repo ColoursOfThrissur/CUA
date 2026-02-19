@@ -102,22 +102,33 @@ class CodeIntegrator:
             logger.info(f"Replaced method {method_name}: lines {start}-{end}")
         
         return '\n'.join(lines)
+
+    def verify_expected_methods(self, code: str, expected_methods: List[str]) -> bool:
+        """Verify expected method names exist and file is parseable."""
+        try:
+            import ast
+            tree = ast.parse(code)
+        except Exception:
+            return False
+
+        if not expected_methods:
+            return True
+        found = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+        return all(method in found for method in expected_methods if method)
     
     def _get_indentation(self, line: str) -> str:
         """Get indentation from line"""
         return line[:len(line) - len(line.lstrip())]
     
     def _integrate_with_ast(self, original_code: str, modified_methods: Dict[str, str]) -> Optional[str]:
-        """Use AST to integrate methods - handles indentation automatically"""
+        """Use AST to replace method bodies only - preserves decorators/signatures"""
         import ast
         
         try:
-            # Parse original code
             tree = ast.parse(original_code)
         except:
-            return None  # Fallback to string-based
+            return None
         
-        # Find class definition
         class_node = None
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
@@ -127,34 +138,27 @@ class CodeIntegrator:
         if not class_node:
             return None
         
-        # Parse modified methods
-        modified_asts = {}
+        # Parse modified methods and extract bodies
+        modified_bodies = {}
         for method_name, method_code in modified_methods.items():
             try:
-                # Parse as standalone function
                 method_tree = ast.parse(method_code)
                 if method_tree.body and isinstance(method_tree.body[0], ast.FunctionDef):
                     method_node = method_tree.body[0]
-                    # Verify method has body (not empty)
                     if not method_node.body:
-                        return None  # Empty method, use string-based
-                    modified_asts[method_name] = method_node
+                        return None
+                    # Store only the body
+                    modified_bodies[method_name] = method_node.body
                 else:
                     return None
             except:
-                return None  # Fallback to string-based
+                return None
         
-        # Replace methods in class
-        new_body = []
+        # Replace only method bodies (keep decorators, signature, docstring)
         for node in class_node.body:
-            if isinstance(node, ast.FunctionDef) and node.name in modified_asts:
-                new_body.append(modified_asts[node.name])
-            else:
-                new_body.append(node)
+            if isinstance(node, ast.FunctionDef) and node.name in modified_bodies:
+                node.body = modified_bodies[node.name]
         
-        class_node.body = new_body
-        
-        # Unparse back to code
         return ast.unparse(tree)
     def _apply_indentation(self, code: str, base_indent: str) -> List[str]:
         """Apply base indentation - only used for add_new_methods"""

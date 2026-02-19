@@ -7,12 +7,27 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AtomicApplier:
     def __init__(self, repo_path: str, backup_dir: str = "./backups"):
         self.repo_path = Path(repo_path)
         self.backup_dir = Path(backup_dir)
         self.backup_dir.mkdir(exist_ok=True)
+        
+        # PHASE 3C: Initialize failure learner
+        from core.failure_learner import FailureLearner
+        self.failure_learner = FailureLearner()
+        
+        # REFINEMENT: Initialize guards
+        from core.staleness_guard import StalenessGuard
+        from core.import_resolver import ImportResolver
+        from core.noop_detector import NoOpDetector
+        self.staleness_guard = StalenessGuard()
+        self.import_resolver = ImportResolver()
+        self.noop_detector = NoOpDetector()
     
     def apply_update(self, patch_content: str, update_id: str) -> Tuple[bool, Optional[str]]:
         """Apply update atomically with protected files verification"""
@@ -46,6 +61,16 @@ class AtomicApplier:
             if result.returncode != 0:
                 if patch_file.exists():
                     patch_file.unlink()
+                # PHASE 3C: Log failure
+                changed_files = self._extract_changed_files(patch_content)
+                if changed_files:
+                    self.failure_learner.log_failure(
+                        file_path=changed_files[0],
+                        change_type="patch_apply",
+                        failure_reason="patch_validation_failed",
+                        error_message=result.stderr,
+                        lines_changed=len(patch_content.split('\n'))
+                    )
                 return False, f"Patch validation failed: {result.stderr}"
             
             # Apply for real with timeout
@@ -63,6 +88,16 @@ class AtomicApplier:
             if result.returncode != 0:
                 # Rollback
                 self.rollback(update_id)
+                # PHASE 3C: Log failure
+                changed_files = self._extract_changed_files(patch_content)
+                if changed_files:
+                    self.failure_learner.log_failure(
+                        file_path=changed_files[0],
+                        change_type="patch_apply",
+                        failure_reason="patch_apply_failed",
+                        error_message=result.stderr,
+                        lines_changed=len(patch_content.split('\n'))
+                    )
                 return False, f"Patch apply failed: {result.stderr}"
             
             # Verify protected files AFTER applying
@@ -113,6 +148,24 @@ class AtomicApplier:
                 # Git-based rollback
                 info = info_file.read_text()
                 commit_hash = info.split('commit: ')[1].split('\n')[0]
+
+                # Safety gate: avoid destructive reset when repo has uncommitted changes.
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=self.repo_path,
+                    capture_output=True,
+                    text=True
+                )
+                if status.returncode != 0:
+                    logger.error("Rollback aborted: git status failed for %s", update_id)
+                    return False
+                if status.stdout.strip():
+                    logger.warning(
+                        "Rollback aborted for %s: repository has uncommitted changes",
+                        update_id
+                    )
+                    return False
+
                 subprocess.run(
                     ["git", "reset", "--hard", commit_hash],
                     cwd=self.repo_path,
@@ -225,7 +278,7 @@ class AtomicApplier:
         return files
     
     def _apply_file_replace(self, patch_content: str, update_id: str) -> Tuple[bool, Optional[str]]:
-        """Apply FILE_REPLACE format patch"""
+        """Apply FILE_REPLACE format patch with guards"""
         import ast
         
         try:
@@ -237,6 +290,30 @@ class AtomicApplier:
             new_content = lines[1]
             
             file_path = self.repo_path / file_path_str
+            
+            # REFINEMENT 1: Check staleness
+            if file_path.exists():
+                original_content = file_path.read_text(encoding='utf-8')
+                if self.staleness_guard.is_stale(str(file_path), original_content):
+                    return False, "File changed unexpectedly - stale context"
+                
+                # REFINEMENT 4: Check no-op
+                if self.noop_detector.is_noop(original_content, new_content):
+                    return True, "Skipped - no semantic change"
+                
+                # REFINEMENT 3: Detect missing imports
+                missing_imports = self.import_resolver.detect_missing(original_content, new_content)
+                if missing_imports:
+                    # Add imports to new content
+                    import_block = '\n'.join(missing_imports) + '\n'
+                    # Insert after existing imports or at top
+                    lines = new_content.split('\n')
+                    insert_idx = 0
+                    for i, line in enumerate(lines[:20]):
+                        if line.strip().startswith(('import ', 'from ')):
+                            insert_idx = i + 1
+                    lines.insert(insert_idx, import_block)
+                    new_content = '\n'.join(lines)
             
             # Backup original
             backup_path = None
@@ -257,6 +334,9 @@ class AtomicApplier:
                     if backup_path and backup_path.exists():
                         shutil.copy2(backup_path, file_path)
                     return False, f"Syntax error: {e}"
+            
+            # REFINEMENT 2: Update staleness snapshot
+            self.staleness_guard.refresh(str(file_path), new_content)
             
             return True, None
         except Exception as e:

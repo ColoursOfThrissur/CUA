@@ -25,6 +25,24 @@ class CapabilityRegistry:
             self._capabilities[cap_name] = capability
             self._tool_by_capability[cap_name] = tool_name
             self._performance_history[cap_name] = []
+
+    def unregister_tool(self, tool_name: str) -> bool:
+        """Unregister a tool and all of its capabilities."""
+        if tool_name not in self._tools:
+            return False
+
+        # Remove capability mappings owned by this tool.
+        owned_capabilities = [
+            cap_name for cap_name, mapped_tool in self._tool_by_capability.items()
+            if mapped_tool == tool_name
+        ]
+        for cap_name in owned_capabilities:
+            self._tool_by_capability.pop(cap_name, None)
+            self._capabilities.pop(cap_name, None)
+            self._performance_history.pop(cap_name, None)
+
+        self._tools.pop(tool_name, None)
+        return True
     
     def get_all_capabilities(self) -> Dict[str, ToolCapability]:
         """Get all registered capabilities."""

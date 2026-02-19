@@ -10,12 +10,22 @@ class SecurityConfig(BaseModel):
     max_file_size_mb: int = Field(default=1, ge=1)
     max_plan_steps: int = Field(default=20, ge=1, le=100)
     allowed_roots: List[str] = Field(default=[".", "./output", "./workspace", "./temp"])
+    storage_mode: str = Field(default="workspace_only")
+    allowed_external_roots: List[str] = Field(default=[])
     blocked_paths: List[str] = Field(default=[
         "C:\\Windows", "C:\\Program Files", "C:\\System32",
         "/etc", "/usr", "/bin", "/sbin", "/root",
         "~/.ssh", "~/.aws", "~/.config"
     ])
     blocked_extensions: List[str] = Field(default=[".exe", ".bat", ".cmd", ".ps1", ".sh", ".dll"])
+
+    @field_validator("storage_mode")
+    @classmethod
+    def validate_storage_mode(cls, value: str) -> str:
+        allowed = {"workspace_only", "approved_external_paths"}
+        if value not in allowed:
+            raise ValueError(f"storage_mode must be one of {sorted(allowed)}")
+        return value
 
 class LLMConfig(BaseModel):
     # Multi-model strategy
