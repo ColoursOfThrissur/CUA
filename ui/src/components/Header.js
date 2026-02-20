@@ -1,9 +1,32 @@
-import React, { useState } from 'react';
-import { Settings, BarChart3, Calendar } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap } from 'lucide-react';
 import './Header.css';
 
-function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenAnalytics, onOpenScheduler }) {
+function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange }) {
   const [showSettings, setShowSettings] = useState(false);
+
+  const modes = [
+    { id: 'chat', label: 'CUA Chat', icon: MessageSquare },
+    { id: 'tools', label: 'Tools', icon: Wrench },
+    { id: 'evolution', label: 'Evolution', icon: Zap }
+  ];
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const activeElement = document.activeElement;
+        if (activeElement.tagName !== 'INPUT' && activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          const currentIndex = modes.findIndex(m => m.id === activeMode);
+          const nextIndex = (currentIndex + 1) % modes.length;
+          onModeChange(modes[nextIndex].id);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeMode, onModeChange]);
 
   return (
     <header className="header">
@@ -15,7 +38,26 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
         </span>
       </div>
       
+      <div className="header-center">
+        {modes.map(mode => {
+          const Icon = mode.icon;
+          return (
+            <button
+              key={mode.id}
+              className={`mode-tab ${activeMode === mode.id ? 'active' : ''} mode-${mode.id}`}
+              onClick={() => onModeChange(mode.id)}
+            >
+              <Icon size={18} />
+              <span>{mode.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      
       <div className="header-right">
+        <button className="btn btn-settings" onClick={onOpenObservability}>
+          <Database size={18} />
+        </button>
         <button className="btn btn-settings" onClick={() => setShowSettings(!showSettings)}>
           <Settings size={18} />
         </button>
@@ -37,13 +79,9 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
             </select>
           </div>
           <div className="settings-divider"></div>
-          <button className="settings-menu-item" onClick={() => { onOpenAnalytics(); setShowSettings(false); }}>
-            <BarChart3 size={16} />
-            Analytics
-          </button>
-          <button className="settings-menu-item" onClick={() => { onOpenScheduler(); setShowSettings(false); }}>
-            <Calendar size={16} />
-            Scheduler
+          <button className="settings-menu-item" onClick={() => setShowSettings(false)}>
+            <Database size={16} />
+            Observability
           </button>
         </div>
       )}

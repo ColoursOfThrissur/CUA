@@ -5,9 +5,10 @@
   --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   --accent-blue: #4a9eff;
   --accent-purple: #a78bfa;
+  --accent-orange: #f59e0b;
   --accent-green: #10b981;
   --accent-red: #ef4444;
-  --accent-orange: #f59e0b;
+  --mode-color: #4a9eff;
   --text-primary: #e5e7eb;
   --text-secondary: #9ca3af;
   --text-muted: #6b7280;

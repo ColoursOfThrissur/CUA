@@ -31,7 +31,7 @@ try:
     from planner.llm_client import LLMClient
     from core.state_machine import StateManager, StateMachineExecutor
     from core.plan_validator import PlanValidator
-    from core.logging_system import get_logger
+    from core.sqlite_logging import get_logger
     from core.error_recovery import ErrorRecovery, RecoveryConfig
     from updater.orchestrator import UpdateOrchestrator
     from core.improvement_loop import SelfImprovementLoop
@@ -61,6 +61,12 @@ try:
     )
     from api.libraries_api import router as libraries_router, set_libraries_manager
     from api.hybrid_api import router as hybrid_router
+    from api.quality_api import router as quality_router
+    from api.tool_evolution_api import router as evolution_router
+    from api.observability_api import router as observability_router
+    from api.cleanup_api import router as cleanup_router
+    from api.tool_info_api import router as tool_info_router
+    from api.tool_list_api import router as tool_list_router
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
@@ -91,6 +97,12 @@ if ROUTERS_AVAILABLE:
     app.include_router(tools_router)
     app.include_router(libraries_router)
     app.include_router(hybrid_router)
+    app.include_router(quality_router)
+    app.include_router(evolution_router)
+    app.include_router(observability_router)
+    app.include_router(cleanup_router)
+    app.include_router(tool_info_router)
+    app.include_router(tool_list_router)
 
 cors_origins, cors_allow_credentials = _get_cors_settings()
 
@@ -149,6 +161,14 @@ if SYSTEM_AVAILABLE:
             registry.register_tool(local_run_note_tool)
         except Exception as e:
             print(f"Warning: Could not load LocalRunNoteTool: {e}")
+        
+        try:
+            from tools.experimental.ContextSummarizerTool import ContextSummarizerTool
+            context_summarizer_tool = ContextSummarizerTool(orchestrator=tool_orchestrator)
+            registry.register_tool(context_summarizer_tool)
+            print(f"[DEBUG] ContextSummarizerTool loaded successfully")
+        except Exception as e:
+            print(f"Warning: Could not load ContextSummarizerTool: {e}")
         executor = SecureExecutor(registry)
         parser = PlanParser()
         permission_gate = PermissionGate()
@@ -192,6 +212,22 @@ if SYSTEM_AVAILABLE:
         
         # Set instances for routers
         if ROUTERS_AVAILABLE:
+            from api.tool_evolution_api import set_evolution_dependencies
+            from core.tool_evolution.flow import ToolEvolutionOrchestrator
+            from core.pending_evolutions_manager import PendingEvolutionsManager
+            from core.tool_quality_analyzer import ToolQualityAnalyzer
+            from core.expansion_mode import ExpansionMode
+            
+            quality_analyzer = ToolQualityAnalyzer()
+            expansion_mode = ExpansionMode(enabled=True)
+            evolution_orchestrator = ToolEvolutionOrchestrator(
+                quality_analyzer=quality_analyzer,
+                expansion_mode=expansion_mode,
+                llm_client=llm_client
+            )
+            pending_evolutions_manager = PendingEvolutionsManager()
+            set_evolution_dependencies(evolution_orchestrator, pending_evolutions_manager)
+            
             print(f"[DEBUG] Setting loop instance: {improvement_loop is not None}")
             set_loop_instance(improvement_loop)
             set_llm_client(llm_client)
@@ -258,6 +294,25 @@ def _try_simple_regex_execution(registry, message: str):
     return None
 
 def _infer_capability_call(llm_client, catalog: Dict[str, Dict[str, Any]], message: str) -> Optional[Dict[str, Any]]:
+    import re
+    
+    # Extract quoted text and additional parameters
+    quoted_match = re.search(r'["\'](.+?)["\']', message)
+    quoted_text = quoted_match.group(1) if quoted_match else None
+    
+    # Check for summarize/summary keywords
+    if quoted_text and re.search(r'\b(summarize|summary)\b', message, re.I):
+        args = {"input_text": quoted_text}
+        # Extract summary_length if present
+        length_match = re.search(r'summary_length[:\s]+([0-9]+)', message, re.I)
+        if length_match:
+            args["summary_length"] = int(length_match.group(1))
+        # Extract tone if present (for future use)
+        tone_match = re.search(r'tone[:\s]+(\w+)', message, re.I)
+        if tone_match:
+            args["tone"] = tone_match.group(1)
+        return {"capability": "summarize_text", "arguments": args}
+    
     capabilities = []
     for cap_name, meta in catalog.items():
         capabilities.append({
@@ -365,97 +420,59 @@ async def chat(request: ChatRequest):
                 except Exception:
                     pass
 
-            # Let LLM decide: tool execution or conversation
-            tools_overview = _decision_tool_summary(registry)
-            decision_prompt = f"""You are CUA, an autonomous agent with tools.
-
-Available tools:
-{tools_overview}
-
-User request: "{request.message}"
-
-Decide:
-- If it's a SIMPLE single tool action (fetch URL, read file, list directory), respond: SIMPLE
-- If it's COMPLEX multi-step task (fetch then parse then save), respond: COMPLEX
-- If it's just CHAT/conversation, respond: CHAT
-
-Respond with only one word: SIMPLE, COMPLEX, or CHAT"""
+            # Try native tool calling first (Mistral function calling)
+            from planner.tool_calling import ToolCallingClient
+            tool_caller = ToolCallingClient(
+                ollama_url=llm_client.ollama_url,
+                model=llm_client.model,
+                registry=registry
+            )
             
-            decision = llm_client._call_llm(decision_prompt, temperature=0.1, max_tokens=10, expect_json=False)
-            decision = decision.strip().upper() if decision else "CHAT"
+            conversation_history = sessions[session_id]["messages"][-5:]
+            success, tool_calls, response_text = tool_caller.call_with_tools(request.message, conversation_history)
             
-            if decision == "SIMPLE":
-                # Fast path: direct execution without planning
-                result = _try_simple_regex_execution(registry, request.message)
-                if result is None:
-                    result = _execute_dynamic_capability(registry, llm_client, request.message)
+            if not success:
+                # Tool calling failed - fallback to conversation
+                response_text = llm_client.generate_response(request.message, conversation_history)
+                execution_result = {"success": True, "mode": "conversation", "fallback": True}
+            elif tool_calls:
+                # Model selected tools - execute them
+                results = []
+                errors = []
                 
-                if result and result.status.value == "success":
+                for call in tool_calls:
+                    try:
+                        tool_name = call["tool"]
+                        operation = call["operation"]
+                        parameters = call["parameters"]
+                        
+                        result = registry.execute_capability(
+                            f"{operation}",
+                            **parameters
+                        )
+                        
+                        if result and result.status.value == "success":
+                            results.append(result.data)
+                        else:
+                            errors.append(f"{operation}: {result.error_message if result else 'failed'}")
+                    except Exception as e:
+                        errors.append(f"{call.get('operation', 'unknown')}: {str(e)}")
+                
+                if results and not errors:
+                    # Success - generate natural response
                     summary_prompt = f"""User asked: {request.message}
 
-Tool result: {result.data}
+Tool results: {results[0]}
 
 Provide a helpful, natural response. Be concise."""
                     response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
-                    execution_result = {"success": True, "fast_path": True}
+                    execution_result = {"success": True, "results": results, "tool_calling": True}
                 else:
-                    error = result.error_message if result else "Could not parse command"
-                    response_text = f"Failed: {error}"
-                    execution_result = {"success": False, "error": error}
-            
-            elif decision == "COMPLEX":
-                # Full planning path for complex multi-step tasks
-                # Generate plan using currently configured planner model.
-                success, plan, error = llm_client.generate_plan(request.message)
-                
-                if not success:
-                    response_text = f"Failed to generate plan: {error}"
-                    execution_result = {"success": False, "error": error}
-                else:
-                    # Validate plan
-                    validation = plan_validator.validate_plan(plan)
-                    
-                    if not validation.is_approved:
-                        response_text = f"Plan rejected: {', '.join(validation.reasons)}"
-                        execution_result = {"success": False, "validation_failed": True}
-                    else:
-                        # Execute plan
-                        exec_id = str(uuid4())
-                        sm_executor = StateMachineExecutor(registry, state_manager)
-                        exec_state = sm_executor.execute_plan(plan, exec_id)
-                        
-                        # Build response from execution results
-                        if exec_state.overall_state == "completed":
-                            results = []
-                            for step in exec_state.steps:
-                                if step.state.value == "success" and step.result:
-                                    results.append(step.result)
-                            
-                            if results:
-                                # Use LLM to generate natural response from results
-                                summary_prompt = f"""User asked: {request.message}
-
-Tool execution results: {results[0]}
-
-Provide a helpful, natural response to the user based on these results. Be concise."""
-                                response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
-                            else:
-                                response_text = "Task completed successfully."
-                            execution_result = {"success": True, "results": results}
-                        else:
-                            # Get error details from failed steps
-                            errors = []
-                            for step in exec_state.steps:
-                                if step.state.value == "failed" and step.error:
-                                    errors.append(f"{step.operation}: {step.error}")
-                            
-                            error_msg = "; ".join(errors) if errors else exec_state.overall_state
-                            response_text = f"Task failed: {error_msg}"
-                            execution_result = {"success": False, "state": exec_state.overall_state, "errors": errors}
+                    error_msg = "; ".join(errors) if errors else "Execution failed"
+                    response_text = f"Failed: {error_msg}"
+                    execution_result = {"success": False, "errors": errors}
             else:
-                # Conversational mode (CHAT)
-                conversation_history = sessions[session_id]["messages"][-10:]
-                response_text = llm_client.generate_response(request.message, conversation_history)
+                # Pure conversation response
                 execution_result = {"success": True, "mode": "conversation"}
         else:
             response_text = f"System not available. Echo: {request.message}"

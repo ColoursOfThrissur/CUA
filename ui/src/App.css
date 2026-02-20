@@ -2,121 +2,89 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: transparent;
+  background: #000000;
   position: relative;
   z-index: 1;
-}
-
-.main-content {
-  display: flex;
-  flex: 1;
-  gap: 1rem;
-  padding: 1rem;
   overflow: hidden;
+  transition: background 0.5s ease;
 }
 
-.left-panel {
-  flex: 1;
-  min-width: 0;
+.app.mode-chat {
+  --mode-color: var(--accent-blue);
+  background: #000000;
 }
 
-.right-panel {
-  width: 450px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--blur-amount));
-  -webkit-backdrop-filter: blur(var(--blur-amount));
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  box-shadow: var(--glass-shadow);
+.app.mode-tools {
+  --mode-color: var(--accent-orange);
+  background: #0a0604;
 }
 
-.tab-navigation {
-  display: flex;
-  background: transparent;
-  border-bottom: 1px solid var(--glass-border);
-  padding: 0;
+.app.mode-evolution {
+  --mode-color: var(--accent-purple);
+  background: #050308;
 }
 
-.tab-btn {
-  flex: 1;
-  padding: 12px 20px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.2s;
-  border-bottom: 2px solid transparent;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-}
-
-.tab-btn::before {
+.app::before {
   content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(74, 158, 255, 0.05);
-  opacity: 0;
-  transition: opacity 0.2s;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 800px;
+  height: 800px;
+  filter: blur(80px);
+  z-index: 0;
+  pointer-events: none;
+  animation: pulse-gradient 8s ease-in-out infinite;
+  transition: background 0.5s ease;
 }
 
-.tab-btn:hover::before {
-  opacity: 1;
+.app.mode-chat::before {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 15%, transparent) 0%, color-mix(in srgb, var(--mode-color) 8%, transparent) 50%, transparent 70%);
 }
 
-.tab-btn:hover {
-  color: var(--text-primary);
-  transform: translateY(-2px);
+.app.mode-tools::before {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 15%, transparent) 0%, color-mix(in srgb, var(--mode-color) 8%, transparent) 50%, transparent 70%);
 }
 
-.tab-btn.active::before {
-  opacity: 1;
-  background: rgba(74, 158, 255, 0.1);
+.app.mode-evolution::before {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 15%, transparent) 0%, color-mix(in srgb, var(--mode-color) 8%, transparent) 50%, transparent 70%);
 }
 
-.tab-btn.active {
-  color: var(--accent-blue);
-  border-bottom-color: var(--accent-blue);
+.app::after {
+  content: '';
+  position: fixed;
+  top: 20%;
+  right: 10%;
+  width: 400px;
+  height: 400px;
+  filter: blur(60px);
+  z-index: 0;
+  pointer-events: none;
+  animation: float 10s ease-in-out infinite;
+  transition: background 0.5s ease;
 }
 
-.tab-content {
-  flex: 1;
-  overflow: hidden;
+.app.mode-chat::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 10%, transparent) 0%, transparent 70%);
 }
 
-.tools-tab-layout {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
+.app.mode-tools::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 10%, transparent) 0%, transparent 70%);
 }
 
-.tools-tab-creator {
-  flex: 0 0 auto;
-  overflow: auto;
+.app.mode-evolution::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 10%, transparent) 0%, transparent 70%);
 }
 
-.tools-tab-panels {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+@keyframes pulse-gradient {
+  0%, 100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.1); }
 }
 
-@media (max-width: 1024px) {
-  .main-content {
-    flex-direction: column;
-  }
-  
-  .right-panel {
-    width: 100%;
-    height: 300px;
-  }
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-20px); }
 }
+
+

@@ -1,21 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Wrench, Cpu, Activity, History, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { API_URL, WS_URL } from './config';
 import { GlobalStateProvider, useGlobalState } from './GlobalState';
 import { ToastProvider, useToast } from './components/Toast';
 import Header from './components/Header';
-import ChatPanel from './components/ChatPanel';
-import AgentControlPanel from './components/AgentControlPanel';
+import ModeTabBar from './components/ModeTabBar';
+import MainCanvas from './components/MainCanvas';
+import RightOverlay from './components/RightOverlay';
+import QualityOverlay from './components/QualityOverlay';
+import PendingEvolutionsOverlay from './components/PendingEvolutionsOverlay';
 import SelfImprovementLog from './components/SelfImprovementLog';
-import StagingPreviewModal from './components/StagingPreviewModal';
-import CombinedToolsPanel from './components/CombinedToolsPanel';
+import TaskManagerPanel from './components/TaskManagerPanel';
+import PendingToolsPanel from './components/PendingToolsPanel';
+import ToolRegistryPanel from './components/ToolRegistryPanel';
 import CodePreviewModal from './components/CodePreviewModal';
-import ToolCreator from './components/ToolCreator';
-import AnalyticsDashboard from './components/AnalyticsDashboard';
-import ScheduleManager from './components/ScheduleManager';
-import HistoryViewer from './components/HistoryViewer';
 import DiffModal from './components/DiffModal';
 import ApprovalNotification from './components/ApprovalNotification';
+import ObservabilityOverlay from './components/ObservabilityOverlay';
 import ErrorBoundary from './components/ErrorBoundary';
 import './styles/variables.css';
 import './App.css';
@@ -36,7 +37,8 @@ function AppContent() {
   const [dryRun, setDryRun] = useState(false);
   const [availableModels, setAvailableModels] = useState({});
   const [currentModel, setCurrentModel] = useState('mistral:latest');
-  const [activeTab, setActiveTab] = useState('agent');
+  const [activeMode, setActiveMode] = useState('chat');
+  const [overlayOpen, setOverlayOpen] = useState(null);
   const [showStagingModal, setShowStagingModal] = useState(false);
   const [stagingParentId, setStagingParentId] = useState(null);
   const [codePreview, setCodePreview] = useState(null);
@@ -373,9 +375,89 @@ function AppContent() {
     }
   };
 
+  const handleFloatingAction = (action) => {
+    setOverlayOpen(action);
+  };
+
+  const renderOverlayContent = () => {
+    switch (overlayOpen) {
+      case 'logs':
+        return (
+          <SelfImprovementLog 
+            logs={globalState.logs}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            onViewDiff={handleViewDiff}
+            onClearLogs={handleClearLogs}
+            onSaveLogs={handleSaveLogs}
+          />
+        );
+      case 'tasks':
+        return (
+          <TaskManagerPanel 
+            taskStatus={globalState.taskManager}
+            onAbortTask={handleAbortTask}
+            onViewStaging={handleViewStaging}
+          />
+        );
+      case 'pending':
+        if (activeMode === 'tools') {
+          return (
+            <div style={{padding: '20px'}}>
+              <h3 style={{color: 'white', marginBottom: '20px'}}>Create Tool</h3>
+              <p style={{color: 'var(--text-secondary)'}}>Use the main interface to create tools</p>
+            </div>
+          );
+        } else if (activeMode === 'evolution') {
+          return <PendingEvolutionsOverlay />;
+        }
+        return null;
+      case 'registry':
+        return (
+          <PendingToolsPanel 
+            pendingTools={globalState.pendingTools}
+            onApprove={handleApproveTool}
+            onReject={handleRejectTool}
+            onViewCode={handleViewCode}
+          />
+        );
+      case 'sync':
+        return <ToolRegistryPanel apiUrl={API_URL} />;
+      case 'observability':
+        return <ObservabilityOverlay />;
+      case 'quality':
+        return <QualityOverlay />;
+      case 'history':
+        return <div style={{padding: '40px', textAlign: 'center', color: 'white'}}>Evolution History</div>;
+      case 'tasks':
+        return (
+          <TaskManagerPanel 
+            taskStatus={globalState.taskManager}
+            onAbortTask={handleAbortTask}
+            onViewStaging={handleViewStaging}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  const getOverlayTitle = () => {
+    const titles = {
+      logs: 'Activity Logs',
+      tasks: 'Active Tasks',
+      pending: activeMode === 'tools' ? 'Create Tool' : 'Pending Evolutions',
+      registry: 'Pending Tools',
+      sync: 'Tool Registry',
+      quality: 'Quality Dashboard',
+      history: 'Evolution History'
+    };
+    return titles[overlayOpen] || '';
+  };
+
   return (
     <ErrorBoundary>
-      <div className="app">
+      <div className={`app mode-${activeMode}`}>
         {!globalState.backendConnected && (
           <div style={{
             position: 'fixed',
@@ -393,22 +475,7 @@ function AppContent() {
             alignItems: 'center',
             gap: '8px'
           }}>
-            <AlertTriangle size={20} /> Backend Disconnected - Start server with: python api/server.py
-          </div>
-        )}
-        
-        {!globalState.backendConnected && (
-          <div style={{
-            position: 'fixed',
-            top: '10px',
-            right: '10px',
-            background: '#ef4444',
-            color: '#fff',
-            padding: '10px 20px',
-            borderRadius: '6px',
-            zIndex: 9999
-          }}>
-            Connection lost - retrying...
+            <AlertTriangle size={20} /> Backend Disconnected
           </div>
         )}
         
@@ -428,87 +495,33 @@ function AppContent() {
           availableModels={availableModels}
           currentModel={currentModel}
           onModelChange={handleModelChange}
-          onOpenAnalytics={() => setActiveTab('analytics')}
-          onOpenScheduler={() => setActiveTab('scheduler')}
+          onOpenObservability={() => setOverlayOpen('observability')}
+          activeMode={activeMode}
+          onModeChange={setActiveMode}
         />
         
-        <div className="main-content">
-          <div className="left-panel">
-            <ChatPanel 
-              messages={messages}
-              onSendMessage={handleSendMessage}
-              isProcessing={isProcessing}
-            />
-          </div>
-          
-          <div className="right-panel">
-            <div className="tab-navigation">
-              <button 
-                className={`tab-btn ${activeTab === 'agent' ? 'active' : ''}`}
-                onClick={() => setActiveTab('agent')}
-              >
-                <Cpu size={16} /> Agent
-              </button>
-              <button 
-                className={`tab-btn ${activeTab === 'tools' ? 'active' : ''}`}
-                onClick={() => setActiveTab('tools')}
-              >
-                <Wrench size={16} /> Tools
-              </button>
-              <button 
-                className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`}
-                onClick={() => setActiveTab('history')}
-              >
-                <History size={16} /> History
-              </button>
-            </div>
-
-            <div className="tab-content">
-              {activeTab === 'agent' && (
-                <AgentControlPanel 
-                  loopStatus={{
-                    running: globalState.running,
-                    iteration: globalState.iteration,
-                    maxIterations: globalState.maxIterations
-                  }}
-                  onStartLoop={handleStartLoop}
-                  onStartContinuous={handleStartContinuous}
-                  onStopLoop={handleStopLoop}
-                  customPrompt={customPrompt}
-                  onCustomPromptChange={setCustomPrompt}
-                  taskStatus={globalState.taskManager}
-                  onAbortTask={handleAbortTask}
-                  onViewStaging={handleViewStaging}
-                  logs={globalState.logs}
-                  onApprove={handleApprove}
-                  onReject={handleReject}
-                  onViewDiff={handleViewDiff}
-                  onClearLogs={handleClearLogs}
-                  onSaveLogs={handleSaveLogs}
-                />
-              )}
-              {activeTab === 'tools' && (
-                <div className="tools-tab-layout">
-                  <div className="tools-tab-creator">
-                    <ToolCreator onCreated={refreshPendingTools} />
-                  </div>
-                  <div className="tools-tab-panels">
-                    <CombinedToolsPanel 
-                      pendingTools={globalState.pendingTools}
-                      onApprove={handleApproveTool}
-                      onReject={handleRejectTool}
-                      onViewCode={handleViewCode}
-                      apiUrl={API_URL}
-                    />
-                  </div>
-                </div>
-              )}
-              {activeTab === 'analytics' && <AnalyticsDashboard />}
-              {activeTab === 'scheduler' && <ScheduleManager />}
-              {activeTab === 'history' && <HistoryViewer onViewDiff={handleViewDiff} />}
-            </div>
-          </div>
-        </div>
+        <MainCanvas 
+          mode={activeMode}
+          messages={messages}
+          onSendMessage={handleSendMessage}
+          isProcessing={isProcessing}
+          onFloatingAction={handleFloatingAction}
+          loopStatus={{
+            running: globalState.running,
+            iteration: globalState.iteration,
+            maxIterations: globalState.maxIterations
+          }}
+          onStatusChange={(status) => globalState.updateState(status)}
+        />
+        
+        <RightOverlay
+          isOpen={overlayOpen !== null}
+          onClose={() => setOverlayOpen(null)}
+          title={getOverlayTitle()}
+          width={overlayOpen === 'quality' ? '60%' : '50%'}
+        >
+          {renderOverlayContent()}
+        </RightOverlay>
         
         {selectedProposal && (
           <DiffModal
@@ -516,13 +529,6 @@ function AppContent() {
             onClose={() => setSelectedProposal(null)}
             onApprove={() => handleApprove(selectedProposal.id)}
             onReject={() => handleReject(selectedProposal.id)}
-          />
-        )}
-        
-        {showStagingModal && stagingParentId && (
-          <StagingPreviewModal
-            parentId={stagingParentId}
-            onClose={() => setShowStagingModal(false)}
           />
         )}
         

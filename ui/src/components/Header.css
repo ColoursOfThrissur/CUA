@@ -3,11 +3,11 @@
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--blur-amount));
-  -webkit-backdrop-filter: blur(var(--blur-amount));
-  border-bottom: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: none;
+  box-shadow: none;
   position: relative;
   z-index: 100;
 }
@@ -16,6 +16,96 @@
   display: flex;
   align-items: center;
   gap: 1.5rem;
+}
+
+.header-center {
+  display: flex;
+  gap: 12px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.mode-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: scale(0.9);
+  opacity: 0.6;
+  position: relative;
+  overflow: hidden;
+}
+
+.mode-tab::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  border-radius: var(--radius-lg);
+}
+
+.mode-tab:hover {
+  background: rgba(26, 31, 58, 0.6);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: scale(0.95) translateY(-2px);
+  opacity: 0.8;
+}
+
+.mode-tab.active {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border-color: currentColor;
+  box-shadow: 0 0 20px currentColor, 0 4px 12px rgba(0, 0, 0, 0.3);
+  transform: scale(1) translateY(-3px);
+  opacity: 1;
+  animation: tabActivate 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mode-tab.active::before {
+  opacity: 0.05;
+}
+
+@keyframes tabActivate {
+  0% {
+    transform: scale(0.9) translateY(0);
+    box-shadow: 0 0 0 currentColor;
+  }
+  50% {
+    transform: scale(1.05) translateY(-4px);
+    box-shadow: 0 0 30px currentColor, 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+  100% {
+    transform: scale(1) translateY(-3px);
+    box-shadow: 0 0 20px currentColor, 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.mode-tab.mode-chat.active {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.mode-tab.mode-tools.active {
+  color: var(--accent-orange);
+  border-color: var(--accent-orange);
+}
+
+.mode-tab.mode-evolution.active {
+  color: var(--accent-purple);
+  border-color: var(--accent-purple);
 }
 
 .logo {

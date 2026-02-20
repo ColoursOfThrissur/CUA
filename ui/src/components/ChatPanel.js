@@ -2,9 +2,20 @@ import React, { useEffect, useRef } from 'react';
 import { User, Bot, Mic, Send } from 'lucide-react';
 import './ChatPanel.css';
 
-function ChatPanel({ messages, onSendMessage, isProcessing }) {
+function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = useRef(null);
+
+  const getPlaceholder = () => {
+    switch (mode) {
+      case 'tools':
+        return 'Describe the tool you want to create...';
+      case 'evolution':
+        return 'Request tool improvements or start self-improvement...';
+      default:
+        return 'Type a command or question... (Ctrl+Enter to send)';
+    }
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -94,7 +105,7 @@ function ChatPanel({ messages, onSendMessage, isProcessing }) {
         <input
           type="text"
           className="chat-input"
-          placeholder="Type a command or question... (Ctrl+Enter to send)"
+          placeholder={getPlaceholder()}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}

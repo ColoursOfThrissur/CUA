@@ -4,11 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import inspect
+import time
 
 from core.parameter_resolution import resolve_tool_parameters
 from core.storage_broker import get_storage_broker
 from core.tool_services import ToolServices
 from core.validation_service import ValidationService
+from core.tool_execution_logger import get_execution_logger
 
 
 @dataclass
@@ -32,6 +34,7 @@ class ToolOrchestrator:
         self._services_cache: Dict[str, ToolServices] = {}
         self._llm_client = llm_client
         self._registry = registry
+        self._execution_logger = get_execution_logger()
     
     def get_services(self, tool_name: str) -> ToolServices:
         """Get service facade for a tool (cached per tool name)."""
@@ -58,6 +61,7 @@ class ToolOrchestrator:
         parameters: Optional[Dict[str, Any]],
         context: Optional[Dict[str, Any]] = None,
     ) -> OrchestratedToolResult:
+        start_time = time.time()
         resolution = resolve_tool_parameters(tool, operation, parameters, context=context)
         if resolution.missing_required:
             missing = ", ".join(resolution.missing_required)
@@ -101,6 +105,17 @@ class ToolOrchestrator:
         try:
             raw_result = self._execute_tool_compat(tool, operation, resolution.resolved_parameters)
         except Exception as e:
+            # Log failed execution
+            execution_time_ms = (time.time() - start_time) * 1000
+            self._execution_logger.log_execution(
+                tool_name=tool_name,
+                operation=operation,
+                success=False,
+                error=str(e),
+                execution_time_ms=execution_time_ms,
+                parameters=resolution.resolved_parameters,
+                output_data=None
+            )
             # Thin tools raise exceptions for errors - wrap them
             from tools.tool_result import ToolResult, ResultStatus
             return OrchestratedToolResult(
@@ -130,6 +145,19 @@ class ToolOrchestrator:
         
         success, data, error = self._normalize_result(raw_result)
         artifacts = self._extract_artifacts(data)
+        
+        # Log successful execution
+        execution_time_ms = (time.time() - start_time) * 1000
+        self._execution_logger.log_execution(
+            tool_name=tool_name,
+            operation=operation,
+            success=success,
+            error=error,
+            execution_time_ms=execution_time_ms,
+            parameters=resolution.resolved_parameters,
+            output_data=data
+        )
+        
         return OrchestratedToolResult(
             success=success,
             data=data,

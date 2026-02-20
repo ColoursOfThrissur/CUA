@@ -1,0 +1,88 @@
+.evolution-mode-chat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 2rem;
+}
+
+.evolution-welcome {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.evolution-welcome h2 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.evolution-welcome p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.evolution-input-form {
+  display: flex;
+  gap: 1rem;
+  width: 100%;
+  max-width: 700px;
+}
+
+.evolution-input {
+  flex: 1;
+  padding: 1rem 1.5rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-size: 1rem;
+  outline: none;
+  transition: all var(--transition-normal);
+}
+
+.evolution-input:focus {
+  border-color: var(--accent-purple);
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.15);
+}
+
+.evolution-input::placeholder {
+  color: var(--text-muted);
+}
+
+.evolution-submit {
+  padding: 1rem 1.5rem;
+  background: var(--accent-purple);
+  border: none;
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.evolution-submit:hover:not(:disabled) {
+  background: #9370db;
+  box-shadow: 0 0 20px rgba(167, 139, 250, 0.3);
+  transform: translateY(-2px);
+}
+
+.evolution-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

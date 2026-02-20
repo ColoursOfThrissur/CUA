@@ -1,0 +1,89 @@
+.tool-mode-chat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 2rem;
+}
+
+.tool-welcome {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.tool-welcome h2 {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--mode-color), var(--mode-color));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: brightness(1.2);
+}
+
+.tool-welcome p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.tool-input-form {
+  display: flex;
+  gap: 1rem;
+  width: 100%;
+  max-width: 700px;
+}
+
+.tool-input {
+  flex: 1;
+  padding: 1rem 1.5rem;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-size: 1rem;
+  outline: none;
+  transition: all var(--transition-normal);
+}
+
+.tool-input:focus {
+  border-color: var(--mode-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mode-color) 15%, transparent);
+}
+
+.tool-input::placeholder {
+  color: var(--text-muted);
+}
+
+.tool-submit {
+  padding: 1rem 1.5rem;
+  background: var(--mode-color);
+  border: none;
+  border-radius: var(--radius-lg);
+  color: white;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-submit:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow: 0 0 20px var(--mode-color);
+  transform: translateY(-2px);
+}
+
+.tool-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

@@ -145,6 +145,30 @@ class IdService:
         return str(uuid.uuid4())
 
 
+class LoggingService:
+    """Logging service for tools."""
+    
+    def __init__(self, tool_name: str):
+        import logging
+        self.logger = logging.getLogger(f"tool.{tool_name}")
+    
+    def info(self, message: str, **kwargs):
+        """Log info message."""
+        self.logger.info(message, extra=kwargs)
+    
+    def warning(self, message: str, **kwargs):
+        """Log warning message."""
+        self.logger.warning(message, extra=kwargs)
+    
+    def error(self, message: str, **kwargs):
+        """Log error message."""
+        self.logger.error(message, extra=kwargs)
+    
+    def debug(self, message: str, **kwargs):
+        """Log debug message."""
+        self.logger.debug(message, extra=kwargs)
+
+
 class ToolServices:
     """Aggregated services provided to tools via orchestrator."""
     
@@ -157,8 +181,36 @@ class ToolServices:
         self.json = JSONService()
         self.shell = ShellService()
         self.fs = FileSystemService(allowed_roots or [".", "data", "output"])
+        self.logging = LoggingService(tool_name)
         self.orchestrator = orchestrator
         self.registry = registry
+    
+    def extract_key_points(self, text: str, style: str = "bullet", language: str = "en") -> str:
+        """Extract key points from text using LLM."""
+        if not self.llm:
+            raise RuntimeError("LLM service not available")
+        prompt = f"Extract key points from the following text in {style} style:\n\n{text}"
+        return self.llm.generate(prompt, temperature=0.3, max_tokens=500)
+    
+    def sentiment_analysis(self, text: str, language: str = "en") -> dict:
+        """Analyze sentiment of text using LLM."""
+        if not self.llm:
+            raise RuntimeError("LLM service not available")
+        prompt = f"Analyze the sentiment (positive/negative/neutral) of this text:\n\n{text}"
+        result = self.llm.generate(prompt, temperature=0.3, max_tokens=200)
+        return {"sentiment": result, "language": language}
+    
+    def detect_language(self, text: str) -> str:
+        """Detect language of text using LLM."""
+        if not self.llm:
+            return "en"
+        prompt = f"Detect the language of this text (return only language code like 'en', 'es', 'fr'):\n\n{text[:200]}"
+        result = self.llm.generate(prompt, temperature=0.1, max_tokens=10)
+        return result.strip().lower()[:2] or "en"
+    
+    def generate_json_output(self, **kwargs) -> dict:
+        """Generate JSON output from provided data."""
+        return kwargs
     
     def call_tool(self, tool_name: str, operation: str, **parameters):
         """Call another tool via orchestrator."""
