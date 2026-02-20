@@ -1,0 +1,32 @@
+{
+  "qwen": {
+    "strategy": "multistage",
+    "max_lines": 200,
+    "description": "Local Qwen models - multi-stage generation"
+  },
+  "qwen2.5": {
+    "strategy": "multistage",
+    "max_lines": 200,
+    "description": "Qwen 2.5 series"
+  },
+  "qwen-coder": {
+    "strategy": "multistage",
+    "max_lines": 200,
+    "description": "Qwen Coder variants"
+  },
+  "gpt-4": {
+    "strategy": "singleshot",
+    "max_lines": 800,
+    "description": "GPT-4 models"
+  },
+  "gpt-3.5": {
+    "strategy": "singleshot",
+    "max_lines": 500,
+    "description": "GPT-3.5 models"
+  },
+  "claude": {
+    "strategy": "singleshot",
+    "max_lines": 800,
+    "description": "Claude models"
+  }
+}

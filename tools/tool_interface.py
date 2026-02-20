@@ -15,6 +15,11 @@ class BaseTool(ABC):
         self._performance_stats: Dict[str, List[float]] = {}
         self.register_capabilities()
     
+    @property
+    def name(self) -> str:
+        """Return tool name."""
+        return self.__class__.__name__
+    
     @abstractmethod
     def register_capabilities(self):
         """Register all capabilities this tool provides."""

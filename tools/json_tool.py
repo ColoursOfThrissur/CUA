@@ -7,11 +7,12 @@ from tools.tool_result import ToolResult, ResultStatus
 
 class JSONTool(BaseTool):
 
-    def __init__(self):
-        self.name = 'json_tool'
+    def __init__(self, orchestrator=None):
         self.description = 'Parse and manipulate JSON'
         self.capabilities = ['parse', 'stringify', 'query']
         super().__init__()
+        if orchestrator:
+            self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
         """Register JSON manipulation capabilities"""

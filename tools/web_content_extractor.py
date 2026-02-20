@@ -15,11 +15,12 @@ class WebContentExtractor(BaseTool):
     """Extract structured content from web pages"""
     ALLOWED_DOMAINS = ['localhost', '127.0.0.1', 'wikipedia.org', 'en.wikipedia.org', 'github.com', 'stackoverflow.com', 'medium.com', 'dev.to']
 
-    def __init__(self):
-        self.name = 'web_content_extractor'
+    def __init__(self, orchestrator=None):
         self.description = 'Extract structured content from web pages'
         self.capabilities = ['extract']
         super().__init__()
+        if orchestrator:
+            self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
         """Register web content extraction capability"""

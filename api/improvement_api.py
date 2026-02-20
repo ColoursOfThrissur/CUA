@@ -451,40 +451,34 @@ async def promote_tool(tool_name: str):
 
 @router.post("/tools/create")
 async def create_tool_from_description(
-    payload: Optional[CreateToolRequest] = Body(default=None),
     description: Optional[str] = None,
-    tool_name: Optional[str] = None
+    tool_name: Optional[str] = None,
+    payload: Optional[CreateToolRequest] = Body(default=None)
 ):
     """Create new tool from user description - LLM generates code"""
     if not loop_instance:
         raise HTTPException(status_code=503, detail="Loop not initialized")
 
+    # Prioritize payload, then query params
     effective_description = payload.description if payload else description
     effective_tool_name = payload.tool_name if payload and payload.tool_name else tool_name
     if not effective_description:
         raise HTTPException(status_code=422, detail="description is required")
     
-    from core.tool_creation_flow import ToolCreationFlow
+    from core.tool_creation.flow import ToolCreationOrchestrator
     from core.capability_graph import CapabilityGraph
     from core.expansion_mode import ExpansionMode
-    from core.growth_budget import GrowthBudget
-    
-    # Check growth budget (soft check for user-triggered create endpoint)
-    budget = GrowthBudget()
-    budget_exhausted = not budget.can_create_tool()
     
     # Initialize components
     capability_graph = CapabilityGraph()
-    # Tool creation endpoint is explicitly for experimental tool scaffolding.
     expansion_mode = ExpansionMode(enabled=True)
-    tool_creation = ToolCreationFlow(capability_graph, expansion_mode, budget)
+    tool_creation = ToolCreationOrchestrator(capability_graph, expansion_mode)
     
     # Create tool
     try:
-        success, msg = tool_creation.create_new_tool(
+        success, msg = tool_creation.create_tool(
             effective_description,
             loop_instance.llm_client,
-            bypass_budget=True,
             preferred_tool_name=effective_tool_name,
         )
         
@@ -507,7 +501,6 @@ async def create_tool_from_description(
             if pending_manager and tool_file and Path(tool_file).exists():
                 valid, contract_error = pending_manager.validate_tool_file_contract(tool_file)
                 if not valid:
-                    # Clean up malformed generated artifacts instead of queueing broken tools.
                     try:
                         Path(tool_file).unlink(missing_ok=True)
                         if test_file:
@@ -517,33 +510,6 @@ async def create_tool_from_description(
                     raise HTTPException(
                         status_code=400,
                         detail=f"Generated tool failed contract validation: {contract_error}",
-                    )
-
-                # Ensure capability metadata can be extracted before queueing.
-                try:
-                    from tools.capability_extractor import CapabilityExtractor
-                    extracted = CapabilityExtractor().extract_from_file(tool_file)
-                    if not extracted or not extracted.get("operations"):
-                        try:
-                            Path(tool_file).unlink(missing_ok=True)
-                            if test_file:
-                                Path(test_file).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Generated tool failed capability extraction validation",
-                        )
-                except Exception as e:
-                    try:
-                        Path(tool_file).unlink(missing_ok=True)
-                        if test_file:
-                            Path(test_file).unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Generated tool failed capability extraction validation: {e}",
                     )
 
                 pending_id = pending_manager.add_pending_tool({
@@ -561,8 +527,7 @@ async def create_tool_from_description(
                 "file_path": tool_file.replace("\\", "/") if tool_file else None,
                 "status": "pending_approval" if pending_id else "experimental",
                 "pending_tool_id": pending_id,
-                "note": "Tool created in experimental namespace and queued for approval." if pending_id else "Tool created in experimental namespace. Pending manager unavailable.",
-                "budget_warning": "Growth budget exhausted; user-initiated create allowed by override." if budget_exhausted else None
+                "note": "Tool created in experimental namespace and queued for approval." if pending_id else "Tool created in experimental namespace. Pending manager unavailable."
             }
         else:
             raise HTTPException(status_code=400, detail=msg)

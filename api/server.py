@@ -56,6 +56,7 @@ try:
         set_llm_client_for_sync,
         set_runtime_registry,
         set_tool_registrar_for_sync,
+        set_tool_orchestrator_for_sync,
         refresh_runtime_registry_from_files,
     )
     from api.libraries_api import router as libraries_router, set_libraries_manager
@@ -126,6 +127,12 @@ if SYSTEM_AVAILABLE:
         config = get_config()
         
         registry = CapabilityRegistry()
+        
+        # Initialize tool orchestrator first
+        from core.tool_orchestrator import ToolOrchestrator
+        tool_orchestrator = ToolOrchestrator(registry=registry)
+        
+        # Register core tools
         fs_tool = FilesystemTool()
         http_tool = HTTPTool()
         json_tool = JSONTool()
@@ -134,6 +141,14 @@ if SYSTEM_AVAILABLE:
         registry.register_tool(http_tool)
         registry.register_tool(json_tool)
         registry.register_tool(shell_tool)
+        
+        # Load approved experimental tools
+        try:
+            from tools.experimental.LocalRunNoteTool import LocalRunNoteTool
+            local_run_note_tool = LocalRunNoteTool(orchestrator=tool_orchestrator)
+            registry.register_tool(local_run_note_tool)
+        except Exception as e:
+            print(f"Warning: Could not load LocalRunNoteTool: {e}")
         executor = SecureExecutor(registry)
         parser = PlanParser()
         permission_gate = PermissionGate()
@@ -144,8 +159,8 @@ if SYSTEM_AVAILABLE:
         error_recovery = ErrorRecovery()
         conversation_memory = ConversationMemory()
         
-        # Initialize tool registrar
-        tool_registrar = ToolRegistrar(registry)
+        # Initialize tool registrar with orchestrator injection
+        tool_registrar = ToolRegistrar(registry, orchestrator=tool_orchestrator)
         
         # Initialize tool registry manager
         registry_manager = ToolRegistryManager()
@@ -189,6 +204,7 @@ if SYSTEM_AVAILABLE:
             set_llm_client_for_sync(llm_client)
             set_runtime_registry(registry)
             set_tool_registrar_for_sync(tool_registrar)
+            set_tool_orchestrator_for_sync(tool_orchestrator)
             set_libraries_manager(libraries_manager)
         
         print("CUA system initialized successfully")

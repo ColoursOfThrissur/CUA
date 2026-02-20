@@ -53,7 +53,8 @@ class SelfImprovementLoop:
             self.sandbox_tester,
             self.plan_history,
             self.analytics,
-            max_iterations
+            max_iterations,
+            registry=None  # TODO: Pass actual registry when available
         )
         
         # Expose controller properties for compatibility

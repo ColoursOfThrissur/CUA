@@ -16,8 +16,8 @@ class EvolutionBridge:
     3. If True, use bridge.run_evolution_cycle() instead of normal flow
     """
     
-    def __init__(self, llm_client):
-        self.evolution_controller = EvolutionController(llm_client)
+    def __init__(self, llm_client, orchestrator=None, registry=None):
+        self.evolution_controller = EvolutionController(llm_client, orchestrator=orchestrator, registry=registry)
         self.evolution_mode_enabled = False
         self.llm_client = llm_client
     

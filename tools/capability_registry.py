@@ -18,6 +18,11 @@ class CapabilityRegistry:
     def register_tool(self, tool: BaseTool):
         """Register a tool and its capabilities."""
         tool_name = tool.__class__.__name__
+        
+        # Unregister old instance if exists (for hot-reload)
+        if tool_name in self._tools:
+            self.unregister_tool(tool_name)
+        
         self._tools[tool_name] = tool
         
         # Register all capabilities
@@ -128,8 +133,8 @@ class CapabilityRegistry:
         return list(self._tools.values())
     
     def get_tool_by_name(self, tool_name: str):
-        """Get tool by name."""
-        # Handle different naming conventions
+        """Get tool by name - always returns current registered instance."""
+        # Direct lookup
         if tool_name in self._tools:
             return self._tools[tool_name]
         
@@ -141,6 +146,11 @@ class CapabilityRegistry:
         clean_name = tool_name.replace("_tool", "")
         for name, tool in self._tools.items():
             if name.lower().replace("tool", "") == clean_name:
+                return tool
+        
+        # Last resort: check if any tool's .name attribute matches
+        for tool in self._tools.values():
+            if hasattr(tool, 'name') and tool.name == tool_name:
                 return tool
         
         return None

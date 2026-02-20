@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 import inspect
 
 from core.parameter_resolution import resolve_tool_parameters
+from core.storage_broker import get_storage_broker
+from core.tool_services import ToolServices
+from core.validation_service import ValidationService
 
 
 @dataclass
@@ -24,6 +27,28 @@ class OrchestratedToolResult:
 
 class ToolOrchestrator:
     """Central orchestrator used by executors to run tools consistently."""
+    
+    def __init__(self, llm_client=None, registry=None):
+        self._services_cache: Dict[str, ToolServices] = {}
+        self._llm_client = llm_client
+        self._registry = registry
+    
+    def get_services(self, tool_name: str) -> ToolServices:
+        """Get service facade for a tool (cached per tool name)."""
+        if tool_name not in self._services_cache:
+            storage_broker = get_storage_broker(tool_name)
+            # Lazy load LLM client if not provided
+            if self._llm_client is None:
+                from planner.llm_client import get_llm_client
+                self._llm_client = get_llm_client()
+            self._services_cache[tool_name] = ToolServices(
+                tool_name, 
+                storage_broker, 
+                self._llm_client,
+                orchestrator=self,
+                registry=self._registry
+            )
+        return self._services_cache[tool_name]
 
     def execute_tool_step(
         self,
@@ -52,7 +77,57 @@ class ToolOrchestrator:
                 meta={"auto_filled": resolution.auto_filled},
             )
 
-        raw_result = self._execute_tool_compat(tool, operation, resolution.resolved_parameters)
+        # Auto-validate from ToolCapability spec
+        capabilities = tool.get_capabilities() if hasattr(tool, 'get_capabilities') else {}
+        capability = capabilities.get(operation)
+        if capability:
+            validation = ValidationService.validate(capability, resolution.resolved_parameters)
+            if not validation.valid:
+                return OrchestratedToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Validation failed: {'; '.join(validation.errors)}",
+                    raw_result=None,
+                    tool_name=tool_name,
+                    operation=operation,
+                    resolved_parameters=resolution.resolved_parameters,
+                    missing_required=[],
+                    artifacts=[],
+                    meta={"auto_filled": resolution.auto_filled, "validation_errors": validation.errors},
+                )
+            # Use sanitized parameters
+            resolution.resolved_parameters.update(validation.sanitized)
+
+        try:
+            raw_result = self._execute_tool_compat(tool, operation, resolution.resolved_parameters)
+        except Exception as e:
+            # Thin tools raise exceptions for errors - wrap them
+            from tools.tool_result import ToolResult, ResultStatus
+            return OrchestratedToolResult(
+                success=False,
+                data=None,
+                error=str(e),
+                raw_result=None,
+                tool_name=tool_name,
+                operation=operation,
+                resolved_parameters=resolution.resolved_parameters,
+                missing_required=[],
+                artifacts=[],
+                meta={"auto_filled": resolution.auto_filled, "exception": type(e).__name__},
+            )
+        
+        # Handle thin tools that return plain dicts or raise exceptions
+        if isinstance(raw_result, dict) and "status" not in raw_result and "success" not in raw_result:
+            # This is a thin tool returning business data - wrap it
+            from tools.tool_result import ToolResult, ResultStatus
+            raw_result = ToolResult(
+                tool_name=tool_name,
+                capability_name=operation,
+                status=ResultStatus.SUCCESS,
+                data=raw_result,
+                error_message=None
+            )
+        
         success, data, error = self._normalize_result(raw_result)
         artifacts = self._extract_artifacts(data)
         return OrchestratedToolResult(
@@ -71,6 +146,9 @@ class ToolOrchestrator:
     def _execute_tool_compat(self, tool, operation: str, parameters: Dict[str, Any]):
         """Execute tool with compatibility across execute signatures."""
         params = parameters or {}
+        print(f"[ORCHESTRATOR] Executing {tool.__class__.__name__}.{operation} with params: {params}")
+        print(f"[ORCHESTRATOR] Tool has services: {hasattr(tool, 'services') and tool.services is not None}")
+        
         if not hasattr(tool, "execute") and hasattr(tool, "execute_capability"):
             try:
                 return tool.execute_capability(operation, **params)

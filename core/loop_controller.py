@@ -32,11 +32,13 @@ class LoopController:
         sandbox_tester,
         plan_history,
         analytics,
-        max_iterations=None
+        max_iterations=None,
+        registry=None
     ):
         from core.config_manager import get_config
         from core.event_bus import get_event_bus
         from core.evolution_bridge import EvolutionBridge
+        from core.tool_orchestrator import ToolOrchestrator
         config = get_config()
         
         self.llm_client = llm_client
@@ -78,8 +80,9 @@ class LoopController:
         from core.retry_coordinator import RetryCoordinator
         self.retry_coordinator = RetryCoordinator(max_retries=3)
         
-        # Evolution system integration
-        self.evolution_bridge = EvolutionBridge(llm_client)
+        # Evolution system integration with orchestrator and registry
+        orchestrator = ToolOrchestrator(registry=registry)
+        self.evolution_bridge = EvolutionBridge(llm_client, orchestrator=orchestrator, registry=registry)
     
     def add_log(self, log_type: str, message: str, proposal_id: Optional[str] = None):
         """Add log entry with automatic truncation"""

@@ -10,11 +10,12 @@ logger = logging.getLogger(__name__)
 class ShellTool(BaseTool):
     ALLOWED_COMMANDS = ['ls', 'dir', 'echo', 'cat', 'type', 'pwd', 'cd']
 
-    def __init__(self):
-        self.name = 'shell_tool'
+    def __init__(self, orchestrator=None):
         self.description = 'Execute safe shell commands'
         self.capabilities = ['execute']
         super().__init__()
+        if orchestrator:
+            self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
         """Register shell execution capability"""

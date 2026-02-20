@@ -15,7 +15,7 @@ from core.self_reflector import SelfReflector
 from core.expansion_mode import ExpansionMode
 from core.refactoring_permissions import RefactoringPermissions
 from core.risk_weighted_decision import RiskWeightedDecision
-from core.tool_creation_flow import ToolCreationFlow
+from core.tool_creation.flow import ToolCreationOrchestrator
 
 # Preserve security backbone
 from core.baseline_health_checker import BaselineHealthChecker
@@ -38,7 +38,7 @@ class EvolutionController:
     - Self-reflect strategically (Gap analysis)
     """
     
-    def __init__(self, llm_client):
+    def __init__(self, llm_client, orchestrator=None, registry=None):
         # Evolution components
         self.capability_graph = CapabilityGraph()
         self.growth_budget = GrowthBudget()
@@ -46,10 +46,14 @@ class EvolutionController:
         self.expansion_mode = ExpansionMode()
         self.refactoring_perms = RefactoringPermissions()
         self.risk_decision = RiskWeightedDecision()
-        self.tool_creation = ToolCreationFlow(
+        
+        # Store orchestrator and registry for tool creation
+        self.orchestrator = orchestrator
+        self.registry = registry
+        
+        self.tool_creation = ToolCreationOrchestrator(
             self.capability_graph,
-            self.expansion_mode,
-            self.growth_budget
+            self.expansion_mode
         )
         
         # Security backbone (preserved)

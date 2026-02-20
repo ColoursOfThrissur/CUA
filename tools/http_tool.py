@@ -13,14 +13,15 @@ logger = logging.getLogger(__name__)
 class HTTPTool(BaseTool):
     ALLOWED_DOMAINS = ['localhost', '127.0.0.1', 'api.github.com', 'github.com', 'pypi.org', 'httpbin.org', 'wikipedia.org', 'en.wikipedia.org']
 
-    def __init__(self, cache_enabled: bool=False, ttl: int=3600):
-        self.name = 'http_tool'
+    def __init__(self, orchestrator=None, cache_enabled: bool=False, ttl: int=3600):
         self.description = 'Make HTTP requests'
         self.capabilities = ['get', 'post', 'put', 'delete']
         self.cache_enabled = cache_enabled
         self.ttl = ttl
         self.cache_store = {}
         super().__init__()
+        if orchestrator:
+            self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
         """Register HTTP request capabilities."""

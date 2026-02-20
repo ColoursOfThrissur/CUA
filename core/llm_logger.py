@@ -10,7 +10,8 @@ import shutil
 
 class LLMLogger:
     def __init__(self, log_dir: str = "logs/llm", max_session_size_mb: int = 10):
-        self.log_dir = Path(log_dir)
+        # Use absolute path to avoid issues when CWD changes (e.g., in sandbox)
+        self.log_dir = Path(log_dir).resolve()
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.interaction_count = 0

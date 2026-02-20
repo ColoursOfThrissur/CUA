@@ -12,7 +12,7 @@ from tools.tool_capability import ToolCapability, Parameter, ParameterType, Safe
 class FilesystemTool(BaseTool):
     """Filesystem operations with sandboxed access."""
 
-    def __init__(self, allowed_roots: List[str]=None):
+    def __init__(self, orchestrator=None, allowed_roots: List[str]=None):
         from core.config_manager import get_config
         try:
             if allowed_roots is not None:
@@ -28,6 +28,8 @@ class FilesystemTool(BaseTool):
         except (ValueError, TypeError) as e:
             raise ValueError(f'Error initializing FilesystemTool: {e}')
         super().__init__()
+        if orchestrator:
+            self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
         """Register filesystem capabilities."""

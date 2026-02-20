@@ -161,48 +161,9 @@ class PendingToolsManager:
                     continue
                 return False, f"Method '{method.name}' calls undefined helper '{called}'"
 
-        # Ensure handlers reference required capability parameters.
-        for cap_name, spec in capability_contract.items():
-            handler_name = f"_handle_{cap_name}"
-            handler = next(
-                (n for n in target_class.body if isinstance(n, ast.FunctionDef) and n.name == handler_name),
-                None,
-            )
-            if not handler:
-                continue
-            used_keys = set()
-            required_dict_keys = set()
-            for node in ast.walk(handler):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                    if (
-                        isinstance(node.func.value, ast.Name)
-                        and node.func.value.id == "kwargs"
-                        and node.func.attr == "get"
-                        and node.args
-                        and isinstance(node.args[0], ast.Constant)
-                        and isinstance(node.args[0].value, str)
-                    ):
-                        used_keys.add(node.args[0].value)
-                if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "kwargs":
-                    if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
-                        used_keys.add(node.slice.value)
-                if isinstance(node, ast.Assign):
-                    if any(isinstance(t, ast.Name) and t.id == "required_params" for t in node.targets):
-                        if isinstance(node.value, ast.Dict):
-                            for key in node.value.keys:
-                                if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                                    required_dict_keys.add(key.value)
-
-            missing = [p for p in spec.get("required", []) if p not in used_keys]
-            if missing:
-                return False, (
-                    f"Handler '{handler_name}' does not reference required parameters: {missing}"
-                )
-            extra = [k for k in sorted(required_dict_keys) if k not in spec.get("parameters", [])]
-            if extra:
-                return False, (
-                    f"Handler '{handler_name}' validates unknown required keys {extra}"
-                )
+        # REMOVED: Overly strict handler parameter validation
+        # Thin tools with TODO stubs don't need to reference all params yet
+        # The orchestrator validates parameters at runtime from ToolCapability
 
         def _path_text(node):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):

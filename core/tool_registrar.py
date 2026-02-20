@@ -9,8 +9,9 @@ from tools.tool_interface import BaseTool
 
 
 class ToolRegistrar:
-    def __init__(self, registry):
+    def __init__(self, registry, orchestrator=None):
         self.registry = registry
+        self.orchestrator = orchestrator
         self.registered_tools = {}  # {tool_name: tool_instance}
     
     def register_new_tool(self, tool_file_path: str) -> Dict:
@@ -43,8 +44,22 @@ class ToolRegistrar:
             except Exception:
                 pass
 
-            # Instantiate tool
-            tool_instance = tool_class()
+            # Instantiate tool with orchestrator/registry injection
+            try:
+                # Try new signature with orchestrator/registry
+                print(f"[REGISTRAR] Attempting to instantiate {tool_class.__name__} with orchestrator={self.orchestrator}")
+                tool_instance = tool_class(orchestrator=self.orchestrator, registry=self.registry)
+                print(f"[REGISTRAR] Success with orchestrator+registry")
+            except TypeError as e:
+                print(f"[REGISTRAR] TypeError with orchestrator+registry: {e}, trying orchestrator only")
+                try:
+                    tool_instance = tool_class(orchestrator=self.orchestrator)
+                    print(f"[REGISTRAR] Success with orchestrator only")
+                except TypeError as e2:
+                    print(f"[REGISTRAR] TypeError with orchestrator only: {e2}, trying no args")
+                    # Fallback to legacy signature without parameters
+                    tool_instance = tool_class()
+                    print(f"[REGISTRAR] Success with no args")
             
             # Register with registry
             self.registry.register_tool(tool_instance)

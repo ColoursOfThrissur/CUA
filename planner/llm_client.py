@@ -16,6 +16,16 @@ from core.plan_schema import (
     FEW_SHOT_EXAMPLES
 )
 
+# Global LLM client instance
+_llm_client_instance = None
+
+def get_llm_client(registry=None):
+    """Get or create global LLM client instance"""
+    global _llm_client_instance
+    if _llm_client_instance is None:
+        _llm_client_instance = LLMClient(registry=registry)
+    return _llm_client_instance
+
 class LLMClient:
     """LLM client with strict schema validation"""
     

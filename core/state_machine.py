@@ -233,10 +233,17 @@ class StateMachineExecutor:
         step.started_at = time.time()
         
         try:
-            # Get tool
+            # Get tool - ALWAYS fetch fresh from registry
             tool = self.registry.get_tool_by_name(step.tool)
             if not tool:
                 raise ValueError(f"Tool '{step.tool}' not found")
+            
+            # Verify tool has services if it's a thin tool
+            if hasattr(tool, 'services'):
+                print(f"[STATE_MACHINE] Tool {step.tool} services check: {tool.services is not None}")
+            
+            print(f"[STATE_MACHINE] Executing {step.tool}.{step.operation} with params: {step.parameters}")
+            print(f"[STATE_MACHINE] Tool instance: {tool.__class__.__name__}, has services: {hasattr(tool, 'services') and tool.services is not None}")
             
             # Execute - handle both string and enum operation names
             operation = step.operation
@@ -250,6 +257,8 @@ class StateMachineExecutor:
                 parameters=step.parameters,
                 context=self._build_parameter_context(state),
             )
+            print(f"[STATE_MACHINE] Orchestration result: success={orchestration.success}, error={orchestration.error}")
+            
             if not orchestration.success and orchestration.missing_required:
                 step.state = StepState.FAILED
                 step.error = orchestration.error or "Missing required parameters"
@@ -258,25 +267,24 @@ class StateMachineExecutor:
 
             step.parameters = orchestration.resolved_parameters
             result = orchestration.raw_result
+            print(f"[STATE_MACHINE] Raw result: {result}")
             
-            # Standardized success check using ToolResult.is_success()
-            if hasattr(result, 'is_success'):
-                success = result.is_success()
-            elif hasattr(result, 'status'):
-                success = result.status.value == "success"
-            else:
-                success = False
+            # Use orchestration.success instead of checking raw_result
+            success = orchestration.success
             
             if success:
                 step.state = StepState.SUCCESS
-                step.result = getattr(result, 'data', None)
+                step.result = orchestration.data
+                print(f"[STATE_MACHINE] Step SUCCESS: {step.result}")
             else:
                 step.state = StepState.FAILED
-                step.error = getattr(result, 'error_message', 'Unknown error')
+                step.error = orchestration.error or getattr(result, 'error_message', 'Unknown error')
+                print(f"[STATE_MACHINE] Step FAILED: {step.error}")
             
         except Exception as e:
             step.state = StepState.FAILED
             step.error = str(e)
+            print(f"[STATE_MACHINE] Exception: {e}")
         
         step.completed_at = time.time()
 

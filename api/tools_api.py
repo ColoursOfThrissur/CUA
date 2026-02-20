@@ -13,6 +13,7 @@ registry_manager = None
 llm_client_instance = None
 runtime_registry = None
 tool_registrar = None
+tool_orchestrator = None
 
 def set_registry_manager(manager):
     global registry_manager
@@ -29,6 +30,10 @@ def set_runtime_registry(registry):
 def set_tool_registrar_for_sync(registrar):
     global tool_registrar
     tool_registrar = registrar
+
+def set_tool_orchestrator_for_sync(orchestrator):
+    global tool_orchestrator
+    tool_orchestrator = orchestrator
 
 class SyncResponse(BaseModel):
     success: bool
@@ -83,6 +88,10 @@ def refresh_runtime_registry_from_files() -> Dict[str, List[Dict[str, str]]]:
     removed: List[str] = []
     if not runtime_registry or not tool_registrar:
         return {"refreshed": refreshed, "failed": failed, "removed": removed}
+    
+    # Always inject orchestrator to ensure it's available
+    if tool_orchestrator:
+        tool_registrar.orchestrator = tool_orchestrator
 
     active_files, _ = _discover_tool_files()
     active_class_names = set()
@@ -115,6 +124,7 @@ def refresh_runtime_registry_from_files() -> Dict[str, List[Dict[str, str]]]:
         if result.get("success"):
             refreshed.append(result.get("tool_name", path))
         else:
+            print(f"[SYNC] Failed to load {path}: {result.get('error')}")
             failed.append({"file": path, "reason": str(result.get("error", "unknown"))})
     return {"refreshed": refreshed, "failed": failed, "removed": removed}
 
