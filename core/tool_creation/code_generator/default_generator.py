@@ -115,13 +115,30 @@ Return only complete Python code with register_capabilities and execute methods 
 - execute(self, operation: str, **kwargs)
 
 Thin Tool Pattern:
-- __init__(self, orchestrator=None): Accept orchestrator
+- __init__(self, orchestrator=None): Accept orchestrator, initialize self._cache = {} if needed
 - Handlers return plain dict (orchestrator wraps in ToolResult)
-- self.services.storage.save(id, data) / .get(id) / .list(limit=10)
-- self.services.ids.generate(prefix) / .time.now_utc()
+
+CRITICAL - ALWAYS use self.services prefix for ALL service calls:
+- self.services.storage.save(id, data) / .get(id) / .list(limit=10) - Storage
+- self.services.llm.generate(prompt, temperature, max_tokens) - LLM calls
+- self.services.http.get/post(url, data) - HTTP requests
+- self.services.fs.read/write(path, content) - File operations
+- self.services.json.parse/stringify(data) - JSON operations
+- self.services.time.now_utc() - Timestamps
+- self.services.ids.generate(prefix) - Generate IDs
+- self.services.logging.info/warning/error(msg) - Logging
+- self.services.detect_language(text) - Detect language
+- self.services.extract_key_points(text, style, language) - Extract key points
+- self.services.sentiment_analysis(text, language) - Analyze sentiment
+- self.services.generate_json_output(**kwargs) - Generate JSON
 - self.services.call_tool(tool_name, operation, **params) - Call another tool
 - self.services.list_tools() - List available tools
 - self.services.has_capability(name) - Check if capability exists
+
+DO NOT:
+- Call self.method_name() for services - ALWAYS use self.services.method_name()
+- Use attributes not initialized in __init__
+- Reference undefined helper methods
 - Raise ValueError for errors
 """
     

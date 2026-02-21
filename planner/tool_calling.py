@@ -20,8 +20,23 @@ class ToolCallingClient:
         # Build tool definitions from registry
         tools = self._build_tool_definitions()
         
-        # Build messages
-        messages = []
+        # Build messages with system prompt
+        messages = [
+            {
+                "role": "system",
+                "content": """You are CUA, an autonomous agent. CRITICAL RULES:
+1. ONLY call tools when user explicitly requests an ACTION (analyze, summarize, create, list, read, write)
+2. NEVER call tools for conversational questions (what should, can you suggest, what do you think, recommendations)
+3. Questions ABOUT the system or asking for suggestions = respond conversationally, NO TOOLS
+4. Commands to DO something with data = use appropriate tool
+
+Examples:
+- "what tool should we add next?" -> NO TOOLS, respond conversationally
+- "summarize this text: [text]" -> USE summarize_text tool
+- "can you suggest improvements?" -> NO TOOLS, respond conversationally  
+- "list files in directory" -> USE list_files tool"""
+            }
+        ]
         if conversation_history:
             messages.extend(conversation_history[-5:])
         messages.append({"role": "user", "content": user_message})
@@ -48,14 +63,37 @@ class ToolCallingClient:
             
             # Check if model wants to call tools
             tool_calls = message.get("tool_calls", [])
+            content = message.get("content", "")
+            
+            # Handle case where Mistral returns JSON in content instead of tool_calls
+            if not tool_calls and content.strip().startswith("{"):
+                try:
+                    import json as json_lib
+                    parsed = json_lib.loads(content.strip())
+                    if "name" in parsed and "arguments" in parsed:
+                        # Convert to tool_calls format
+                        tool_calls = [{"function": parsed}]
+                except:
+                    pass
+            
             if tool_calls:
                 # Model selected tools - return them
                 parsed_calls = []
                 for call in tool_calls:
                     func = call.get("function", {})
+                    full_name = func.get("name", "")
+                    # Parse ToolName_operation_name format
+                    if "_" in full_name:
+                        parts = full_name.split("_", 1)  # Split only on first underscore
+                        tool_name = parts[0]
+                        operation = parts[1] if len(parts) > 1 else full_name
+                    else:
+                        tool_name = full_name
+                        operation = full_name
+                    
                     parsed_calls.append({
-                        "tool": func.get("name", "").replace("_", ""),  # Remove underscore separator
-                        "operation": func.get("name", "").split("_")[-1] if "_" in func.get("name", "") else func.get("name", ""),
+                        "tool": tool_name,
+                        "operation": operation,
                         "parameters": func.get("arguments", {})
                     })
                 return True, parsed_calls, None

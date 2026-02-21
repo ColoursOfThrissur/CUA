@@ -4,9 +4,15 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(to left, rgba(0, 0, 0, 0.6), transparent);
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 999;
   animation: fadeIn 0.2s ease;
+}
+
+[data-theme="light"] .overlay-backdrop {
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .right-overlay {
@@ -14,14 +20,21 @@
   top: 0;
   right: 0;
   bottom: 0;
-  background: var(--glass-bg);
-  backdrop-filter: blur(var(--blur-amount));
-  border-left: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow);
+  background: rgba(10, 14, 39, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.5);
   z-index: 1000;
   display: flex;
   flex-direction: column;
   animation: slideIn 0.3s ease;
+}
+
+[data-theme="light"] .right-overlay {
+  background: rgba(255, 255, 255, 0.85);
+  border-left: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: -10px 0 40px rgba(0, 0, 0, 0.1);
 }
 
 .overlay-header {
@@ -29,8 +42,15 @@
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px;
-  border-bottom: 1px solid var(--glass-border);
-  background: rgba(26, 31, 58, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .overlay-header {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.02);
 }
 
 .overlay-header h3 {
@@ -53,6 +73,10 @@
 .overlay-close:hover {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
+}
+
+[data-theme="light"] .overlay-close:hover {
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .overlay-content {

@@ -17,7 +17,7 @@
   --radius-lg: 1rem;
   --radius-xl: 1.5rem;
   --transition-normal: 250ms ease;
-  --blur-amount: 10px;
+  --blur-amount: 20px;
 }
 
 * {

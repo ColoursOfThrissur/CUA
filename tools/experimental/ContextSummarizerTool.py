@@ -14,13 +14,14 @@ class ContextSummarizerTool(BaseTool):
     def __init__(self, orchestrator=None):
         self.description = "Auto-generated tool"
         self.services = orchestrator.get_services(self.__class__.__name__) if orchestrator else None
+        self._cache = {}
         super().__init__()
 
     def register_capabilities(self):
         """Register tool capabilities"""
         summarize_text_capability = ToolCapability(
             name='summarize_text',
-            description='Summarize_Text Operation',
+            description='ONLY call this when user says "summarize this text:" followed by actual text content. NEVER use for questions about tools, suggestions, or conversations. This summarizes TEXT CONTENT ONLY.',
             parameters=[
             Parameter(name='input_text', type=ParameterType.STRING, description='The long text input to be summarized.', required=True),
             Parameter(name='summary_length', type=ParameterType.INTEGER, description='Desired length of the summary in words. Default is 50.', required=False, default=50)
@@ -34,7 +35,7 @@ class ContextSummarizerTool(BaseTool):
 
         extract_key_points_capability = ToolCapability(
             name='extract_key_points',
-            description='Extract_Key_Points Operation',
+            description='ONLY use when user explicitly requests key point extraction from text. NOT for meta-questions. Extracts key points from provided text.',
             parameters=[
             Parameter(name='input_text', type=ParameterType.STRING, description='The long text input from which key points are to be extracted.', required=True),
             Parameter(name='num_key_points', type=ParameterType.INTEGER, description='Number of key points to extract. Default is 5.', required=False, default=5)
@@ -48,7 +49,7 @@ class ContextSummarizerTool(BaseTool):
 
         sentiment_analysis_capability = ToolCapability(
             name='sentiment_analysis',
-            description='Sentiment_Analysis Operation',
+            description='ONLY use when user explicitly provides text to analyze. NOT for meta-questions about the system. Analyzes sentiment of provided text.',
             parameters=[
             Parameter(name='input_text', type=ParameterType.STRING, description='The text input for sentiment analysis.', required=True),
             Parameter(name='language', type=ParameterType.STRING, description="Language of the input text. Default is 'en' (English).", required=False, default='en')
@@ -62,7 +63,7 @@ class ContextSummarizerTool(BaseTool):
 
         generate_json_output_capability = ToolCapability(
             name='generate_json_output',
-            description='Generate_Json_Output Operation',
+            description='ONLY use when user requests JSON formatting of existing summary/sentiment data. NOT for generating new analysis. Formats data as JSON.',
             parameters=[
             Parameter(name='summary', type=ParameterType.STRING, description='The summary of the input text.', required=True),
             Parameter(name='key_points', type=ParameterType.STRING, description='Array of key points extracted from the input text.', required=True),
@@ -92,29 +93,38 @@ class ContextSummarizerTool(BaseTool):
         required_params = ['input_text']
         missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
         if missing:
+            self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
             raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
         input_text = kwargs['input_text']
         summary_length = kwargs.get('summary_length', 50)
-        tone_style = kwargs.get('tone_style', 'neutral')
 
         if not self.services or not self.services.llm:
+            self.services.logging.error("LLM service not available")
             raise RuntimeError("LLM service not available")
 
-        cache_key = (input_text, summary_length, tone_style)
-        if hasattr(self, '_cache') and cache_key in self._cache:
+        cache_key = (input_text, summary_length)
+        if cache_key in self._cache:
             return self._cache[cache_key]
 
-        prompt = f"Summarize the following text in approximately {summary_length} words with a {tone_style} style:\n\n{input_text}"
+        prompt = f"Summarize the following text in approximately {summary_length} words:\n\n{input_text}"
         try:
             summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
         except Exception as e:
+            self.services.logging.error(f"Failed to generate summary: {e}")
             raise RuntimeError(f"Failed to generate summary: {e}")
 
-        if not hasattr(self, '_cache'):
-            self._cache = {}
-        self._cache[cache_key] = {"summary": summary, "original_length": len(input_text.split()), "summary_length": len(summary.split())}
+        detected_language = self.services.detect_language(input_text)
+        sentiment = self.services.sentiment_analysis(input_text)
+        tone = sentiment.get('label', 'neutral') if isinstance(sentiment, dict) else 'neutral'
 
+        self._cache[cache_key] = {
+            "summary": summary, 
+            "original_length": len(input_text.split()), 
+            "summary_length": len(summary.split()),
+            "detected_language": detected_language,
+            "tone": tone
+        }
         return self._cache[cache_key]
 
     def _handle_extract_key_points(self, **kwargs):
@@ -124,22 +134,17 @@ class ContextSummarizerTool(BaseTool):
             raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
         input_text = kwargs['input_text']
-        tone_style = kwargs.get('tone_style', 'bullet')  # Default to bullet style
-        cache_key = f"{input_text}_{tone_style}"
+        num_key_points = kwargs.get('num_key_points', 5)
+        
+        cache_key = f"{input_text}_{num_key_points}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-
-        language = self.detect_language(input_text)
-        prompt = f"Summarize the following text in {tone_style} style: {input_text}"
-        try:
-            key_points = self.services.llm.generate(prompt, temperature=0.7, max_tokens=150)
-        except Exception as e:
-            self.services.logging.error(f"Error generating summary: {e}")
-            raise
-
-        self.cache[cache_key] = key_points
-        return {'key_points': key_points}
+        detected_language = self.services.detect_language(input_text)
+        result = self.services.extract_key_points(input_text, style='bullet', language=detected_language)
+        
+        self._cache[cache_key] = {'key_points': result, 'language': detected_language}
+        return self._cache[cache_key]
 
     def _handle_sentiment_analysis(self, **kwargs):
         required_params = ['input_text']
@@ -148,43 +153,20 @@ class ContextSummarizerTool(BaseTool):
             raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
         input_text = kwargs['input_text']
+        language = kwargs.get('language', 'en')
+        
         cache_key = hash(input_text)
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
-        detected_language = self.detect_language(input_text)
-        prompt = f"Analyze the sentiment of the following text: {input_text}"
-        try:
-            sentiment_result = self.services.llm.generate(prompt, temperature=0.5, max_tokens=100)
-            self.cache[cache_key] = sentiment_result
-            return {'sentiment': sentiment_result}
-        except Exception as e:
-            self.services.logging.error(f"Error during sentiment analysis: {e}")
-            raise RuntimeError("Failed to analyze sentiment") from e
+        result = self.services.sentiment_analysis(input_text, language=language)
+        self._cache[cache_key] = result
+        return result
 
     def _handle_generate_json_output(self, **kwargs):
-            required_params = ['summary', 'key_points', 'sentiment']
-            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-            if missing:
-                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
-
-            tone_style = kwargs.get('tone_style', 'bullet')
-            input_text = f"{kwargs['summary']} {kwargs['key_points']}"
-
-            # Language detection
-            detected_language = self.services.detect_language(input_text)
-
-            # Caching logic
-            cache_key = (input_text, tone_style, detected_language)
-            if cache_key in self.cache:
-                return self.cache[cache_key]
-
-            # Generate JSON output using the specified style and language
-            prompt = f"Summarize the following text with a {tone_style} tone in {detected_language}: {input_text}"
-            json_output = self.services.llm.generate(prompt=prompt, temperature=0.7, max_tokens=150)
-            json_output = self.services.json.parse(json_output)
-
-            # Cache the result
-            self.cache[cache_key] = json_output
-
-            return json_output
+        required_params = ['summary', 'key_points', 'sentiment']
+        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+        if missing:
+            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+        
+        return self.services.generate_json_output(**kwargs)

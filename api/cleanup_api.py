@@ -16,7 +16,7 @@ async def cleanup_stale_data():
     
     # Get all tool names from database
     with sqlite3.connect(db_path) as conn:
-        cursor = conn.execute("SELECT DISTINCT tool_name FROM tool_executions")
+        cursor = conn.execute("SELECT DISTINCT tool_name FROM executions")
         tool_names = [row[0] for row in cursor.fetchall()]
     
     # Check which tools don't have files
@@ -33,7 +33,7 @@ async def cleanup_stale_data():
         if not any(p.exists() for p in candidates):
             # Remove from database
             with sqlite3.connect(db_path) as conn:
-                conn.execute("DELETE FROM tool_executions WHERE tool_name = ?", (tool_name,))
+                conn.execute("DELETE FROM executions WHERE tool_name = ?", (tool_name,))
                 conn.commit()
             removed_count += 1
             removed_tools.append(tool_name)

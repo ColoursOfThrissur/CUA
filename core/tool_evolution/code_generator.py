@@ -70,7 +70,7 @@ IMPROVEMENT PROPOSAL:
 CHANGES TO MAKE:
 {chr(10).join(f"- {c}" for c in proposal['changes'])}
 
-AVAILABLE SERVICES (via self.services):
+CRITICAL - AVAILABLE SERVICES (ALWAYS use self.services prefix):
 - self.services.llm.generate(prompt, temperature, max_tokens) - Call LLM
 - self.services.storage.save/get/list/find - Store data
 - self.services.http.get/post - HTTP requests
@@ -79,17 +79,23 @@ AVAILABLE SERVICES (via self.services):
 - self.services.time.now_utc() - Timestamps
 - self.services.ids.generate() - Generate IDs
 - self.services.logging.info/warning/error - Log messages
+- self.services.detect_language(text) - Detect language
+- self.services.extract_key_points(text, style, language) - Extract key points
+- self.services.sentiment_analysis(text, language) - Analyze sentiment
+- self.services.generate_json_output(**kwargs) - Generate JSON
 
 REQUIREMENTS:
 - Keep method name: {handler_name}
 - Keep method signature unchanged
 - Preserve all parameters
+- ALWAYS use self.services.X - NEVER call self.X directly for services
+- Initialize any cache/state attributes in __init__ (use self._cache not self.cache)
 - Only improve internal logic using AVAILABLE SERVICES above
-- Use self.services.llm.generate() for any AI/NLP tasks
 - Add error handling if missing
 - Keep under 20 lines
 - Return plain dict (not ToolResult)
-- DO NOT reference services that don't exist
+- DO NOT reference methods that don't exist
+- DO NOT use attributes not initialized in __init__
 
 Return ONLY the improved method definition."""
         

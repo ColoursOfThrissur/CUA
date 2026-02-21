@@ -15,7 +15,10 @@ class EvolutionProposalGenerator:
     def generate_proposal(self, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Generate improvement proposal from analysis."""
         
-        prompt = f"""Analyze this tool and propose improvements.
+        # Read evolution context files for guidance
+        evolution_context = self._read_evolution_context()
+        
+        prompt = f"""Analyze this tool and propose ONLY necessary improvements.
 
 Tool: {analysis['tool_name']}
 Health Score: {analysis['health_score']:.1f}/100
@@ -23,19 +26,33 @@ Success Rate: {analysis['success_rate']:.1%}
 Issues: {', '.join(analysis['issues'])}
 {f"User Request: {analysis['user_prompt']}" if analysis.get('user_prompt') else ""}
 
-Current Code (first 1000 chars):
+Current Code:
 ```python
-{analysis['current_code'][:1000]}
+{analysis['current_code']}
 ```
+
+EVOLUTION GUIDELINES:
+{evolution_context}
+
+IMPORTANT:
+- ONLY fix issues that are actually broken or causing failures
+- DO NOT change working code for style preferences
+- DO NOT add features unless explicitly requested
+- DO NOT refactor code that works correctly
+- Focus on HIGH severity bugs and clear architecture violations
+- Ignore LOW severity style suggestions
 
 Generate improvement proposal as JSON:
 {{
-  "description": "What to improve",
-  "changes": ["Specific change 1", "Specific change 2"],
+  "description": "What specific issue to fix",
+  "changes": ["Minimal change 1", "Minimal change 2"],
   "expected_improvement": "Expected outcome",
   "confidence": 0.0-1.0,
-  "risk_level": 0.0-1.0
+  "risk_level": 0.0-1.0,
+  "justification": "Why this change is necessary"
 }}
+
+If NO critical issues found, return: {{"skip": true, "reason": "Tool is working correctly"}}
 
 Return ONLY valid JSON."""
         
@@ -45,6 +62,11 @@ Return ONLY valid JSON."""
             
             if not proposal:
                 logger.warning("Failed to parse proposal from LLM")
+                return None
+            
+            # Check if should skip
+            if proposal.get('skip'):
+                logger.info(f"Skipping evolution: {proposal.get('reason')}")
                 return None
             
             # Validate proposal structure
@@ -64,6 +86,28 @@ Return ONLY valid JSON."""
         except Exception as e:
             logger.error(f"Proposal generation error: {e}")
             return None
+    
+    def _read_evolution_context(self) -> str:
+        """Read evolution guidelines from context files."""
+        from pathlib import Path
+        context_parts = []
+        
+        # Read LocalLLMRule if exists
+        rule_file = Path(".amazonq/rules/LocalLLMRUle.md")
+        if rule_file.exists():
+            context_parts.append(rule_file.read_text())
+        
+        # Add architecture patterns
+        context_parts.append("""
+ARCHITECTURE PATTERNS:
+- Tools use self._cache (with underscore) for caching
+- Tools use self.services.X to access services (llm, storage, http, fs, logging)
+- SQL queries use parameterized queries (?, params) to prevent injection
+- Error handling returns error dicts: {"error": "message"}
+- Using .get() on dicts with defaults is correct error handling
+""")
+        
+        return "\n\n".join(context_parts)
     
     def _validate_proposal(self, proposal: Dict) -> bool:
         """Validate proposal has required fields."""

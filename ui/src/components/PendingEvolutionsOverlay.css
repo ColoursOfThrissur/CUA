@@ -14,6 +14,13 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   margin-bottom: 16px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .evolution-card {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
 .evolution-header {
@@ -51,6 +58,12 @@
   padding: 12px;
   background: rgba(0, 0, 0, 0.2);
   border-radius: 8px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .changes-list {
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .changes-list strong {
@@ -79,6 +92,13 @@
   border-radius: 4px;
   font-size: 13px;
   color: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .expected-outcome {
+  background: rgba(9, 105, 218, 0.08);
+  color: var(--text-secondary);
 }
 
 .expected-outcome strong {
@@ -109,18 +129,42 @@
   background: rgba(16, 185, 129, 0.2);
   color: #10b981;
   border: 1px solid rgba(16, 185, 129, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .btn-approve {
+  background: rgba(26, 127, 55, 0.1);
+  color: var(--accent-green);
+  border: 1px solid rgba(26, 127, 55, 0.3);
 }
 
 .btn-approve:hover {
   background: rgba(16, 185, 129, 0.3);
 }
 
+[data-theme="light"] .btn-approve:hover {
+  background: rgba(26, 127, 55, 0.15);
+}
+
 .btn-reject {
   background: rgba(239, 68, 68, 0.2);
   color: #ef4444;
   border: 1px solid rgba(239, 68, 68, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+[data-theme="light"] .btn-reject {
+  background: rgba(207, 34, 46, 0.1);
+  color: var(--accent-red);
+  border: 1px solid rgba(207, 34, 46, 0.3);
 }
 
 .btn-reject:hover {
   background: rgba(239, 68, 68, 0.3);
+}
+
+[data-theme="light"] .btn-reject:hover {
+  background: rgba(207, 34, 46, 0.15);
 }

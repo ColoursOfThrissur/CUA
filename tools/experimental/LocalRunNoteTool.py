@@ -95,7 +95,11 @@ class LocalRunNoteTool(BaseTool):
                 raise ValueError("Missing required parameters: note_id and text")
 
             if note_id == "":
-                note_id = self.services.ids.generate()
+                try:
+                    note_id = self.services.ids.generate()
+                except Exception as e:
+                    self.services.logging.error(f"Failed to generate ID: {e}")
+                    raise
 
             data = {
                 "note_id": note_id,
@@ -104,22 +108,32 @@ class LocalRunNoteTool(BaseTool):
                 "status": status
             }
 
-            return self.services.storage.save(note_id, data)
+            try:
+                return self.services.storage.save(note_id, data)
+            except Exception as e:
+                self.services.logging.error(f"Failed to save note: {e}")
+                raise
 
     def _handle_get(self, **kwargs):
-            note_id = kwargs.get('note_id')
-            if not note_id:
-                raise ValueError("Missing required parameter: note_id")
+        note_id = kwargs.get('note_id')
+        if not note_id:
+            raise ValueError("Missing required parameter: note_id")
 
-            try:
-                data = self.services.storage.get(note_id)
-                return data
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Note with ID '{note_id}' not found.")
+        try:
+            data = self.services.storage.get(note_id)
+            return data
+        except FileNotFoundError as e:
+            self.services.logging.error(f"Note with ID '{note_id}' not found.")
+            raise e
 
     def _handle_list(self, **kwargs):
-            limit = kwargs.get("limit", 10)
-            if not isinstance(limit, int) or limit < 1 or limit > 50:
-                raise ValueError("Invalid limit value. Must be an integer between 1 and 50.")
+            try:
+                limit = kwargs.get("limit", 10)
+                if not isinstance(limit, int) or limit < 1 or limit > 50:
+                    raise ValueError("Invalid limit value. Must be an integer between 1 and 50.")
 
-            return self.services.storage.list(limit=limit)
+                result = self.services.storage.list(limit=limit)
+                return {"data": result}
+            except Exception as e:
+                self.services.logging.error(f"Error handling list: {e}")
+                raise

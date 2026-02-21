@@ -1,0 +1,98 @@
+/* Theme Variables - Dark and Light */
+
+/* Dark Theme (Default) - Using actual solution colors */
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: rgba(10, 14, 39, 0.6);
+  --bg-tertiary: rgba(26, 31, 58, 0.4);
+  --bg-hover: rgba(30, 42, 74, 0.5);
+  --bg-active: rgba(42, 63, 95, 0.6);
+  
+  --border-primary: #1e2a4a;
+  --border-secondary: #2d3f5f;
+  
+  --text-primary: #e5e7eb;
+  --text-secondary: #9ca3af;
+  --text-tertiary: #6b7280;
+  
+  --accent-blue: #4a9eff;
+  --accent-blue-light: rgba(74, 158, 255, 0.1);
+  --accent-blue-border: #2563eb;
+  
+  --accent-red: #ef4444;
+  --accent-red-light: rgba(239, 68, 68, 0.1);
+  --accent-red-border: #dc2626;
+  
+  --accent-green: #10b981;
+  --accent-green-light: rgba(16, 185, 129, 0.1);
+  
+  --accent-purple: #a78bfa;
+  --accent-orange: #f59e0b;
+  
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px rgba(74, 158, 255, 0.3);
+  --shadow-glow: 0 0 20px rgba(74, 158, 255, 0.3);
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --bg-primary: #f7f7f7;
+  --bg-secondary: rgba(255, 255, 255, 0.7);
+  --bg-tertiary: rgba(240, 240, 240, 0.6);
+  --bg-hover: rgba(246, 248, 250, 0.8);
+  --bg-active: rgba(221, 244, 255, 0.7);
+  
+  --border-primary: #d0d7de;
+  --border-secondary: #afb8c1;
+  
+  --text-primary: #24292f;
+  --text-secondary: #57606a;
+  --text-tertiary: #6e7781;
+  
+  --accent-blue: #0969da;
+  --accent-blue-light: #ddf4ff;
+  --accent-blue-border: #54aeff;
+  
+  --accent-red: #cf222e;
+  --accent-red-light: #ffebe9;
+  --accent-red-border: #ff8182;
+  
+  --accent-green: #1a7f37;
+  --accent-green-light: #dafbe1;
+  
+  --accent-purple: #8250df;
+  --accent-orange: #d97706;
+  
+  --shadow-sm: 0 1px 3px rgba(27, 31, 36, 0.12);
+  --shadow-md: 0 4px 12px rgba(27, 31, 36, 0.15);
+  --shadow-lg: 0 20px 25px -5px rgba(27, 31, 36, 0.15);
+  --shadow-focus: 0 0 0 3px rgba(9, 105, 218, 0.12);
+  --shadow-glow: 0 0 20px rgba(9, 105, 218, 0.2);
+}
+
+/* Apply light theme to body and app */
+[data-theme="light"] body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] body::before,
+[data-theme="light"] body::after {
+  display: none;
+}
+
+[data-theme="light"] .app {
+  background: var(--bg-primary) !important;
+}
+
+[data-theme="light"] .app::before,
+[data-theme="light"] .app::after {
+  display: none;
+}
+
+/* Smooth theme transitions */
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}

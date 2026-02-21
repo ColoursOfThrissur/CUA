@@ -1,10 +1,14 @@
 """Validator for tool evolution - ensures no breaking changes."""
 import ast
 from typing import Tuple, Dict, Any
+from core.enhanced_code_validator import EnhancedCodeValidator
 
 
 class EvolutionValidator:
     """Validates evolved tool code."""
+    
+    def __init__(self):
+        self.enhanced_validator = EnhancedCodeValidator()
     
     def validate(
         self,
@@ -13,6 +17,11 @@ class EvolutionValidator:
         proposal: Dict[str, Any]
     ) -> Tuple[bool, str]:
         """Validate improved code doesn't break interface."""
+        
+        # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
+        is_valid, error = self.enhanced_validator.validate(improved_code)
+        if not is_valid:
+            return False, f"Enhanced validation failed: {error}"
         
         # 1. Syntax check
         try:

@@ -1,30 +1,32 @@
 # CUA System Architecture - Current State
 
 ## Overview
-CUA is an autonomous agent system with self-improvement capabilities, tool orchestration, and evolution modes.
+CUA is an autonomous agent system with:
+- **Native Tool Calling**: Mistral function calling for automatic tool selection
+- **Tool Evolution**: 6-step improvement workflow with dependency management
+- **SQLite Observability**: 5 databases tracking all system activity
+- **Unified UI**: 3 modes (Chat, Tools, Evolution) with real-time updates
 
 ---
 
 ## Core Flows
 
-### 1. **Chat/Task Execution Flow**
+### 1. **Chat/Task Execution Flow (Native Tool Calling)**
 ```
-User Request → API Server → LLM Decision (SIMPLE/COMPLEX/CHAT)
+User Request → API Server → Native Tool Calling (Mistral)
     ↓
-SIMPLE: Direct tool execution (regex or capability inference)
-COMPLEX: Plan generation → State machine execution
-CHAT: Conversational response
+LLM Selects Tools Automatically (OpenAI-compatible format)
     ↓
-Tool Orchestrator → Parameter resolution → Tool.execute()
+Tool Execution → Result → LLM Summary
     ↓
-Result normalization → Response to user
+Natural Language Response
 ```
 
 **Key Files:**
-- `api/server.py` - Main entry point, chat endpoint
-- `core/tool_orchestrator.py` - Central tool execution
-- `core/parameter_resolution.py` - Auto-fill parameters
-- `core/state_machine.py` - Multi-step plan execution
+- `api/server.py` - Main entry point, native tool calling
+- `planner/tool_calling.py` - Mistral function calling client
+- `core/tool_orchestrator.py` - Tool execution
+- `tools/capability_registry.py` - Tool registry
 
 ---
 
@@ -82,30 +84,36 @@ Execute based on type:
 
 ---
 
-### 4. **Tool Creation Flow**
+### 4. **Tool Evolution Flow (6-Step)**
 ```
-Gap Detection → Spec Generation (LLM)
+1. Analyze → Quality score, errors, usage
     ↓
-Code Generation (Qwen multi-stage / Default single-shot)
+2. Propose → LLM generates improvement spec
     ↓
-Validation (AST, contract checks)
+3. Generate Code → LLM creates improved version
     ↓
-Create in tools/experimental/
+3.5. Check Dependencies → AST parsing for missing libs/services
     ↓
-Sandbox Testing → Pending Approval Queue
+4. Validate → Structure, syntax, logic checks
     ↓
-User Approval → Tool Registration → Runtime Registry
+5. Sandbox Test → Isolated execution
+    ↓
+6. Pending Approval → Human review with dependency warnings
+    ↓
+User Approves → Auto re-check deps → Apply changes
 ```
 
 **Key Files:**
-- `core/tool_creation/flow.py` - Orchestrator
-- `core/tool_creation/spec_generator.py` - Tool spec from description
-- `core/tool_creation/code_generator/` - Code generation strategies
-- `core/tool_creation/validator.py` - AST validation
-- `core/tool_creation/sandbox_runner.py` - Isolated testing
-- `core/pending_tools_manager.py` - Approval workflow
-- `core/tool_registrar.py` - Dynamic registration
-- `tools/capability_registry.py` - Runtime registry
+- `core/tool_evolution/flow.py` - 6-step orchestrator
+- `core/tool_evolution/analyzer.py` - Tool analysis
+- `core/tool_evolution/proposal_generator.py` - LLM proposals
+- `core/tool_evolution/code_generator.py` - Code generation
+- `core/tool_evolution/validator.py` - Validation
+- `core/tool_evolution/sandbox_runner.py` - Testing
+- `core/dependency_checker.py` - AST-based dependency detection
+- `core/dependency_resolver.py` - Install libs, generate services
+- `core/pending_evolutions_manager.py` - Approval queue
+- `api/tool_evolution_api.py` - Evolution endpoints
 
 ---
 
@@ -143,8 +151,20 @@ Validation → Store in Memory
 #### **Orchestration**
 - `tool_orchestrator.py` - Central tool execution
 - `tool_registrar.py` - Dynamic tool registration
-- `tool_services.py` - Service injection (storage, LLM, HTTP, etc.)
+- `tool_services.py` - Service facade (storage, llm, http, fs, logging, etc.)
 - `secure_executor.py` - Safety validation
+
+#### **Dependency Management**
+- `dependency_checker.py` - AST-based detection of missing imports/services
+- `dependency_resolver.py` - Install libraries via pip, generate services via LLM
+
+#### **Observability**
+- `sqlite_logging.py` - SQLite logger (logs.db)
+- `tool_evolution_logger.py` - Evolution tracking (tool_evolution.db)
+- `tool_execution_logger.py` - Execution history (tool_executions.db)
+- `tool_creation_logger.py` - Creation logs (tool_creation.db)
+- `chat_history_logger.py` - Chat history (chat_history.db)
+- `tool_quality_analyzer.py` - Health scoring (0-100)
 
 #### **Self-Improvement**
 - `improvement_loop.py` - Loop facade
@@ -162,12 +182,13 @@ Validation → Store in Memory
 - `growth_budget.py` - Resource limits
 - `expansion_mode.py` - Experimental tool management
 
-#### **Tool Creation**
-- `tool_creation/flow.py` - Creation orchestrator
-- `tool_creation/spec_generator.py` - Spec generation
-- `tool_creation/code_generator/` - Code generation
-- `tool_creation/validator.py` - Validation
-- `tool_creation/sandbox_runner.py` - Testing
+#### **Tool Evolution**
+- `tool_evolution/flow.py` - 6-step evolution orchestrator
+- `tool_evolution/analyzer.py` - Tool analysis with quality scoring
+- `tool_evolution/proposal_generator.py` - LLM-based improvement proposals
+- `tool_evolution/code_generator.py` - Code generation with service awareness
+- `tool_evolution/validator.py` - AST and structure validation
+- `tool_evolution/sandbox_runner.py` - Isolated testing
 
 #### **Safety & Validation**
 - `immutable_brain_stem.py` - Core safety rules
@@ -202,7 +223,8 @@ Validation → Store in Memory
 - `experimental/` - Pending approval tools
 
 ### **Planner Layer** (`planner/`)
-- `llm_client.py` - LLM integration (Ollama/Mistral/Qwen)
+- `llm_client.py` - LLM integration (Ollama/Mistral)
+- `tool_calling.py` - Native function calling (Mistral)
 - `plan_parser.py` - Plan parsing
 - `ollama_client.py` - Ollama fallback
 
@@ -214,22 +236,30 @@ Validation → Store in Memory
 - `audit_logger.py` - Change tracking
 
 ### **UI Layer** (`ui/`)
-- React frontend with real-time updates
-- WebSocket connection for events
-- Tool approval interface
-- Log streaming
+- **Unified Canvas**: 3 modes (CUA Chat, Tools, Evolution)
+- **Mode Tabs**: Carousel-style switcher with glass morphism
+- **Floating Action Bar**: Context-sensitive buttons per mode
+- **Right Overlays**: Slide-in panels with gradient backdrop
+- **Observability**: Database viewer with 5 tabs
+- **Quality Dashboard**: Health scores and recommendations
+- **Pending Evolutions**: Approval UI with dependency warnings
+- **Real-time Updates**: WebSocket for live data
 
 ---
 
 ## Data Flow Patterns
 
-### **Tool Execution**
+### **Native Tool Calling**
 ```
-Request → Orchestrator → Parameter Resolution → Tool.execute()
-                ↓
-        Service Injection (storage, LLM, HTTP)
-                ↓
-        Result Normalization → Response
+User Message → ToolCallingClient
+    ↓
+Build OpenAI-compatible tool definitions from registry
+    ↓
+Mistral /api/chat with tools parameter
+    ↓
+LLM returns tool_calls or text response
+    ↓
+Execute selected tools → Return results
 ```
 
 ### **Self-Improvement**
@@ -243,13 +273,25 @@ Sandbox Test (with retry) → Apply → Verify
 Track Success → Analytics → Next Iteration
 ```
 
-### **Tool Creation**
+### **Tool Evolution**
 ```
-Gap → Spec → Code → Validate → Sandbox
+Analyze Tool → Propose Changes → Generate Code
     ↓
-Pending Queue → User Approval → Register
+Check Dependencies (AST) → Validate → Sandbox
     ↓
-Runtime Registry → Available for use
+Pending Approval → Re-check Deps on Approval
+    ↓
+Apply Changes → Update Registry
+```
+
+### **Dependency Resolution**
+```
+Evolution Generated → DependencyChecker (AST parse)
+    ↓
+Missing Libraries? → Install via pip + add to requirements.txt
+Missing Services? → Generate via LLM or Skip
+    ↓
+Re-check on Approval → All Resolved? → Proceed
 ```
 
 ---
@@ -299,27 +341,30 @@ Runtime Registry → Available for use
 ## Current State Summary
 
 ### ✅ **Working**
-- Chat/task execution with tool orchestration
-- Self-improvement loop (deterministic mode)
-- Evolution mode with proposal generation
-- Tool creation flow with approval workflow
-- Hybrid improvement engine
-- Real-time UI updates via WebSocket/SSE
-- Conversation memory persistence
-- LLM call logging
-- Sandbox testing with retry
+- Native tool calling (Mistral function calling)
+- Tool evolution (6-step flow with dependency management)
+- SQLite observability (5 databases)
+- Quality scoring and recommendations
+- Unified UI with 3 modes
+- Real-time updates via WebSocket
+- Approval workflows with dependency warnings
+- Auto dependency re-check on approval
+- Service facade with logging support
 
-### ⚠️ **Partial**
-- Tool creation orchestrator exists but registry/orchestrator injection may need verification
-- Evolution mode tested but may need more real-world validation
-- Hybrid engine integrated but custom prompt flow needs testing
+### 🔄 **In Progress**
+- LLM-based health checking (input/output validation)
+- Auto-evolution triggers (scheduled improvements)
+- Service generation via LLM (for missing services)
 
 ### 🔧 **Architecture Notes**
-- **Registry Chain**: Server creates registry → passed to tools → used by orchestrator
-- **LLM Models**: Mistral for analysis, Qwen for code generation
-- **Retry Strategy**: 3 attempts for code generation and sandbox testing
-- **Event Bus**: Real-time updates to UI via WebSocket/SSE
-- **Storage**: SQLite for memory, JSON for configuration
+- **Native Tool Calling**: Mistral automatically selects tools via function calling
+- **Dependency Management**: AST-based detection, auto-install libraries, LLM-generated services
+- **Observability**: 5 SQLite databases track all system activity
+- **Service Facade**: Tools access storage, llm, http, fs, json, logging via self.services
+- **Auto Refresh**: Dependencies re-checked on approval to detect newly added services
+- **Health Scoring**: 0-100 based on success rate, usage, output size
+- **Event Bus**: Real-time updates to UI via WebSocket
+- **Storage**: SQLite for logs/history, JSON for pending approvals
 
 ---
 
@@ -363,10 +408,43 @@ Runtime Registry → Available for use
 
 ---
 
-## Next Steps for Analysis
+## Available Services (via self.services)
 
-1. Verify registry/orchestrator injection in tool creation flow
-2. Test evolution mode end-to-end
-3. Validate hybrid engine with custom prompts
-4. Check tool approval workflow completeness
-5. Verify conversation memory integration
+```python
+# Storage (auto-scoped to tool)
+self.services.storage.save(id, data)
+self.services.storage.get(id)
+self.services.storage.list(limit=10)
+
+# LLM
+self.services.llm.generate(prompt, temperature, max_tokens)
+
+# HTTP
+self.services.http.get(url)
+self.services.http.post(url, data)
+
+# Filesystem
+self.services.fs.read(path)
+self.services.fs.write(path, content)
+
+# JSON
+self.services.json.parse(text)
+self.services.json.stringify(data)
+
+# Logging
+self.services.logging.info(message)
+self.services.logging.error(message)
+self.services.logging.warning(message)
+
+# Time
+self.services.time.now_utc()
+
+# IDs
+self.services.ids.generate(prefix)
+
+# NLP Helpers
+self.services.extract_key_points(text)
+self.services.sentiment_analysis(text)
+self.services.detect_language(text)
+self.services.generate_json_output(**kwargs)
+```

@@ -6,23 +6,25 @@ from pathlib import Path
 
 router = APIRouter()
 
+DATA_DIR = Path(__file__).parent.parent / "data"
+
 DB_PATHS = {
-    "logs": "data/logs.db",
-    "tool_executions": "data/tool_executions.db",
-    "tool_creation": "data/tool_creation.db",
-    "tool_evolution": "data/tool_evolution.db",
-    "chat": "data/chat_history.db"
+    "logs": DATA_DIR / "logs.db",
+    "tool_executions": DATA_DIR / "tool_executions.db",
+    "tool_creation": DATA_DIR / "tool_creation.db",
+    "tool_evolution": DATA_DIR / "tool_evolution.db",
+    "chat": DATA_DIR / "conversations.db"
 }
 
 
 def query_db(db_name: str, limit: int = 100, offset: int = 0):
     """Query database and return results."""
-    db_path = Path(DB_PATHS.get(db_name, "data/logs.db"))
+    db_path = DB_PATHS.get(db_name, DATA_DIR / "logs.db")
     
     if not db_path.exists():
         return []
     
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         
         # Get table name (assume first table)

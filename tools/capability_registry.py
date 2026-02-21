@@ -80,6 +80,9 @@ class CapabilityRegistry:
     
     def execute_capability(self, capability_name: str, **kwargs) -> ToolResult:
         """Execute a capability by name."""
+        import time
+        import json
+        
         if capability_name not in self._tool_by_capability:
             return ToolResult(
                 tool_name="Registry",
@@ -91,10 +94,38 @@ class CapabilityRegistry:
         tool_name = self._tool_by_capability[capability_name]
         tool = self._tools[tool_name]
         
+        start_time = time.time()
         result = tool.execute_capability(capability_name, **kwargs)
+        execution_time_ms = (time.time() - start_time) * 1000
         
         # Store result for performance tracking
         self._performance_history[capability_name].append(result)
+        
+        # Log to database
+        try:
+            import sqlite3
+            from pathlib import Path
+            db_path = Path("data/tool_executions.db")
+            db_path.parent.mkdir(exist_ok=True)
+            
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("""
+                    INSERT INTO executions 
+                    (tool_name, operation, success, error, execution_time_ms, parameters, output_size, timestamp, risk_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    tool_name,
+                    capability_name,
+                    1 if result.is_success() else 0,
+                    result.error_message or "",
+                    execution_time_ms,
+                    json.dumps(kwargs),
+                    len(str(result.data)) if result.data else 0,
+                    time.time(),
+                    0.0
+                ))
+        except Exception as e:
+            print(f"[WARNING] Failed to log execution: {e}")
         
         return result
     

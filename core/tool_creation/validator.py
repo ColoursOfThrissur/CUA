@@ -4,6 +4,7 @@ Tool code validator - Comprehensive AST-based validation
 import ast
 import logging
 from typing import Optional, Tuple, Dict, List, Set
+from core.enhanced_code_validator import EnhancedCodeValidator
 
 logger = logging.getLogger(__name__)
 
@@ -11,16 +12,24 @@ logger = logging.getLogger(__name__)
 class ToolValidator:
     """Validates generated tool code against thin tool contracts"""
     
+    def __init__(self):
+        self.enhanced_validator = EnhancedCodeValidator()
+    
     def validate(self, code: str, tool_spec: dict) -> Tuple[bool, str]:
         """Validate generated tool code with comprehensive checks"""
+        expected_class = self._class_name(tool_spec['name'])
+        
+        # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
+        is_valid, error = self.enhanced_validator.validate(code, expected_class)
+        if not is_valid:
+            return False, f"Enhanced validation: {error}"
+        
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
             return False, f"line {e.lineno}: {e.msg}"
         except Exception as e:
             return False, str(e)
-        
-        expected_class = self._class_name(tool_spec['name'])
         target_class = self._find_class(tree, expected_class)
         if not target_class:
             return False, f"Expected class '{expected_class}' not found"

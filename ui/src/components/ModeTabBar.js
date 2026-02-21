@@ -1,12 +1,13 @@
 import React from 'react';
-import { MessageSquare, Wrench, Zap } from 'lucide-react';
+import { MessageSquare, Wrench, Zap, Database } from 'lucide-react';
 import './ModeTabBar.css';
 
 function ModeTabBar({ activeMode, onModeChange }) {
   const modes = [
     { id: 'chat', label: 'CUA Chat', icon: MessageSquare },
     { id: 'tools', label: 'Tools', icon: Wrench },
-    { id: 'evolution', label: 'Evolution', icon: Zap }
+    { id: 'evolution', label: 'Evolution', icon: Zap },
+    { id: 'observability', label: 'Observability', icon: Database }
   ];
 
   return (

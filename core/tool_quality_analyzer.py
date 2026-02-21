@@ -17,6 +17,7 @@ class ToolQualityReport:
     health_score: float
     issues: List[str]
     recommendation: str
+    has_recent_errors: bool = False
 
 
 class ToolQualityAnalyzer:
@@ -40,6 +41,9 @@ class ToolQualityAnalyzer:
         avg_time = stats["avg_time_ms"]
         avg_output = stats["avg_output_size"]
         avg_risk = stats.get("avg_risk_score", 0.0)
+        
+        # Check for recent errors
+        has_recent_errors = success_rate < 0.7 and usage_frequency > 0
         
         # Calculate output richness (0-1 scale)
         output_richness = min(avg_output / 1000, 1.0) if avg_output > 0 else 0.0
@@ -86,7 +90,8 @@ class ToolQualityAnalyzer:
             avg_risk_score=avg_risk,
             health_score=health_score,
             issues=issues,
-            recommendation=recommendation
+            recommendation=recommendation,
+            has_recent_errors=has_recent_errors
         )
     
     def analyze_all_tools(self, days: int = 7, only_existing: bool = True) -> List[ToolQualityReport]:
@@ -112,13 +117,24 @@ class ToolQualityAnalyzer:
         ]
         return any(p.exists() for p in candidates)
     
-    def get_weak_tools(self, days: int = 7, min_usage: int = 5) -> List[ToolQualityReport]:
+    def get_weak_tools(self, days: int = 7, min_usage: int = 5, exclude_pending: bool = True) -> List[ToolQualityReport]:
         """Get tools that need improvement (used enough to have data)."""
         reports = self.analyze_all_tools(days)
-        return [
+        weak = [
             r for r in reports 
             if r.usage_frequency >= min_usage and r.recommendation in ["IMPROVE", "QUARANTINE"]
         ]
+        
+        if exclude_pending:
+            from core.pending_evolutions_manager import PendingEvolutionsManager
+            pending_mgr = PendingEvolutionsManager()
+            pending = {p["tool_name"] for p in pending_mgr.get_all_pending()}
+            weak = [r for r in weak if r.tool_name not in pending]
+        
+        # Sort: errors first, then by health score
+        weak.sort(key=lambda r: (not r.has_recent_errors, r.health_score))
+        
+        return weak
     
     def get_summary(self, days: int = 7) -> Dict[str, any]:
         """Get overall tool ecosystem health summary."""

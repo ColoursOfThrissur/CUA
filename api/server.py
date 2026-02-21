@@ -64,9 +64,11 @@ try:
     from api.quality_api import router as quality_router
     from api.tool_evolution_api import router as evolution_router
     from api.observability_api import router as observability_router
+    from api.observability_data_api import router as observability_data_router
     from api.cleanup_api import router as cleanup_router
     from api.tool_info_api import router as tool_info_router
     from api.tool_list_api import router as tool_list_router
+    from api.tools_management_api import router as tools_management_router
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
@@ -100,9 +102,11 @@ if ROUTERS_AVAILABLE:
     app.include_router(quality_router)
     app.include_router(evolution_router)
     app.include_router(observability_router)
+    app.include_router(observability_data_router)
     app.include_router(cleanup_router)
     app.include_router(tool_info_router)
     app.include_router(tool_list_router)
+    app.include_router(tools_management_router)
 
 cors_origins, cors_allow_credentials = _get_cors_settings()
 
@@ -169,6 +173,14 @@ if SYSTEM_AVAILABLE:
             print(f"[DEBUG] ContextSummarizerTool loaded successfully")
         except Exception as e:
             print(f"Warning: Could not load ContextSummarizerTool: {e}")
+        
+        try:
+            from tools.experimental.DatabaseQueryTool import DatabaseQueryTool
+            database_query_tool = DatabaseQueryTool(orchestrator=tool_orchestrator)
+            registry.register_tool(database_query_tool)
+            print(f"[DEBUG] DatabaseQueryTool loaded successfully")
+        except Exception as e:
+            print(f"Warning: Could not load DatabaseQueryTool: {e}")
         executor = SecureExecutor(registry)
         parser = PlanParser()
         permission_gate = PermissionGate()
@@ -429,7 +441,11 @@ async def chat(request: ChatRequest):
             )
             
             conversation_history = sessions[session_id]["messages"][-5:]
-            success, tool_calls, response_text = tool_caller.call_with_tools(request.message, conversation_history)
+            success, tool_calls, initial_response = tool_caller.call_with_tools(request.message, conversation_history)
+            
+            print(f"[DEBUG] Tool calling result: success={success}, tool_calls={tool_calls}, initial_response={initial_response[:100] if initial_response else None}")
+            
+            response_text = None
             
             if not success:
                 # Tool calling failed - fallback to conversation
@@ -446,46 +462,57 @@ async def chat(request: ChatRequest):
                         operation = call["operation"]
                         parameters = call["parameters"]
                         
+                        print(f"[DEBUG] Executing: {operation} with params: {parameters}")
+                        
                         result = registry.execute_capability(
                             f"{operation}",
                             **parameters
                         )
+                        
+                        print(f"[DEBUG] Result status: {result.status if result else 'None'}")
                         
                         if result and result.status.value == "success":
                             results.append(result.data)
                         else:
                             errors.append(f"{operation}: {result.error_message if result else 'failed'}")
                     except Exception as e:
+                        print(f"[DEBUG] Exception executing tool: {e}")
                         errors.append(f"{call.get('operation', 'unknown')}: {str(e)}")
                 
                 if results and not errors:
                     # Success - generate natural response
+                    print(f"[DEBUG] Generating summary for {len(results)} results")
+                    result_data = results[0]
                     summary_prompt = f"""User asked: {request.message}
 
-Tool results: {results[0]}
+Tool returned this data: {json.dumps(result_data, indent=2)}
 
-Provide a helpful, natural response. Be concise."""
+Provide a helpful, natural response that includes all relevant information from the data (summary, detected_language, tone, etc.). Be concise but complete."""
                     response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
+                    print(f"[DEBUG] Generated response: {response_text[:100] if response_text else 'None'}")
                     execution_result = {"success": True, "results": results, "tool_calling": True}
                 else:
                     error_msg = "; ".join(errors) if errors else "Execution failed"
+                    print(f"[DEBUG] Tool execution failed: {error_msg}")
                     response_text = f"Failed: {error_msg}"
                     execution_result = {"success": False, "errors": errors}
             else:
-                # Pure conversation response
+                # Pure conversation response (no tools selected)
+                response_text = initial_response
                 execution_result = {"success": True, "mode": "conversation"}
         else:
             response_text = f"System not available. Echo: {request.message}"
             execution_result = {"success": False, "error": "System not initialized"}
         
-        sessions[session_id]["messages"].append({
-            "role": "assistant",
-            "content": response_text,
-            "timestamp": time.time()
-        })
-        
-        if conversation_memory:
-            conversation_memory.save_message(session_id, "assistant", response_text)
+        if response_text:
+            sessions[session_id]["messages"].append({
+                "role": "assistant",
+                "content": response_text,
+                "timestamp": time.time()
+            })
+            
+            if conversation_memory:
+                conversation_memory.save_message(session_id, "assistant", response_text)
         
         return ChatResponse(
             response=response_text,
@@ -518,6 +545,44 @@ async def status():
         "tools": len(registry.tools) if registry else 0,
         "capabilities": len(registry.get_all_capabilities()) if registry else 0
     }
+
+@app.post("/cache/clear")
+async def clear_cache():
+    """Clear all caches (LLM, tool execution, conversation memory)"""
+    try:
+        cleared = []
+        
+        # Clear conversation memory
+        if conversation_memory:
+            conversation_memory.clear_all()
+            cleared.append("conversation_memory")
+        
+        # Clear LLM cache if available
+        if llm_client and hasattr(llm_client, 'clear_cache'):
+            llm_client.clear_cache()
+            cleared.append("llm_cache")
+        
+        # Clear session storage
+        sessions.clear()
+        cleared.append("sessions")
+        
+        # Clear tool caches (if tools have cache)
+        if registry:
+            for tool in registry.tools:
+                if hasattr(tool, '_cache'):
+                    tool._cache.clear()
+                    cleared.append(f"{tool.__class__.__name__}_cache")
+        
+        return {
+            "success": True,
+            "message": "Caches cleared successfully",
+            "cleared": cleared
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 @app.get("/events")
 async def event_stream(request: Request):

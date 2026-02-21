@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap } from 'lucide-react';
+import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap, Sun, Moon, Activity } from 'lucide-react';
 import './Header.css';
 
-function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange }) {
+function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange, theme, onThemeToggle }) {
   const [showSettings, setShowSettings] = useState(false);
 
   const modes = [
@@ -55,6 +55,20 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
       </div>
       
       <div className="header-right">
+        <button 
+          className="btn btn-theme" 
+          onClick={onThemeToggle}
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+        <button 
+          className="btn btn-settings" 
+          onClick={() => onModeChange('tools-management')}
+          title="Tools Management"
+        >
+          <Activity size={18} />
+        </button>
         <button className="btn btn-settings" onClick={onOpenObservability}>
           <Database size={18} />
         </button>

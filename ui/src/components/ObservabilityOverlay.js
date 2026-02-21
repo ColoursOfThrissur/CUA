@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Activity, Wrench, Zap, MessageSquare, RefreshCw } from 'lucide-react';
+import { Database, Activity, Wrench, Zap, MessageSquare, RefreshCw, Brain } from 'lucide-react';
 import { API_URL } from '../config';
 import './ObservabilityOverlay.css';
 
@@ -7,6 +7,7 @@ function ObservabilityOverlay() {
   const [activeDb, setActiveDb] = useState('logs');
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingLLM, setRefreshingLLM] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -32,17 +33,40 @@ function ObservabilityOverlay() {
         case 'chat':
           endpoint = '/observability/chat';
           break;
+        case 'llm_health':
+          endpoint = '/quality/llm-analysis-all';
+          break;
         default:
           endpoint = '/observability/logs';
       }
       
-      const res = await fetch(`${API_URL}${endpoint}?limit=50`);
+      const res = await fetch(`${API_URL}${endpoint}${activeDb === 'llm_health' ? '' : '?limit=50'}`);
       const result = await res.json();
-      setData(result.data || []);
+      
+      if (activeDb === 'llm_health') {
+        // Convert object to array for display
+        setData(Object.values(result));
+      } else {
+        setData(result.data || []);
+      }
     } catch (err) {
       console.error('Failed to fetch data:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const refreshLLMAnalysis = async () => {
+    setRefreshingLLM(true);
+    try {
+      await fetch(`${API_URL}/quality/refresh-llm-analysis`, { method: 'POST' });
+      if (activeDb === 'llm_health') {
+        fetchData();
+      }
+    } catch (err) {
+      console.error('Failed to refresh LLM analysis:', err);
+    } finally {
+      setRefreshingLLM(false);
     }
   };
 
@@ -51,7 +75,8 @@ function ObservabilityOverlay() {
     { id: 'tool_executions', label: 'Tool Executions', icon: Wrench },
     { id: 'tool_creation', label: 'Tool Creation', icon: Database },
     { id: 'tool_evolution', label: 'Tool Evolution', icon: Zap },
-    { id: 'chat', label: 'Chat History', icon: MessageSquare }
+    { id: 'chat', label: 'Chat History', icon: MessageSquare },
+    { id: 'llm_health', label: 'LLM Health Analysis', icon: Brain }
   ];
 
   return (
@@ -72,9 +97,22 @@ function ObservabilityOverlay() {
             );
           })}
         </div>
-        <button className="obs-refresh" onClick={fetchData} disabled={loading}>
-          <RefreshCw size={16} className={loading ? 'spin' : ''} />
-        </button>
+        <div className="obs-actions">
+          {activeDb === 'llm_health' && (
+            <button 
+              className="obs-refresh-llm" 
+              onClick={refreshLLMAnalysis} 
+              disabled={refreshingLLM}
+              title="Refresh LLM Analysis"
+            >
+              <Brain size={16} className={refreshingLLM ? 'spin' : ''} />
+              {refreshingLLM ? 'Analyzing...' : 'Refresh Analysis'}
+            </button>
+          )}
+          <button className="obs-refresh" onClick={fetchData} disabled={loading}>
+            <RefreshCw size={16} className={loading ? 'spin' : ''} />
+          </button>
+        </div>
       </div>
 
       <div className="obs-content">

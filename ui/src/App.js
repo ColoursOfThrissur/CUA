@@ -17,8 +17,11 @@ import CodePreviewModal from './components/CodePreviewModal';
 import DiffModal from './components/DiffModal';
 import ApprovalNotification from './components/ApprovalNotification';
 import ObservabilityOverlay from './components/ObservabilityOverlay';
+import ObservabilityPage from './components/ObservabilityPage';
+import ToolsManagementPage from './components/ToolsManagementPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import './styles/variables.css';
+import './styles/theme.css';
 import './App.css';
 
 function AppContent() {
@@ -26,6 +29,7 @@ function AppContent() {
   const toast = useToast();
   const [messages, setMessages] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [sessionId] = useState(() => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
       return crypto.randomUUID();
@@ -48,6 +52,11 @@ function AppContent() {
     const listData = await listRes.json();
     globalState.updateState({ pendingTools: listData.pending_tools || [] });
   };
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
   useEffect(() => {
     // Fetch available models on mount
@@ -337,6 +346,30 @@ function AppContent() {
     setCodePreview(tool);
   };
 
+  const handleClearCache = async () => {
+    if (!window.confirm('Clear all caches? This will clear LLM cache, tool execution cache, and temporary data.')) return;
+    
+    try {
+      const response = await fetch(`${API_URL}/cache/clear`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (response.ok) {
+        toast.success('All caches cleared successfully');
+      } else {
+        const data = await response.json();
+        toast.error('Failed to clear cache: ' + (data.detail || 'Unknown error'));
+      }
+    } catch (error) {
+      toast.error('Failed to clear cache: ' + error.message);
+    }
+  };
+
+  const handleThemeToggle = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  };
+
   const handleSendMessage = async (message) => {
     const userMsg = {
       role: 'user',
@@ -356,13 +389,14 @@ function AppContent() {
 
       const data = await response.json();
       
-      const assistantMsg = {
-        role: 'assistant',
-        content: data.response,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      
-      setMessages(prev => [...prev, assistantMsg]);
+      if (data.response && !data.response.includes('```json')) {
+        const assistantMsg = {
+          role: 'assistant',
+          content: data.response,
+          timestamp: new Date().toLocaleTimeString()
+        };
+        setMessages(prev => [...prev, assistantMsg]);
+      }
     } catch (error) {
       const errorMsg = {
         role: 'assistant',
@@ -376,7 +410,13 @@ function AppContent() {
   };
 
   const handleFloatingAction = (action) => {
-    setOverlayOpen(action);
+    if (action === 'observability') {
+      setActiveMode('observability');
+    } else if (action === 'tools-management') {
+      setActiveMode('tools-management');
+    } else {
+      setOverlayOpen(action);
+    }
   };
 
   const renderOverlayContent = () => {
@@ -495,24 +535,32 @@ function AppContent() {
           availableModels={availableModels}
           currentModel={currentModel}
           onModelChange={handleModelChange}
-          onOpenObservability={() => setOverlayOpen('observability')}
+          onOpenObservability={() => setActiveMode('observability')}
           activeMode={activeMode}
           onModeChange={setActiveMode}
+          theme={theme}
+          onThemeToggle={handleThemeToggle}
         />
         
-        <MainCanvas 
-          mode={activeMode}
-          messages={messages}
-          onSendMessage={handleSendMessage}
-          isProcessing={isProcessing}
-          onFloatingAction={handleFloatingAction}
-          loopStatus={{
-            running: globalState.running,
-            iteration: globalState.iteration,
-            maxIterations: globalState.maxIterations
-          }}
-          onStatusChange={(status) => globalState.updateState(status)}
-        />
+        {activeMode === 'observability' ? (
+          <ObservabilityPage onBack={() => setActiveMode('chat')} />
+        ) : activeMode === 'tools-management' ? (
+          <ToolsManagementPage onBack={() => setActiveMode('chat')} />
+        ) : (
+          <MainCanvas 
+            mode={activeMode}
+            messages={messages}
+            onSendMessage={handleSendMessage}
+            isProcessing={isProcessing}
+            onFloatingAction={handleFloatingAction}
+            loopStatus={{
+              running: globalState.running,
+              iteration: globalState.iteration,
+              maxIterations: globalState.maxIterations
+            }}
+            onStatusChange={(status) => globalState.updateState(status)}
+          />
+        )}
         
         <RightOverlay
           isOpen={overlayOpen !== null}
@@ -538,6 +586,14 @@ function AppContent() {
             onClose={() => setCodePreview(null)}
           />
         )}
+        
+        <button
+          onClick={handleClearCache}
+          className="clear-cache-button"
+          title="Clear all caches"
+        >
+          🗑️ Clear Cache
+        </button>
       </div>
     </ErrorBoundary>
   );

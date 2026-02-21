@@ -55,9 +55,8 @@ class PendingEvolutionsManager:
         tool_path = Path(evolution["proposal"]["analysis"]["tool_path"])
         tool_path.write_text(evolution["improved_code"])
         
-        # Update status
-        evolution["status"] = "approved"
-        evolution["approved_at"] = datetime.now().isoformat()
+        # Remove from pending list
+        del evolutions[tool_name]
         
         self._save(evolutions)
         
@@ -70,9 +69,8 @@ class PendingEvolutionsManager:
         if tool_name not in evolutions:
             return False
         
-        evolution = evolutions[tool_name]
-        evolution["status"] = "rejected"
-        evolution["rejected_at"] = datetime.now().isoformat()
+        # Remove from pending list
+        del evolutions[tool_name]
         
         self._save(evolutions)
         
