@@ -34,12 +34,14 @@ cd ui && npm install && npm start
 
 ```
 CUA System
-├── API Layer (FastAPI - 15 routers)
+├── API Layer (FastAPI - 16 routers)
 │   ├── Chat endpoint (/chat) - Native tool calling with agentic response
 │   ├── Tool Creation API - LLM-driven tool generation
 │   ├── Tool Evolution API - 6-step improvement workflow
 │   ├── Quality API - Health scoring & recommendations
 │   ├── Observability API - 10 database access with schema registry
+│   ├── Observability Data API - Paginated data access with filters
+│   ├── Tools Management API - Comprehensive tool management
 │   ├── Cleanup API - Maintenance & cache clearing
 │   ├── Hybrid API - 80% success improvement engine
 │   └── Settings/Scheduler/Libraries/Tools APIs
@@ -61,8 +63,9 @@ CUA System
 │
 ├── Tool Evolution Engine
 │   ├── Quality Analyzer (health scoring 0-100)
+│   ├── LLM Health Analyzer (context-aware code analysis)
 │   ├── Evolution Flow (6-step improvement)
-│   ├── Proposal Generator (LLM-driven specs)
+│   ├── Proposal Generator (reads evolution context, minimal changes)
 │   ├── Code Generator (improved version creation)
 │   ├── Dependency Manager (auto-detect & resolve)
 │   ├── Validator (enhanced AST + structure)
@@ -80,7 +83,10 @@ CUA System
 │
 └── UI (React)
     ├── Unified Canvas (3 modes: Chat/Tools/Evolution)
+    ├── Tools Management Page (comprehensive tool dashboard)
+    ├── Observability Page (full-page database viewer)
     ├── Right-Slide Overlays (context-aware panels)
+    ├── Theme System (dark/light with CSS variables)
     ├── Real-time Updates (WebSocket)
     ├── Approval Workflows (evolution/tool creation)
     ├── Quality Dashboard (health monitoring)
@@ -105,14 +111,21 @@ CUA System
 6. **Approval**: Human review before activation
 
 ### 3. Tool Evolution
-**6-Step Flow**:
+**6-Step Flow with Context-Aware Improvements**:
 1. **Analyze**: Quality analyzer scores tool health (0-100)
-2. **Propose**: LLM generates improvement spec
-3. **Generate**: Code generator creates improved version
+2. **Propose**: LLM reads evolution context and proposes ONLY necessary fixes
+3. **Generate**: Code generator creates minimal improved version
 4. **Check Deps**: Dependency checker validates imports/services
 5. **Validate**: Enhanced AST validation + structure checks
 6. **Sandbox**: Test in isolated environment
 7. **Approve**: Human reviews and approves (auto-removes from pending)
+
+**Evolution Context**:
+- Reads `.amazonq/rules/LocalLLMRUle.md` for guidelines
+- Understands architecture patterns (self._cache, self.services.X)
+- Only fixes HIGH severity bugs and clear violations
+- Skips evolution if no critical issues found
+- Requires justification for all changes
 
 ### 4. Dependency Management
 - **AST-based detection**: Parses generated code for missing imports and service calls
@@ -161,10 +174,35 @@ CUA System
 
 ### 7. Quality System
 - **Health Scoring**: 0-100 based on success rate, usage, output size
+- **LLM Health Analysis**: Context-aware code quality checking
 - **Recommendations**: HEALTHY (80+), WEAK (50-79), BROKEN (<50)
+- **Smart Categorization**: 2+ high bugs OR 4+ medium/high = WEAK
+- **False Positive Reduction**: Understands correct patterns
 - **Cleanup**: Remove stale execution logs for deleted tools
 - **Filtering**: Only show tools with actual files
 - **Auto-refresh**: Quality metrics update on evolution approval
+
+### 8. Tools Management Page
+**Comprehensive Tool Dashboard**:
+- **Summary Cards**: Total tools, healthy/weak/broken/unknown counts
+- **Tool List**: All tools (core + experimental) with health scores
+- **Search & Filter**: By name and status (Healthy/Weak/Broken/Unknown)
+- **Tool Details**: Health metrics, capabilities, issues, LLM analysis
+- **Recent Executions**: Last 10 executions with success/failure status
+- **Actions**: Run health check, start evolution, view code
+- **Code Viewer**: Modal popup showing tool source code
+- **Real-time Updates**: Cache-busted API calls for fresh data
+
+### 9. Observability Page
+**Full-Page Database Viewer**:
+- **Table List**: Sidebar with all tables from 10 databases
+- **Data View**: Paginated table data with search and filters
+- **Row Details**: Modal popup with expandable card layout
+- **Copy Functionality**: Copy individual field values
+- **Filter Options**: Dynamic filters based on column values
+- **Search**: Full-text search across table data
+- **Back Navigation**: Return to chat mode
+- **Theme Support**: Dark/light theme with CSS variables
 
 ## 📁 Project Structure
 
@@ -327,7 +365,17 @@ All Resolved? → Proceed
 Still Missing? → Block with error
 ```
 
-## 🎨 UI Modes
+## 🎨 UI Features
+
+### Theme System
+- **Dark Theme** (default): Black background (#000000), blue accent (#4a9eff)
+- **Light Theme**: Modern white (#f7f7f7), GitHub-style colors
+- **CSS Variables**: All colors use theme variables, no hardcoded colors
+- **Smooth Transitions**: 0.2s ease transitions on theme change
+- **Persistent**: Theme choice saved to localStorage
+- **Toggle**: Sun/Moon icon in header
+
+### UI Modes
 
 ### 1. CUA Chat
 - Conversational interface
@@ -343,9 +391,25 @@ Still Missing? → Block with error
 
 ### 3. Evolution Mode
 - Tool selection (Recommended/All)
+- Recommended excludes tools with pending evolutions
+- Prioritizes tools with recent errors
 - Evolution workflow
 - Pending approvals with dependency warnings
 - Auto-cleanup on approval/rejection
+
+### 4. Tools Management
+- Comprehensive tool dashboard
+- All tools with health metrics
+- Search and filter capabilities
+- Individual tool analysis
+- Quick actions (health check, evolution, view code)
+
+### 5. Observability
+- Full-page database viewer
+- 10 databases with all tables
+- Paginated data with search/filters
+- Row details in modal popup
+- Copy functionality for fields
 
 ## 📊 Observability
 
@@ -453,20 +517,23 @@ self.services.has_capability(capability_name)
 **Working**:
 - ✅ Native tool calling (20+ tools)
 - ✅ Tool creation (6-step flow with validation)
-- ✅ Tool evolution (6-step flow with auto-cleanup)
+- ✅ Tool evolution (context-aware, minimal changes)
+- ✅ LLM health analyzer (reduced false positives)
+- ✅ Tools Management page (comprehensive dashboard)
+- ✅ Observability page (full-page database viewer)
+- ✅ Theme system (dark/light with CSS variables)
 - ✅ Dependency management (auto-detect & resolve)
 - ✅ Enhanced validation (12+ gates)
 - ✅ SQLite observability (10 databases)
 - ✅ Database schema registry (LLM-assisted)
 - ✅ Quality scoring & recommendations
-- ✅ Unified UI with 3 modes
+- ✅ Unified UI with 5 modes
 - ✅ Real-time updates (WebSocket)
 - ✅ Approval workflows with auto-cleanup
 - ✅ Cache clearing (UI button + API endpoint)
 - ✅ Agentic chat responses (filters tool calls)
 
 **In Progress**:
-- 🔄 LLM-based health checking (input/output validation)
 - 🔄 Auto-evolution triggers (scheduled improvements)
 
 ## 📝 Configuration
