@@ -14,6 +14,7 @@ class DatabaseQueryTool(BaseTool):
     
     def __init__(self, orchestrator=None):
         self.description = "Query and analyze system operational data"
+        self.services = orchestrator.get_services(self.__class__.__name__) if orchestrator else None
         self.data_dir = Path(__file__).parent.parent.parent / "data"
         from core.database_schema_registry import get_schema_for_llm, DATABASE_SCHEMAS
         self.schema_registry = DATABASE_SCHEMAS
@@ -153,247 +154,289 @@ class DatabaseQueryTool(BaseTool):
             )
 
     def _handle_query_logs(self, **kwargs):
-        db_path = self.data_dir / "logs.db"
-        if not db_path.exists():
-            return {"logs": [], "count": 0, "error": "Database not found"}
+            db_paths = [self.data_dir / "logs.db"]
+            if not any(db_path.exists() for db_path in db_paths):
+                self.services.logging.error("Database not found")
+                return {"logs": [], "count": 0, "error": "Database not found"}
 
-        level = kwargs.get('level')
-        hours_ago = kwargs.get('hours_ago', 24)
-        pattern = kwargs.get('pattern')
-        limit = kwargs.get('limit', 100)
+            level = kwargs.get('level')
+            hours_ago = kwargs.get('hours_ago', 24)
+            pattern = kwargs.get('pattern')
+            limit = kwargs.get('limit', 100)
 
-        cutoff_time = datetime.now() - timedelta(hours=hours_ago)
-        
-        try:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            cutoff_time = self.services.time.now_utc() - timedelta(hours=hours_ago)
+            results = []
 
-            query = "SELECT * FROM logs WHERE timestamp >= ?"
-            params = [cutoff_time.isoformat()]
+            for db_path in db_paths:
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
 
-            if level:
-                query += " AND level = ?"
-                params.append(level.upper())
+                    query = "SELECT * FROM logs WHERE timestamp >= ?"
+                    params = [cutoff_time.isoformat()]
 
-            if pattern:
-                query += " AND message LIKE ?"
-                params.append(f"%{pattern}%")
+                    if level:
+                        query += " AND level = ?"
+                        params.append(level.upper())
 
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
+                    if pattern:
+                        query += " AND message LIKE ?"
+                        params.append(f"%{pattern}%")
 
-            cursor.execute(query, params)
-            results = [dict(row) for row in cursor.fetchall()]
-            conn.close()
+                    query += " ORDER BY timestamp DESC LIMIT ?"
+                    params.append(limit)
 
+                    cursor.execute(query, params)
+                    results.extend([dict(row) for row in cursor.fetchall()])
+                    conn.close()
+                except Exception as e:
+                    self.services.logging.error(f"Error executing query on {db_path}: {str(e)}")
+
+            self.services.logging.info("Query executed successfully")
             return {"logs": results, "count": len(results)}
-        except Exception as e:
-            return {"logs": [], "count": 0, "error": str(e)}
 
     def _handle_analyze_tool_performance(self, **kwargs):
-        db_path = self.data_dir / "tool_executions.db"
-        if not db_path.exists():
-            return {"performance": [], "count": 0, "error": "Database not found"}
+            db_paths = [self.data_dir / "tool_executions.db"]
+            if not any(db_path.exists() for db_path in db_paths):
+                return {"performance": [], "count": 0, "error": "Database not found"}
 
-        tool_name = kwargs.get('tool_name')
-        hours_ago = kwargs.get('hours_ago', 24)
-        cutoff_time = datetime.now().timestamp() - (hours_ago * 3600)
-
-        try:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            if tool_name:
-                query = """
-                    SELECT 
-                        tool_name,
-                        COUNT(*) as total_executions,
-                        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
-                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
-                        AVG(execution_time_ms) as avg_duration,
-                        MAX(timestamp) as last_execution
-                    FROM executions
-                    WHERE tool_name = ? AND timestamp >= ?
-                    GROUP BY tool_name
-                """
-                cursor.execute(query, [tool_name, cutoff_time])
-            else:
-                query = """
-                    SELECT 
-                        tool_name,
-                        COUNT(*) as total_executions,
-                        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
-                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
-                        AVG(execution_time_ms) as avg_duration,
-                        MAX(timestamp) as last_execution
-                    FROM executions
-                    WHERE timestamp >= ?
-                    GROUP BY tool_name
-                    ORDER BY total_executions DESC
-                """
-                cursor.execute(query, [cutoff_time])
+            tool_name = kwargs.get('tool_name')
+            hours_ago = kwargs.get('hours_ago', 24)
+            cutoff_time = self.services.time.now_utc().timestamp() - (hours_ago * 3600)
 
             results = []
-            for row in cursor.fetchall():
-                data = dict(row)
-                if data['total_executions'] > 0:
-                    data['success_rate'] = round((data['successes'] / data['total_executions']) * 100, 2)
-                results.append(data)
+            for db_path in db_paths:
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
 
-            conn.close()
+                    if tool_name:
+                        query = """
+                            SELECT 
+                                tool_name,
+                                COUNT(*) as total_executions,
+                                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+                                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
+                                AVG(execution_time_ms) as avg_duration,
+                                MAX(timestamp) as last_execution
+                            FROM executions
+                            WHERE tool_name = ? AND timestamp >= ?
+                            GROUP BY tool_name
+                        """
+                        cursor.execute(query, [tool_name, cutoff_time])
+                    else:
+                        query = """
+                            SELECT 
+                                tool_name,
+                                COUNT(*) as total_executions,
+                                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+                                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
+                                AVG(execution_time_ms) as avg_duration,
+                                MAX(timestamp) as last_execution
+                            FROM executions
+                            WHERE timestamp >= ?
+                            GROUP BY tool_name
+                            ORDER BY total_executions DESC
+                        """
+                        cursor.execute(query, [cutoff_time])
+
+                    for row in cursor.fetchall():
+                        data = dict(row)
+                        if data['total_executions'] > 0:
+                            data['success_rate'] = round((data['successes'] / data['total_executions']) * 100, 2)
+                        results.append(data)
+
+                    conn.close()
+                except Exception as e:
+                    self.services.logging.error(f"Error analyzing tool performance in {db_path}: {str(e)}")
+
+            self.services.logging.info(f"Analyzed tool performance for {tool_name} with {len(results)} tools.")
             return {"performance": results, "count": len(results)}
-        except Exception as e:
-            return {"performance": [], "count": 0, "error": str(e)}
 
     def _handle_find_failure_patterns(self, **kwargs):
-        db_path = self.data_dir / "tool_executions.db"
-        if not db_path.exists():
+        db_paths = [self.data_dir / "tool_executions.db"]
+        if not any(db_path.exists() for db_path in db_paths):
+            self.services.logging.error("Database not found")
             return {"failures": [], "count": 0, "error": "Database not found"}
 
         tool_name = kwargs.get('tool_name')
         hours_ago = kwargs.get('hours_ago', 24)
         limit = kwargs.get('limit', 50)
-        cutoff_time = datetime.now().timestamp() - (hours_ago * 3600)
+        cutoff_time = self.services.time.now_utc().timestamp() - (hours_ago * 3600)
 
-        try:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+        failures = []
+        for db_path in db_paths:
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
 
-            query = "SELECT * FROM executions WHERE success = 0 AND timestamp >= ?"
-            params = [cutoff_time]
+                query = "SELECT * FROM executions WHERE success = 0 AND timestamp >= ?"
+                params = [cutoff_time]
 
-            if tool_name:
-                query += " AND tool_name = ?"
-                params.append(tool_name)
+                if tool_name:
+                    query += " AND tool_name = ?"
+                    params.append(tool_name)
 
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
+                query += " ORDER BY timestamp DESC LIMIT ?"
+                params.append(limit)
 
-            cursor.execute(query, params)
-            failures = [dict(row) for row in cursor.fetchall()]
-            conn.close()
+                cursor.execute(query, params)
+                failures.extend([dict(row) for row in cursor.fetchall()])
+                conn.close()
+            except Exception as e:
+                self.services.logging.error(f"Error fetching failures from {db_path}: {str(e)}")
 
-            return {"failures": failures, "count": len(failures)}
-        except Exception as e:
-            return {"failures": [], "count": 0, "error": str(e)}
+        self.services.logging.info(f"Found {len(failures)} failures")
+        return {"failures": failures, "count": len(failures)}
 
     def _handle_get_evolution_history(self, **kwargs):
-        db_path = self.data_dir / "tool_evolution.db"
-        if not db_path.exists():
-            return {"evolutions": [], "count": 0, "error": "Database not found"}
+            db_paths = [self.data_dir / "tool_evolution.db"]
+            if not any(db_path.exists() for db_path in db_paths):
+                self.services.logging.warning("Database not found")
+                return {"evolutions": [], "count": 0, "error": "Database not found"}
 
-        tool_name = kwargs.get('tool_name')
-        status = kwargs.get('status')
-        limit = kwargs.get('limit', 50)
+            tool_name = kwargs.get('tool_name')
+            status = kwargs.get('status')
+            limit = kwargs.get('limit', 50)
 
-        try:
-            # Get correct table name from schema registry
-            schema = self.schema_registry.get('tool_evolution.db', {})
-            tables = list(schema.get('tables', {}).keys())
-            table_name = tables[0] if tables else 'evolution_runs'
-            
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            try:
+                evolutions = []
+                for db_path in db_paths:
+                    schema = self.schema_registry.get('tool_evolution.db', {})
+                    tables = list(schema.get('tables', {}).keys())
+                    table_name = tables[0] if tables else 'evolution_runs'
 
-            query = f"SELECT * FROM {table_name} WHERE 1=1"
-            params = []
+                    conn = sqlite3.connect(str(db_path))
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
 
-            if tool_name:
-                query += " AND tool_name = ?"
-                params.append(tool_name)
+                    query = f"SELECT * FROM {table_name} WHERE 1=1"
+                    params = []
 
-            if status:
-                query += " AND status = ?"
-                params.append(status)
+                    if tool_name:
+                        query += " AND tool_name = ?"
+                        params.append(tool_name)
 
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
+                    if status:
+                        query += " AND status = ?"
+                        params.append(status)
 
-            cursor.execute(query, params)
-            evolutions = [dict(row) for row in cursor.fetchall()]
-            conn.close()
+                    query += " ORDER BY timestamp DESC LIMIT ?"
+                    params.append(limit)
 
-            return {"evolutions": evolutions, "count": len(evolutions)}
-        except Exception as e:
-            return {"evolutions": [], "count": 0, "error": str(e)}
+                    cursor.execute(query, params)
+                    evolutions.extend([dict(row) for row in cursor.fetchall()])
+                    conn.close()
+
+                self.services.logging.info(f"Retrieved {len(evolutions)} evolution records")
+                return {"evolutions": evolutions, "count": len(evolutions)}
+            except Exception as e:
+                self.services.logging.error(f"Error retrieving evolution history: {str(e)}")
+                return {"evolutions": [], "count": 0, "error": str(e)}
 
     def _handle_export_to_json(self, **kwargs):
-        if 'data' not in kwargs or 'filename' not in kwargs:
-            raise ValueError("Missing required parameters: data, filename")
+            if 'data' not in kwargs or 'filename' not in kwargs:
+                raise ValueError("Missing required parameters: data, filename")
 
-        data = kwargs['data']
-        filename = kwargs['filename']
-        
-        if not filename.endswith('.json'):
-            filename += '.json'
+            data = kwargs['data']
+            filename = kwargs['filename']
 
-        output_path = self.data_dir / filename
-        
-        try:
-            json_str = json.dumps(data, indent=2, default=str)
-            output_path.write_text(json_str, encoding='utf-8')
-            return {"status": "exported", "path": str(output_path), "size": len(json_str)}
-        except Exception as e:
-            return {"status": "failed", "error": str(e)}
+            if not filename.endswith('.json'):
+                filename += '.json'
+
+            output_path = self.data_dir / filename
+
+            try:
+                json_str = self.services.json.stringify(data, indent=2)
+                self.services.fs.write(output_path, json_str, encoding='utf-8')
+                self.services.logging.info(f"Exported JSON to {output_path}")
+                return {"status": "exported", "path": str(output_path), "size": len(json_str)}
+            except Exception as e:
+                self.services.logging.error(f"Failed to export JSON: {str(e)}")
+                return {"status": "failed", "error": str(e)}
 
     def _handle_get_database_schema(self, **kwargs):
-        database_name = kwargs.get('database_name')
-        
-        if database_name:
-            schema_text = self.get_schema(database_name)
-            if not schema_text or "Database:" not in schema_text:
-                return {"error": f"Schema not found for {database_name}", "available": list(self.schema_registry.keys())}
-            return {"schema": schema_text, "database": database_name}
-        else:
-            return {"schema": self.get_schema(), "databases": list(self.schema_registry.keys())}
+            database_names = kwargs.get('database_name', [])
+            if isinstance(database_names, str):
+                database_names = [database_names]
+
+            results = []
+            for db_name in database_names:
+                try:
+                    schema_text = self.get_schema(db_name)
+                    if not schema_text or "Database:" not in schema_text:
+                        self.services.logging.warning(f"Schema not found for {db_name}")
+                        results.append({"error": f"Schema not found for {db_name}", "available": list(self.schema_registry.keys())})
+                    else:
+                        self.services.logging.info(f"Schema retrieved for {db_name}")
+                        results.append({"schema": schema_text, "database": db_name})
+                except Exception as e:
+                    self.services.logging.error(f"Error handling get_database_schema for {db_name}: {e}")
+                    results.append({"error": str(e)})
+
+            if not database_names:
+                self.services.logging.warning("No database name provided")
+                return {"schema": self.get_schema(), "databases": list(self.schema_registry.keys())}
+
+            return {"results": results}
 
     def _handle_validate_schema(self, **kwargs):
-        database_name = kwargs.get('database_name')
-        if not database_name:
-            raise ValueError("database_name required")
-        
-        db_path = self.data_dir / database_name
-        if not db_path.exists():
-            return {"error": f"Database {database_name} not found", "path": str(db_path)}
-        
-        registry_schema = self.schema_registry.get(database_name)
-        if not registry_schema:
-            return {"error": f"No registry entry for {database_name}"}
-        
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            
-            mismatches = []
-            for table_name, table_info in registry_schema['tables'].items():
-                cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name=?", [table_name])
-                if not cursor.fetchone():
-                    mismatches.append({"type": "missing_table", "table": table_name})
+            database_names = kwargs.get('database_names', [kwargs.get('database_name')])
+            if not database_names:
+                raise ValueError("At least one database_name required")
+
+            results = []
+            for db_name in database_names:
+                db_path = self.data_dir / db_name
+                if not db_path.exists():
+                    self.services.logging.warning(f"Database {db_name} not found at {db_path}")
+                    results.append({"database": db_name, "error": f"Database {db_name} not found", "path": str(db_path)})
                     continue
-                
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                actual_cols = {row[1]: row[2] for row in cursor.fetchall()}
-                registry_cols = list(table_info['columns'].keys())
-                
-                for col in registry_cols:
-                    if col not in actual_cols:
-                        mismatches.append({"type": "missing_column", "table": table_name, "column": col})
-                
-                for col in actual_cols:
-                    if col not in registry_cols:
-                        mismatches.append({"type": "undocumented_column", "table": table_name, "column": col, "type": actual_cols[col]})
-            
-            conn.close()
-            
-            return {
-                "database": database_name,
-                "valid": len(mismatches) == 0,
-                "mismatches": mismatches,
-                "message": "Schema matches registry" if not mismatches else f"Found {len(mismatches)} mismatches"
-            }
-        except Exception as e:
-            return {"error": str(e), "database": database_name}
+
+                registry_schema = self.schema_registry.get(db_name)
+                if not registry_schema:
+                    self.services.logging.warning(f"No registry entry for {db_name}")
+                    results.append({"database": db_name, "error": f"No registry entry for {db_name}"})
+                    continue
+
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
+
+                    mismatches = []
+                    for table_name, table_info in registry_schema['tables'].items():
+                        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name=?", [table_name])
+                        if not cursor.fetchone():
+                            mismatches.append({"type": "missing_table", "table": table_name})
+                            continue
+
+                        cursor.execute(f"PRAGMA table_info({table_name})")
+                        actual_cols = {row[1]: row[2] for row in cursor.fetchall()}
+                        registry_cols = list(table_info['columns'].keys())
+
+                        for col in registry_cols:
+                            if col not in actual_cols:
+                                mismatches.append({"type": "missing_column", "table": table_name, "column": col})
+
+                        for col in actual_cols:
+                            if col not in registry_cols:
+                                mismatches.append({"type": "undocumented_column", "table": table_name, "column": col, "type": actual_cols[col]})
+
+                    conn.close()
+
+                    result = {
+                        "database": db_name,
+                        "valid": len(mismatches) == 0,
+                        "mismatches": mismatches,
+                        "message": "Schema matches registry" if not mismatches else f"Found {len(mismatches)} mismatches"
+                    }
+                    self.services.logging.info(f"Schema validation result for {db_name}: {result}")
+                    results.append(result)
+                except Exception as e:
+                    self.services.logging.error(f"Error validating schema for {db_name}: {str(e)}")
+                    results.append({"database": db_name, "error": str(e)})
+
+            return {"results": results}

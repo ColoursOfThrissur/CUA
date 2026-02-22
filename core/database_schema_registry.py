@@ -7,6 +7,7 @@ DATABASE_SCHEMAS = {
             "tool_creations": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
+                    "correlation_id": "TEXT - Request correlation ID",
                     "tool_name": "TEXT - Name of tool being created",
                     "user_prompt": "TEXT - User's creation request",
                     "status": "TEXT - 'success', 'failed', 'pending'",
@@ -17,11 +18,28 @@ DATABASE_SCHEMAS = {
                     "timestamp": "REAL - Unix timestamp",
                     "created_at": "TEXT - ISO format timestamp"
                 },
-                "indexes": ["tool_name", "status", "timestamp"],
+                "indexes": ["tool_name", "status", "timestamp", "correlation_id"],
                 "common_queries": [
                     "SELECT * FROM tool_creations WHERE tool_name=? ORDER BY timestamp DESC",
                     "SELECT status, COUNT(*) FROM tool_creations GROUP BY status",
-                    "SELECT * FROM tool_creations WHERE status='failed' ORDER BY timestamp DESC"
+                    "SELECT * FROM tool_creations WHERE status='failed' ORDER BY timestamp DESC",
+                    "SELECT * FROM tool_creations WHERE correlation_id=?"
+                ]
+            },
+            "creation_artifacts": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "creation_id": "INTEGER - FK to tool_creations",
+                    "correlation_id": "TEXT - Request correlation ID",
+                    "artifact_type": "TEXT - spec, code, validation, sandbox",
+                    "step": "TEXT - Step that produced artifact",
+                    "content": "TEXT - Artifact content",
+                    "timestamp": "REAL - Unix timestamp",
+                    "created_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["creation_id", "artifact_type"],
+                "common_queries": [
+                    "SELECT * FROM creation_artifacts WHERE creation_id=? ORDER BY timestamp"
                 ]
             }
         }
@@ -56,17 +74,19 @@ DATABASE_SCHEMAS = {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
                     "timestamp": "TEXT - ISO format timestamp",
+                    "correlation_id": "TEXT - Request correlation ID",
                     "service": "TEXT - Service name that generated log",
                     "level": "TEXT - Log level (info, warning, error, debug)",
                     "message": "TEXT - Log message content",
                     "context": "TEXT - Additional context as JSON",
                     "created_at": "DATETIME"
                 },
-                "indexes": ["timestamp", "service", "level"],
+                "indexes": ["timestamp", "service", "level", "correlation_id"],
                 "common_queries": [
                     "SELECT * FROM logs WHERE level='error' ORDER BY timestamp DESC LIMIT 10",
                     "SELECT service, COUNT(*) FROM logs GROUP BY service",
-                    "SELECT * FROM logs WHERE service='tool.ContextSummarizerTool' ORDER BY timestamp DESC"
+                    "SELECT * FROM logs WHERE service='tool.ContextSummarizerTool' ORDER BY timestamp DESC",
+                    "SELECT * FROM logs WHERE correlation_id=? ORDER BY timestamp"
                 ]
             }
         }
@@ -100,22 +120,43 @@ DATABASE_SCHEMAS = {
             "executions": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
+                    "correlation_id": "TEXT - Request correlation ID",
+                    "parent_execution_id": "INTEGER - Parent execution for nested calls",
                     "tool_name": "TEXT - Name of the tool",
                     "operation": "TEXT - Operation/capability name",
                     "success": "INTEGER - 1 for success, 0 for failure",
                     "error": "TEXT - Error message if failed",
+                    "error_stack_trace": "TEXT - Full stack trace",
                     "execution_time_ms": "REAL - Execution time in milliseconds",
                     "parameters": "TEXT - Input parameters as JSON",
+                    "output_data": "TEXT - Full output data (truncated)",
                     "output_size": "INTEGER - Size of output in bytes",
                     "timestamp": "REAL - Unix timestamp",
                     "created_at": "TEXT - ISO format timestamp",
                     "risk_score": "REAL - Risk score 0-1"
                 },
-                "indexes": ["tool_name", "operation", "success", "timestamp"],
+                "indexes": ["tool_name", "operation", "success", "timestamp", "correlation_id", "parent_execution_id"],
                 "common_queries": [
                     "SELECT tool_name, COUNT(*) as count, AVG(success) as success_rate FROM executions GROUP BY tool_name",
                     "SELECT * FROM executions WHERE tool_name=? ORDER BY timestamp DESC LIMIT 20",
-                    "SELECT * FROM executions WHERE success=0 ORDER BY timestamp DESC"
+                    "SELECT * FROM executions WHERE success=0 ORDER BY timestamp DESC",
+                    "SELECT * FROM executions WHERE correlation_id=? ORDER BY timestamp",
+                    "SELECT * FROM executions WHERE parent_execution_id=?"
+                ]
+            },
+            "execution_context": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "execution_id": "INTEGER - FK to executions",
+                    "correlation_id": "TEXT - Request correlation ID",
+                    "service_calls": "TEXT - Services used as JSON array",
+                    "llm_calls_count": "INTEGER - Number of LLM calls",
+                    "llm_tokens_used": "INTEGER - Total tokens used",
+                    "created_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["execution_id"],
+                "common_queries": [
+                    "SELECT * FROM execution_context WHERE execution_id=?"
                 ]
             }
         }
@@ -127,21 +168,42 @@ DATABASE_SCHEMAS = {
             "evolution_runs": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
+                    "correlation_id": "TEXT - Request correlation ID",
                     "tool_name": "TEXT - Name of tool being evolved",
                     "user_prompt": "TEXT - User's improvement request",
-                    "status": "TEXT - 'success', 'failed', 'pending'",
+                    "status": "TEXT - 'success', 'failed', 'pending', 'approved'",
                     "step": "TEXT - Last completed step",
                     "error_message": "TEXT - Error if failed",
                     "confidence": "REAL - Confidence score 0-1",
                     "health_before": "REAL - Health score before evolution",
+                    "health_after": "REAL - Health score after evolution",
                     "timestamp": "TEXT - ISO format timestamp",
                     "created_at": "DATETIME"
                 },
-                "indexes": ["tool_name", "status", "timestamp"],
+                "indexes": ["tool_name", "status", "timestamp", "correlation_id"],
                 "common_queries": [
                     "SELECT * FROM evolution_runs WHERE tool_name=? ORDER BY timestamp DESC",
                     "SELECT tool_name, COUNT(*) as attempts, SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successes FROM evolution_runs GROUP BY tool_name",
-                    "SELECT * FROM evolution_runs WHERE status='failed' ORDER BY timestamp DESC"
+                    "SELECT * FROM evolution_runs WHERE status='failed' ORDER BY timestamp DESC",
+                    "SELECT * FROM evolution_runs WHERE correlation_id=? ORDER BY timestamp",
+                    "SELECT tool_name, AVG(health_after - health_before) as avg_improvement FROM evolution_runs WHERE health_after IS NOT NULL GROUP BY tool_name"
+                ]
+            },
+            "evolution_artifacts": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "evolution_id": "INTEGER - FK to evolution_runs",
+                    "correlation_id": "TEXT - Request correlation ID",
+                    "artifact_type": "TEXT - analysis, proposal, code, validation, sandbox, error",
+                    "step": "TEXT - Step that produced artifact",
+                    "content": "TEXT - Artifact content",
+                    "timestamp": "TEXT - ISO format timestamp",
+                    "created_at": "DATETIME"
+                },
+                "indexes": ["evolution_id", "artifact_type"],
+                "common_queries": [
+                    "SELECT * FROM evolution_artifacts WHERE evolution_id=? ORDER BY timestamp",
+                    "SELECT * FROM evolution_artifacts WHERE artifact_type='error' ORDER BY timestamp DESC"
                 ]
             }
         }

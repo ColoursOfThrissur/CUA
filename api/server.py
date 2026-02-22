@@ -69,6 +69,8 @@ try:
     from api.tool_info_api import router as tool_info_router
     from api.tool_list_api import router as tool_list_router
     from api.tools_management_api import router as tools_management_router
+    from api.metrics_api import router as metrics_router
+    from api.auto_evolution_api import router as auto_evolution_router
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
@@ -107,8 +109,25 @@ if ROUTERS_AVAILABLE:
     app.include_router(tool_info_router)
     app.include_router(tool_list_router)
     app.include_router(tools_management_router)
+    app.include_router(metrics_router)
+    app.include_router(auto_evolution_router)
 
 cors_origins, cors_allow_credentials = _get_cors_settings()
+
+# Add correlation context middleware
+from core.correlation_context import CorrelationContext, CorrelationContextManager
+
+@app.middleware("http")
+async def correlation_middleware(request: Request, call_next):
+    """Add correlation ID to all requests."""
+    # Get or generate correlation ID
+    correlation_id = request.headers.get("X-Correlation-ID")
+    
+    with CorrelationContextManager(correlation_id) as corr_id:
+        # Add to response headers
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = corr_id
+        return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -221,6 +240,12 @@ if SYSTEM_AVAILABLE:
             lambda max_iter, dry: asyncio.create_task(_run_scheduled_loop(max_iter, dry))
         )
         scheduler.start()
+        
+        # Initialize metrics scheduler
+        from core.metrics_scheduler import get_metrics_scheduler
+        metrics_scheduler = get_metrics_scheduler()
+        metrics_scheduler.start()
+        logger.info("Metrics scheduler started")
         
         # Set instances for routers
         if ROUTERS_AVAILABLE:

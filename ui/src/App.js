@@ -13,6 +13,7 @@ import SelfImprovementLog from './components/SelfImprovementLog';
 import TaskManagerPanel from './components/TaskManagerPanel';
 import PendingToolsPanel from './components/PendingToolsPanel';
 import ToolRegistryPanel from './components/ToolRegistryPanel';
+import AutoEvolutionPanel from './components/AutoEvolutionPanel';
 import CodePreviewModal from './components/CodePreviewModal';
 import DiffModal from './components/DiffModal';
 import ApprovalNotification from './components/ApprovalNotification';
@@ -314,7 +315,6 @@ function AppContent() {
       if (response.ok && data.success) {
         toast.success(`Tool activated: ${data.tool_name}`);
         await refreshPendingTools();
-        await fetch(`${API_URL}/api/tools/sync`, { method: 'POST' });
       } else {
         toast.error(`Failed to activate tool: ${data.detail || data.error || 'Unknown error'}`);
       }
@@ -449,7 +449,9 @@ function AppContent() {
             </div>
           );
         } else if (activeMode === 'evolution') {
-          return <PendingEvolutionsOverlay />;
+          return <PendingEvolutionsOverlay 
+            onOpenQuality={() => setOverlayOpen('quality')}
+          />;
         }
         return null;
       case 'registry':
@@ -467,6 +469,8 @@ function AppContent() {
         return <ObservabilityOverlay />;
       case 'quality':
         return <QualityOverlay />;
+      case 'auto-evolution':
+        return <AutoEvolutionPanel onClose={() => setOverlayOpen(null)} />;
       case 'history':
         return <div style={{padding: '40px', textAlign: 'center', color: 'white'}}>Evolution History</div>;
       case 'tasks':
@@ -490,7 +494,8 @@ function AppContent() {
       registry: 'Pending Tools',
       sync: 'Tool Registry',
       quality: 'Quality Dashboard',
-      history: 'Evolution History'
+      history: 'Evolution History',
+      'auto-evolution': 'Auto-Evolution'
     };
     return titles[overlayOpen] || '';
   };
@@ -536,6 +541,7 @@ function AppContent() {
           currentModel={currentModel}
           onModelChange={handleModelChange}
           onOpenObservability={() => setActiveMode('observability')}
+          onOpenAutoEvolution={() => setOverlayOpen('auto-evolution')}
           activeMode={activeMode}
           onModeChange={setActiveMode}
           theme={theme}
@@ -566,7 +572,7 @@ function AppContent() {
           isOpen={overlayOpen !== null}
           onClose={() => setOverlayOpen(null)}
           title={getOverlayTitle()}
-          width={overlayOpen === 'quality' ? '60%' : '50%'}
+          width={overlayOpen === 'quality' ? '60%' : overlayOpen === 'auto-evolution' ? '500px' : '50%'}
         >
           {renderOverlayContent()}
         </RightOverlay>

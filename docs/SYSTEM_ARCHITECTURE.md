@@ -26,13 +26,24 @@ POST /evolution/approve/{tool}      # Approve evolution (auto re-checks deps)
 POST /evolution/reject/{tool}       # Reject evolution
 POST /evolution/resolve-dependencies # Install/generate/skip dependencies
 GET  /quality/all                   # Get all tool health scores
-GET  /quality/weak                  # Get weak tools
+GET  /quality/weak                  # Get weak tools (excludes pending)
+GET  /quality/llm-weak              # Get LLM-analyzed weak tools
+GET  /quality/llm-analysis/{tool}   # Get LLM health analysis
+POST /quality/refresh-llm-analysis  # Refresh LLM analysis
 GET  /observability/logs            # Query system logs
 GET  /observability/tool-evolution  # Query evolution history
 POST /observability/cleanup         # Remove stale execution logs
 POST /observability/refresh         # Refresh quality metrics
+GET  /observability/tables          # List all database tables
+GET  /observability/data/{db}/{table} # Get paginated table data
 GET  /tools/list                    # List actual tool files
 GET  /tools/info/{tool}             # Get tool capabilities
+GET  /tools-management/summary      # Get tool summary stats
+GET  /tools-management/list         # Get all tools with health
+GET  /tools-management/detail/{tool} # Get comprehensive tool details
+GET  /tools-management/executions/{tool} # Get recent executions
+GET  /tools-management/code/{tool}  # Get tool source code
+POST /tools-management/trigger-check/{tool} # Run health check
 ```
 
 ### 2. Tool System
@@ -132,20 +143,24 @@ Generate natural response from results
 
 **Purpose**: Automated tool improvement with human approval
 
-**6-Step Flow**:
+**6-Step Flow with Context-Aware Improvements**:
 ```
 1. ANALYZE
    - Quality analyzer scores tool (0-100)
+   - LLM health analyzer checks code quality
    - Extracts current code, errors, usage stats
    - Generates analysis summary
 
 2. PROPOSE
+   - Reads evolution context from .amazonq/rules/LocalLLMRUle.md
+   - Understands architecture patterns (self._cache, self.services.X)
    - LLM generates improvement specification
-   - Includes description, changes, confidence, risk
-   - Confidence threshold: 0.5+
+   - ONLY proposes fixes for HIGH severity bugs
+   - Skips if no critical issues found
+   - Requires justification for changes
 
 3. GENERATE CODE
-   - Code generator creates improved version
+   - Code generator creates minimal improved version
    - Preserves structure, improves handlers
    - Uses available services list
 
@@ -174,11 +189,12 @@ Generate natural response from results
 **Key Files**:
 - `core/tool_evolution/flow.py` - Orchestrator
 - `core/tool_evolution/analyzer.py` - Tool analysis
-- `core/tool_evolution/proposal_generator.py` - LLM proposals
+- `core/tool_evolution/proposal_generator.py` - Context-aware proposals
 - `core/tool_evolution/code_generator.py` - Code generation
 - `core/tool_evolution/validator.py` - Validation
 - `core/tool_evolution/sandbox_runner.py` - Sandbox testing
 - `core/pending_evolutions_manager.py` - Approval queue
+- `core/llm_tool_health_analyzer.py` - LLM-based health analysis
 
 ### 5. Dependency Management
 
@@ -308,44 +324,49 @@ if error_rate > 0.5:
 
 ### 8. UI Layer (React)
 
-**Purpose**: Unified interface with 3 modes
+**Purpose**: Unified interface with 5 modes
 
 **Architecture**:
 ```
 App.js
     ↓
-Header (mode switcher, observability icon)
+Header (mode switcher, tools management, observability, theme toggle)
     ↓
 MainCanvas (renders mode-specific content)
     ├── CUA Chat (ChatPanel)
     ├── Tools Mode (ToolModeChat)
-    └── Evolution Mode (EvolutionMode)
+    ├── Evolution Mode (EvolutionMode)
+    ├── Tools Management (ToolsManagementPage)
+    └── Observability (ObservabilityPage)
     ↓
 FloatingActionBar (context-sensitive buttons)
     ↓
 RightOverlay (slide-in panels)
-    ├── ObservabilityOverlay (5 database tabs)
+    ├── ObservabilityOverlay (10 database tabs)
     ├── QualityOverlay (health dashboard)
     ├── PendingEvolutionsOverlay (approval UI)
     └── Other overlays
 ```
 
 **Key Components**:
-- `ui/src/App.js` - Main app with state management
+- `ui/src/App.js` - Main app with state management and theme
 - `ui/src/components/MainCanvas.js` - Unified canvas
 - `ui/src/components/ModeTabBar.js` - Mode switcher
 - `ui/src/components/FloatingActionBar.js` - Context buttons
 - `ui/src/components/RightOverlay.js` - Slide-in panel
 - `ui/src/components/EvolutionMode.js` - Evolution UI
-- `ui/src/components/ObservabilityOverlay.js` - Database viewer
+- `ui/src/components/ToolsManagementPage.js` - Tool dashboard
+- `ui/src/components/ObservabilityPage.js` - Full-page database viewer
+- `ui/src/components/ObservabilityOverlay.js` - Database overlay
 - `ui/src/components/QualityOverlay.js` - Health dashboard
 - `ui/src/components/PendingEvolutionsOverlay.js` - Approval UI
 
 **Styling**:
-- CSS variables in `ui/src/styles/variables.css`
-- Black background with animated gradient circles
-- Glass morphism effects
-- No hardcoded colors
+- Theme system with CSS variables in `ui/src/styles/theme.css`
+- Dark theme (default): Black background (#000000), blue accent (#4a9eff)
+- Light theme: Modern white (#f7f7f7), GitHub-style colors
+- No hardcoded colors, all use CSS variables
+- Smooth theme transitions
 
 ### 9. LLM Integration
 
@@ -554,8 +575,7 @@ STDLIB_MODULES = {
 
 ## Future Enhancements
 
-1. **LLM Health Checking**: Input/output validation via LLM
-2. **Auto-Evolution Triggers**: Scheduled improvements
-3. **Multi-Model Support**: Different models for different tasks
-4. **Distributed Execution**: Scale across multiple nodes
-5. **Version Control**: Git integration for tool changes
+1. **Auto-Evolution Triggers**: Scheduled improvements
+2. **Multi-Model Support**: Different models for different tasks
+3. **Distributed Execution**: Scale across multiple nodes
+4. **Version Control**: Git integration for tool changes

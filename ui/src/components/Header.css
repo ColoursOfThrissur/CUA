@@ -266,6 +266,27 @@
   transform: translateY(-2px);
 }
 
+.btn-auto-evolution {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  padding: 0.625rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-auto-evolution:hover {
+  background: linear-gradient(135deg, #059669, #047857);
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+  transform: translateY(-2px);
+}
+
+.btn-theme {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  padding: 0.625rem 1rem;
+}
+
 .settings-dropdown {
   position: absolute;
   top: 100%;

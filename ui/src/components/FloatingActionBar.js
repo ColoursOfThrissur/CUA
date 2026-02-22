@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, List, RefreshCw, Activity, History, BarChart3 } from 'lucide-react';
+import { Package, List, RefreshCw } from 'lucide-react';
 import './FloatingActionBar.css';
 
 function FloatingActionBar({ mode, onAction }) {
@@ -13,8 +13,7 @@ function FloatingActionBar({ mode, onAction }) {
         ];
       case 'evolution':
         return [
-          { id: 'pending', label: 'Pending', icon: Package },
-          { id: 'quality', label: 'Quality', icon: BarChart3 }
+          { id: 'pending', label: 'Pending', icon: Package }
         ];
       default:
         return [];

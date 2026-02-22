@@ -21,6 +21,10 @@ class EnhancedCodeValidator:
         self.base_tool_attributes = {
             'name', 'capabilities', '_capabilities', '_performance_stats', 'description', 'services'
         }
+        # Python built-in attributes
+        self.builtin_attributes = {
+            '__class__', '__dict__', '__doc__', '__module__', '__name__', '__bases__'
+        }
     
     def validate(self, code: str, class_name: Optional[str] = None) -> Tuple[bool, str]:
         """Run all enhanced validations."""
@@ -108,6 +112,17 @@ class EnhancedCodeValidator:
             if isinstance(node, ast.FunctionDef)
         }
         
+        # Get attributes initialized in __init__ (could be function references)
+        init_method = next((m for m in target_class.body if isinstance(m, ast.FunctionDef) and m.name == '__init__'), None)
+        initialized_attrs = set()
+        if init_method:
+            for node in ast.walk(init_method):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Attribute):
+                            if isinstance(target.value, ast.Name) and target.value.id == 'self':
+                                initialized_attrs.add(target.attr)
+        
         # Check each method for calls to undefined methods
         for method in target_class.body:
             if not isinstance(method, ast.FunctionDef):
@@ -128,6 +143,10 @@ class EnhancedCodeValidator:
                         
                         # Skip if it's a known base class method
                         if called_method in self.base_tool_methods:
+                            continue
+                        
+                        # Skip if it's an attribute assigned in __init__ (could be function reference)
+                        if called_method in initialized_attrs:
                             continue
                         
                         # Check if method is defined
@@ -165,6 +184,10 @@ class EnhancedCodeValidator:
                         
                         # Skip known base class attributes and methods
                         if attr_name in self.base_tool_attributes or attr_name in self.base_tool_methods:
+                            continue
+                        
+                        # Skip Python built-in attributes
+                        if attr_name in self.builtin_attributes:
                             continue
                         
                         # Check if attribute is initialized

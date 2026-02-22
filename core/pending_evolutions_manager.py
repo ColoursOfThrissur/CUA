@@ -55,6 +55,30 @@ class PendingEvolutionsManager:
         tool_path = Path(evolution["proposal"]["analysis"]["tool_path"])
         tool_path.write_text(evolution["improved_code"])
         
+        # Update evolution log with health_after
+        evolution_id = evolution.get("evolution_id")
+        if evolution_id:
+            from core.tool_evolution_logger import get_evolution_logger
+            from core.tool_quality_analyzer import ToolQualityAnalyzer
+            
+            # Calculate new health score
+            try:
+                analyzer = ToolQualityAnalyzer()
+                report = analyzer.analyze_tool(tool_name)
+                health_after = report.health_score if report else None
+                
+                # Log final status with health_after
+                evo_logger = get_evolution_logger()
+                evo_logger.log_run(
+                    tool_name=tool_name,
+                    user_prompt=None,
+                    status="approved",
+                    step="complete",
+                    health_after=health_after
+                )
+            except Exception as e:
+                print(f"Warning: Could not update health_after: {e}")
+        
         # Remove from pending list
         del evolutions[tool_name]
         

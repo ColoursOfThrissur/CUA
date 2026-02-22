@@ -28,11 +28,18 @@ class ExecutionPlanEvaluatorTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
     
     def _handle_evaluate_plan(self, **kwargs):
-            plan = kwargs.get('plan')
-            if not plan:
-                raise ValueError("Plan is required")
+            plans = kwargs.get('plan', [])
+            if not isinstance(plans, list) or not plans:
+                raise ValueError("Plan(s) is required and must be a non-empty list")
 
-            prompt = f"Evaluate the following plan: {plan}"
-            evaluation = self.services.llm.generate(prompt, 0.3)
+            evaluations = []
+            for plan in plans:
+                prompt = f"Evaluate the following plan: {plan}"
+                try:
+                    evaluation = self.services.llm.generate(prompt, 0.3)
+                    evaluations.append({'plan': plan, 'evaluation': evaluation})
+                except Exception as e:
+                    self.services.logging.error(f"Error evaluating plan: {plan}. Error: {str(e)}")
+                    evaluations.append({'plan': plan, 'evaluation': None})
 
-            return {'evaluation': evaluation}
+            return {'evaluations': evaluations}

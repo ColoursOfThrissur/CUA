@@ -77,133 +77,136 @@ class SystemIntrospectionTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _handle_list_tools(self, **kwargs):
-        include_experimental = kwargs.get('include_experimental', True)
-        
-        if not self.orchestrator:
-            return {'tools': [], 'error': 'Orchestrator not available'}
+            include_experimental = kwargs.get('include_experimental', True)
 
-        try:
-            # Access tool registry from orchestrator
-            tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-            if not tool_registry:
-                return {'tools': [], 'error': 'Tool registry not found'}
+            if not self.orchestrator:
+                return {'tools': [], 'error': 'Orchestrator not available'}
 
-            tools = []
-            for tool_name, tool_instance in tool_registry.items():
-                if not include_experimental and 'experimental' in tool_name.lower():
-                    continue
-                
-                tools.append({
-                    'name': tool_name,
-                    'description': getattr(tool_instance, 'description', 'No description'),
-                    'is_experimental': 'experimental' in tool_name.lower()
-                })
+            try:
+                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
+                if not tool_registry:
+                    return {'tools': [], 'error': 'Tool registry not found'}
 
-            return {
-                'tools': tools,
-                'count': len(tools)
-            }
-        except Exception as e:
-            return {'tools': [], 'error': str(e)}
+                tools = []
+                for tool_name, tool_instance in tool_registry.items():
+                    if not include_experimental and 'experimental' in tool_name.lower():
+                        continue
 
-    def _handle_get_tool_info(self, **kwargs):
-        required_params = ['tool_name']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
-
-        tool_name = kwargs['tool_name']
-
-        if not self.orchestrator:
-            return {'error': 'Orchestrator not available'}
-
-        try:
-            tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-            if not tool_registry or tool_name not in tool_registry:
-                return {'error': f'Tool {tool_name} not found'}
-
-            tool_instance = tool_registry[tool_name]
-            capabilities = []
-
-            # Get capabilities
-            if hasattr(tool_instance, 'capabilities'):
-                for cap_name, cap_obj in tool_instance.capabilities.items():
-                    params = []
-                    if hasattr(cap_obj, 'parameters'):
-                        for param in cap_obj.parameters:
-                            params.append({
-                                'name': param.name,
-                                'type': str(param.type),
-                                'description': param.description,
-                                'required': param.required,
-                                'default': getattr(param, 'default', None)
-                            })
-                    
-                    capabilities.append({
-                        'name': cap_name,
-                        'description': cap_obj.description,
-                        'parameters': params,
-                        'safety_level': str(cap_obj.safety_level)
+                    tools.append({
+                        'name': tool_name,
+                        'description': getattr(tool_instance, 'description', 'No description'),
+                        'is_experimental': 'experimental' in tool_name.lower()
                     })
 
-            return {
-                'tool_name': tool_name,
-                'description': getattr(tool_instance, 'description', 'No description'),
-                'capabilities': capabilities,
-                'capability_count': len(capabilities)
-            }
-        except Exception as e:
-            return {'error': str(e)}
+                return {
+                    'tools': tools,
+                    'count': len(tools)
+                }
+            except Exception as e:
+                self.services.logging.error(f"Error handling list tools: {str(e)}")
+                return {'tools': [], 'error': str(e)}
 
-    def _handle_list_capabilities(self, **kwargs):
-        if not self.orchestrator:
-            return {'capabilities': [], 'error': 'Orchestrator not available'}
+    def _handle_get_tool_info(self, **kwargs):
+            required_params = ['tool_name']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-        try:
-            tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-            if not tool_registry:
-                return {'capabilities': [], 'error': 'Tool registry not found'}
+            tool_name = kwargs['tool_name']
 
-            all_capabilities = []
-            for tool_name, tool_instance in tool_registry.items():
+            if not self.orchestrator:
+                return {'error': 'Orchestrator not available'}
+
+            try:
+                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
+                if not tool_registry or tool_name not in tool_registry:
+                    return {'error': f'Tool {tool_name} not found'}
+
+                tool_instance = tool_registry[tool_name]
+                capabilities = []
+
+                # Get capabilities
                 if hasattr(tool_instance, 'capabilities'):
                     for cap_name, cap_obj in tool_instance.capabilities.items():
-                        all_capabilities.append({
-                            'tool': tool_name,
-                            'capability': cap_name,
-                            'description': cap_obj.description
+                        params = []
+                        if hasattr(cap_obj, 'parameters'):
+                            for param in cap_obj.parameters:
+                                params.append({
+                                    'name': param.name,
+                                    'type': str(param.type),
+                                    'description': param.description,
+                                    'required': param.required,
+                                    'default': getattr(param, 'default', None)
+                                })
+
+                        capabilities.append({
+                            'name': cap_name,
+                            'description': cap_obj.description,
+                            'parameters': params,
+                            'safety_level': str(cap_obj.safety_level)
                         })
 
-            return {
-                'capabilities': all_capabilities,
-                'count': len(all_capabilities)
-            }
-        except Exception as e:
-            return {'capabilities': [], 'error': str(e)}
+                return {
+                    'tool_name': tool_name,
+                    'description': getattr(tool_instance, 'description', 'No description'),
+                    'capabilities': capabilities,
+                    'capability_count': len(capabilities)
+                }
+            except Exception as e:
+                self.services.logging.error(f"Error handling get_tool_info: {str(e)}")
+                return {'error': str(e)}
+
+    def _handle_list_capabilities(self, **kwargs):
+            if not self.orchestrator:
+                return {'capabilities': [], 'error': 'Orchestrator not available'}
+
+            try:
+                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
+                if not tool_registry:
+                    return {'capabilities': [], 'error': 'Tool registry not found'}
+
+                all_capabilities = []
+                for tool_name, tool_instance in tool_registry.items():
+                    if hasattr(tool_instance, 'capabilities'):
+                        for cap_name, cap_obj in tool_instance.capabilities.items():
+                            all_capabilities.append({
+                                'tool': tool_name,
+                                'capability': cap_name,
+                                'description': cap_obj.description
+                            })
+
+                return {
+                    'capabilities': all_capabilities,
+                    'count': len(all_capabilities)
+                }
+            except Exception as e:
+                self.services.logging.error(f"Error listing capabilities: {str(e)}")
+                return {'capabilities': [], 'error': str(e)}
 
     def _handle_get_system_stats(self, **kwargs):
-        if not self.orchestrator:
-            return {'error': 'Orchestrator not available'}
+            if not self.orchestrator:
+                return {'error': 'Orchestrator not available'}
 
-        try:
-            tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-            if not tool_registry:
-                return {'error': 'Tool registry not found'}
+            try:
+                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
+                if not tool_registry:
+                    return {'error': 'Tool registry not found'}
 
-            total_tools = len(tool_registry)
-            experimental_tools = sum(1 for name in tool_registry.keys() if 'experimental' in name.lower())
-            total_capabilities = 0
+                total_tools = len(tool_registry)
+                experimental_tools = sum(1 for name in tool_registry.keys() if 'experimental' in name.lower())
+                total_capabilities = 0
 
-            for tool_instance in tool_registry.values():
-                if hasattr(tool_instance, 'capabilities'):
-                    total_capabilities += len(tool_instance.capabilities)
+                for tool_instance in tool_registry.values():
+                    if hasattr(tool_instance, 'capabilities'):
+                        total_capabilities += len(tool_instance.capabilities)
 
-            return {
-                'total_tools': total_tools,
-                'experimental_tools': experimental_tools,
-                'production_tools': total_tools - experimental_tools,
-                'total_capabilities': total_capabilities,
-                'average_capabilities_per_tool': round(total_capabilities / total_tools, 2) if total_tools > 0 else 0
-            }
-        except Exception as e:
-            return {'error': str(e)}
+                return {
+                    'total_tools': total_tools,
+                    'experimental_tools': experimental_tools,
+                    'production_tools': total_tools - experimental_tools,
+                    'total_capabilities': total_capabilities,
+                    'average_capabilities_per_tool': round(total_capabilities / total_tools, 2) if total_tools > 0 else 0
+                }
+            except Exception as e:
+                self.services.logging.error(f"Error in _handle_get_system_stats: {str(e)}")
+                return {'error': str(e)}

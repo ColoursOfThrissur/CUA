@@ -115,16 +115,16 @@ class LocalRunNoteTool(BaseTool):
                 raise
 
     def _handle_get(self, **kwargs):
-        note_id = kwargs.get('note_id')
-        if not note_id:
-            raise ValueError("Missing required parameter: note_id")
+            note_id = kwargs.get('note_id')
+            if not note_id:
+                raise ValueError("Missing required parameter: note_id")
 
-        try:
-            data = self.services.storage.get(note_id)
-            return data
-        except FileNotFoundError as e:
-            self.services.logging.error(f"Note with ID '{note_id}' not found.")
-            raise e
+            try:
+                data = self.services.storage.get(note_id)
+                return data
+            except FileNotFoundError as e:
+                self.services.logging.error(f"Note with ID '{note_id}' not found.")
+                raise e
 
     def _handle_list(self, **kwargs):
             try:

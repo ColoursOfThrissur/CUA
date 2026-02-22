@@ -61,24 +61,46 @@ class TestIntegrationTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
     
     def _handle_create(self, **kwargs):
-        name = kwargs.get('name')
-        if not name:
-            raise ValueError("name is required")
-        
-        item_id = self.services.ids.generate("test")
-        data = {
-            "id": item_id,
-            "name": name,
-            "created_at": self.services.time.now_utc()
-        }
-        return self.services.storage.save(item_id, data)
+            names = kwargs.get('names', [kwargs.get('name')])
+            if not names:
+                raise ValueError("name(s) is required")
+
+            items = []
+            for name in names:
+                item_id = self.services.ids.generate("test")
+                data = {
+                    "id": item_id,
+                    "name": name,
+                    "created_at": self.services.time.now_utc()
+                }
+                items.append(data)
+
+            results = [self.services.storage.save(item['id'], item) for item in items]
+            return {"results": results}
     
     def _handle_get(self, **kwargs):
-        item_id = kwargs.get('id')
-        if not item_id:
-            raise ValueError("id is required")
-        return self.services.storage.get(item_id)
+            item_id = kwargs.get('id')
+            if not item_id:
+                raise ValueError("id is required")
+
+            if isinstance(item_id, list):
+                return [self.services.storage.get(i) for i in item_id]
+
+            return self.services.storage.get(item_id)
     
     def _handle_list(self, **kwargs):
-        limit = kwargs.get('limit', 10)
-        return {"items": self.services.storage.list(limit=limit)}
+            limit = kwargs.get('limit', 10)
+            try:
+                items = self.services.storage.list(limit=limit)
+                batch_size = 5
+                batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+                processed_items = []
+                for batch in batches:
+                    # Example processing: generate a summary for each item
+                    for item in batch:
+                        summary = self.services.llm.generate(prompt=item, temperature=0.5, max_tokens=100)
+                        processed_items.append({"item": item, "summary": summary})
+                return {"items": processed_items}
+            except Exception as e:
+                self.services.logging.error(f"Error processing items: {e}")
+                return {"error": str(e)}

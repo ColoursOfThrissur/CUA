@@ -1,16 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Eye } from 'lucide-react';
+import { CheckCircle, XCircle, Eye, Package, BarChart3, Settings } from 'lucide-react';
 import { API_URL } from '../config';
 import { useToast } from './Toast';
 import './PendingEvolutionsOverlay.css';
 
-function PendingEvolutionsOverlay() {
+function PendingEvolutionsOverlay({ onOpenQuality }) {
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showConfig, setShowConfig] = useState(false);
+  const [config, setConfig] = useState({
+    mode: 'balanced',
+    scan_interval: 3600,
+    max_concurrent: 2,
+    min_health_threshold: 50,
+    auto_approve_threshold: 90,
+    learning_enabled: true,
+    enable_enhancements: true
+  });
+  const [configLoading, setConfigLoading] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
     fetchPending();
+    fetchConfig();
   }, []);
 
   const fetchPending = async () => {
@@ -24,6 +36,35 @@ function PendingEvolutionsOverlay() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/auto-evolution/status');
+      const data = await res.json();
+      if (data.config) setConfig(data.config);
+    } catch (err) {
+      console.error('Failed to fetch config:', err);
+    }
+  };
+
+  const handleUpdateConfig = async () => {
+    setConfigLoading(true);
+    try {
+      const res = await fetch('http://localhost:8000/auto-evolution/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      if (res.ok) {
+        toast.success('Configuration updated');
+      } else {
+        toast.error('Failed to update config');
+      }
+    } catch (err) {
+      toast.error('Failed to update: ' + err.message);
+    }
+    setConfigLoading(false);
   };
 
   const handleApprove = async (toolName) => {
@@ -71,6 +112,65 @@ function PendingEvolutionsOverlay() {
 
   return (
     <div className="pending-evolutions-overlay">
+      <div className="overlay-actions">
+        <button className="action-icon-btn" onClick={() => setShowConfig(!showConfig)} title="Evolution Settings">
+          <Settings size={18} />
+        </button>
+        <button className="action-icon-btn" onClick={onOpenQuality} title="Quality Dashboard">
+          <BarChart3 size={18} />
+        </button>
+      </div>
+
+      {showConfig && (
+        <div className="config-dropdown">
+          <h4>Configuration</h4>
+          <div className="config-grid">
+            <div className="config-item">
+              <label>Mode</label>
+              <select value={config.mode} onChange={e => setConfig({...config, mode: e.target.value})}>
+                <option value="reactive">Reactive</option>
+                <option value="balanced">Balanced</option>
+                <option value="proactive">Proactive</option>
+                <option value="experimental">Experimental</option>
+              </select>
+            </div>
+            <div className="config-item">
+              <label>Scan Interval (seconds)</label>
+              <input type="number" value={config.scan_interval} 
+                onChange={e => setConfig({...config, scan_interval: parseInt(e.target.value)})} />
+            </div>
+            <div className="config-item">
+              <label>Max Concurrent</label>
+              <input type="number" value={config.max_concurrent} 
+                onChange={e => setConfig({...config, max_concurrent: parseInt(e.target.value)})} />
+            </div>
+            <div className="config-item">
+              <label>Min Health Threshold</label>
+              <input type="number" value={config.min_health_threshold} 
+                onChange={e => setConfig({...config, min_health_threshold: parseInt(e.target.value)})} />
+            </div>
+            <div className="config-item">
+              <label>Auto-Approve Threshold</label>
+              <input type="number" value={config.auto_approve_threshold} 
+                onChange={e => setConfig({...config, auto_approve_threshold: parseInt(e.target.value)})} />
+            </div>
+            <div className="config-item">
+              <label>Learning Enabled</label>
+              <input type="checkbox" checked={config.learning_enabled} 
+                onChange={e => setConfig({...config, learning_enabled: e.target.checked})} />
+            </div>
+            <div className="config-item">
+              <label>Enable Enhancements</label>
+              <input type="checkbox" checked={config.enable_enhancements !== false} 
+                onChange={e => setConfig({...config, enable_enhancements: e.target.checked})} />
+            </div>
+          </div>
+          <button onClick={handleUpdateConfig} disabled={configLoading} className="btn-update-config">
+            Update Configuration
+          </button>
+        </div>
+      )}
+      
       {pending.map(item => (
         <div key={item.tool_name} className="evolution-card">
           <div className="evolution-header">

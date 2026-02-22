@@ -15,8 +15,8 @@
 .evolution-input-area {
   position: sticky;
   bottom: 0;
-  background: var(--bg-primary);
-  border-top: 1px solid var(--glass-border);
+  /* background: var(--bg-primary);
+  border-top: 1px solid var(--glass-border); */
   padding: 1.5rem 2rem;
   display: flex;
   flex-direction: column;

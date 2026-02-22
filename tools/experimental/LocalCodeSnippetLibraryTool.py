@@ -131,16 +131,28 @@ class LocalCodeSnippetLibraryTool(BaseTool):
             code_content = kwargs.get('code_content')
             version = kwargs.get('version')
 
-            data = {
-                'snippet_id': snippet_id,
-                'language': language,
-                'tags': tags,
-                'description': description,
-                'code_content': code_content,
-                'version': version
-            }
-
-            return self.services.storage.save(snippet_id, data)
+            if isinstance(snippet_id, list) and isinstance(code_content, list):
+                snippets = []
+                for i in range(len(snippet_id)):
+                    snippets.append({
+                        'snippet_id': snippet_id[i],
+                        'language': language[i] if isinstance(language, list) else language,
+                        'tags': tags[i] if isinstance(tags, list) else tags,
+                        'description': description[i] if isinstance(description, list) else description,
+                        'code_content': code_content[i],
+                        'version': version[i] if isinstance(version, list) else version
+                    })
+                return self.services.storage.save(snippets)
+            else:
+                data = {
+                    'snippet_id': snippet_id,
+                    'language': language,
+                    'tags': tags,
+                    'description': description,
+                    'code_content': code_content,
+                    'version': version
+                }
+                return self.services.storage.save(snippet_id, data)
 
     def _handle_get_snippet(self, **kwargs):
             snippet_id = kwargs.get('snippet_id')
@@ -165,7 +177,8 @@ class LocalCodeSnippetLibraryTool(BaseTool):
             if not isinstance(limit, int) or limit <= 0:
                 raise ValueError("Limit must be a positive integer.")
 
-            return self.services.storage.list(limit=limit)
+            snippets = self.services.storage.list(limit=limit)
+            return {"popular_snippets": snippets}
 
     def _handle_update_version(self, **kwargs):
             snippet_id = kwargs.get('snippet_id')

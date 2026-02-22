@@ -109,6 +109,22 @@ const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode }) =>
                   </div>
                 )}
 
+                {tool.dependencies && (tool.dependencies.missing_libraries?.length > 0 || tool.dependencies.missing_services?.length > 0) && (
+                  <div className="dependencies-warning" style={{background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
+                    <strong style={{color: '#ef4444'}}>⚠️ Missing Dependencies:</strong>
+                    {tool.dependencies.missing_libraries?.length > 0 && (
+                      <div style={{marginTop: '5px'}}>
+                        <span style={{color: 'var(--text-secondary)'}}>Libraries:</span> {tool.dependencies.missing_libraries.join(', ')}
+                      </div>
+                    )}
+                    {tool.dependencies.missing_services?.length > 0 && (
+                      <div style={{marginTop: '5px'}}>
+                        <span style={{color: 'var(--text-secondary)'}}>Services:</span> {tool.dependencies.missing_services.join(', ')}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="detail-item">
                   <span className="detail-label">Created:</span>
                   <span className="detail-value">

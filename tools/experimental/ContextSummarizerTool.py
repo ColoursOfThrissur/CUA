@@ -90,83 +90,83 @@ class ContextSummarizerTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _handle_summarize_text(self, **kwargs):
-        required_params = ['input_text']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+            required_params = ['input_text']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-        input_text = kwargs['input_text']
-        summary_length = kwargs.get('summary_length', 50)
+            input_text = kwargs['input_text']
+            summary_length = kwargs.get('summary_length', 50)
 
-        if not self.services or not self.services.llm:
-            self.services.logging.error("LLM service not available")
-            raise RuntimeError("LLM service not available")
+            if not self.services or not self.services.llm:
+                self.services.logging.error("LLM service not available")
+                raise RuntimeError("LLM service not available")
 
-        cache_key = (input_text, summary_length)
-        if cache_key in self._cache:
+            cache_key = (input_text, summary_length)
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+            prompt = f"Summarize the following text in approximately {summary_length} words:\n\n{input_text}"
+            try:
+                summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
+            except Exception as e:
+                self.services.logging.error(f"Failed to generate summary: {e}")
+                raise RuntimeError(f"Failed to generate summary: {e}")
+
+            detected_language = self.services.detect_language(input_text)
+            sentiment = self.services.sentiment_analysis(input_text)
+            tone = sentiment.get('label', 'neutral') if isinstance(sentiment, dict) else 'neutral'
+
+            self._cache[cache_key] = {
+                "summary": summary, 
+                "original_length": len(input_text.split()), 
+                "summary_length": len(summary.split()),
+                "detected_language": detected_language,
+                "tone": tone
+            }
             return self._cache[cache_key]
-
-        prompt = f"Summarize the following text in approximately {summary_length} words:\n\n{input_text}"
-        try:
-            summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
-        except Exception as e:
-            self.services.logging.error(f"Failed to generate summary: {e}")
-            raise RuntimeError(f"Failed to generate summary: {e}")
-
-        detected_language = self.services.detect_language(input_text)
-        sentiment = self.services.sentiment_analysis(input_text)
-        tone = sentiment.get('label', 'neutral') if isinstance(sentiment, dict) else 'neutral'
-
-        self._cache[cache_key] = {
-            "summary": summary, 
-            "original_length": len(input_text.split()), 
-            "summary_length": len(summary.split()),
-            "detected_language": detected_language,
-            "tone": tone
-        }
-        return self._cache[cache_key]
 
     def _handle_extract_key_points(self, **kwargs):
-        required_params = ['input_text']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+            required_params = ['input_text']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-        input_text = kwargs['input_text']
-        num_key_points = kwargs.get('num_key_points', 5)
-        
-        cache_key = f"{input_text}_{num_key_points}"
-        if cache_key in self._cache:
+            input_text = kwargs['input_text']
+            num_key_points = kwargs.get('num_key_points', 5)
+
+            cache_key = f"{input_text}_{num_key_points}"
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+            detected_language = self.services.detect_language(input_text)
+            result = self.services.extract_key_points(input_text, style='bullet', language=detected_language)
+
+            self._cache[cache_key] = {'key_points': result, 'language': detected_language}
             return self._cache[cache_key]
-
-        detected_language = self.services.detect_language(input_text)
-        result = self.services.extract_key_points(input_text, style='bullet', language=detected_language)
-        
-        self._cache[cache_key] = {'key_points': result, 'language': detected_language}
-        return self._cache[cache_key]
 
     def _handle_sentiment_analysis(self, **kwargs):
-        required_params = ['input_text']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+            required_params = ['input_text']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-        input_text = kwargs['input_text']
-        language = kwargs.get('language', 'en')
-        
-        cache_key = hash(input_text)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+            input_text = kwargs['input_text']
+            language = kwargs.get('language', 'en')
 
-        result = self.services.sentiment_analysis(input_text, language=language)
-        self._cache[cache_key] = result
-        return result
+            cache_key = hash(input_text)
+            if cache_key in self._cache:
+                return self._cache[cache_key]
+
+            result = self.services.sentiment_analysis(input_text, language=language)
+            self._cache[cache_key] = result
+            return result
 
     def _handle_generate_json_output(self, **kwargs):
-        required_params = ['summary', 'key_points', 'sentiment']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
-        
-        return self.services.generate_json_output(**kwargs)
+            required_params = ['summary', 'key_points', 'sentiment']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+
+            return self.services.generate_json_output(**kwargs)

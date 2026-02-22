@@ -536,6 +536,20 @@ self.services.has_capability(capability_name)
 **In Progress**:
 - 🔄 Auto-evolution triggers (scheduled improvements)
 
+## 📚 Documentation
+
+- **[OBSERVABILITY.md](docs/OBSERVABILITY.md)** - Complete observability system guide
+  - Correlation context & distributed tracing
+  - 10 SQLite databases with schemas
+  - Metrics aggregation & API endpoints
+  - Best practices & troubleshooting
+
+- **[AUTO_EVOLUTION_IMPLEMENTATION.md](docs/AUTO_EVOLUTION_IMPLEMENTATION.md)** - Auto-evolution system guide
+  - LLM test orchestrator & validation
+  - Evolution queue & prioritization
+  - Implementation roadmap
+  - Configuration & testing strategy
+
 ## 📝 Configuration
 
 **Environment Variables**:

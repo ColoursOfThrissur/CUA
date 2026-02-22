@@ -32,7 +32,15 @@ class TaskBreakdownTool(BaseTool):
             if not task_description:
                 raise ValueError("task_description is required")
 
-            prompt = f"Analyze: {task_description}"
+            dependencies = kwargs.get('dependencies', [])
+            for dependency in dependencies:
+                self.services.logging.info(f"Processing dependency: {dependency}")
+                # Assuming each dependency can be analyzed similarly
+                dep_prompt = f"Analyze dependency: {dependency}"
+                dep_analysis_result = self.services.llm.generate(dep_prompt, 0.3)
+                self.services.storage.save({'dependency': dependency, 'analysis': dep_analysis_result})
+
+            prompt = f"Analyze: {task_description} with dependencies"
             analysis_result = self.services.llm.generate(prompt, 0.3)
 
             return {'analysis': analysis_result}
