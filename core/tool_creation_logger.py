@@ -89,6 +89,23 @@ class ToolCreationLogger:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (creation_id, correlation_id, artifact_type, step, content_str, time.time()))
             conn.commit()
+    
+    def get_last_error(self, creation_id: int, step: str) -> Optional[str]:
+        """Get last error message from artifacts for a creation."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT content FROM creation_artifacts
+                WHERE creation_id = ? AND step = ? AND artifact_type IN ('operation_failed', 'error')
+                ORDER BY id DESC LIMIT 1
+            """, (creation_id, step))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    data = json.loads(row[0])
+                    return data.get('error', str(data))
+                except:
+                    return row[0]
+            return None
 
 _logger = None
 

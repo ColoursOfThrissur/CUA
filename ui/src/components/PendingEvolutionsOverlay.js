@@ -7,6 +7,7 @@ import './PendingEvolutionsOverlay.css';
 function PendingEvolutionsOverlay({ onOpenQuality }) {
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [testingTool, setTestingTool] = useState(null);
   const [showConfig, setShowConfig] = useState(false);
   const [config, setConfig] = useState({
     mode: 'balanced',
@@ -104,6 +105,29 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
     }
   };
 
+  const handleRunTests = async (toolName) => {
+    setTestingTool(toolName);
+    try {
+      const res = await fetch(`${API_URL}/evolution/test/${toolName}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Tests passed: ${data.passed_tests}/${data.total_tests} (Quality: ${data.overall_quality_score})`);
+        // Update pending item with test results
+        setPending(prev => prev.map(item => 
+          item.tool_name === toolName 
+            ? {...item, test_results: data}
+            : item
+        ));
+      } else {
+        toast.error('Tests failed: ' + data.detail);
+      }
+    } catch (err) {
+      toast.error('Failed to run tests: ' + err.message);
+    } finally {
+      setTestingTool(null);
+    }
+  };
+
   if (loading) return <div className="pending-loading">Loading...</div>;
 
   if (pending.length === 0) {
@@ -198,6 +222,28 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
               <strong>Expected:</strong> {item.proposal.expected_outcome}
             </div>
           )}
+
+          {item.new_service_specs && Object.keys(item.new_service_specs).length > 0 && (
+            <div className="new-services" style={{background: 'rgba(168, 85, 247, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
+              <strong style={{color: '#a855f7'}}>🆕 New Services Needed:</strong>
+              {Object.entries(item.new_service_specs).map(([name, spec]) => (
+                <div key={name} style={{marginTop: '8px', marginLeft: '10px'}}>
+                  <div style={{fontWeight: '600'}}>{name}</div>
+                  <div style={{fontSize: '0.9em', color: 'var(--text-secondary)', marginTop: '2px'}}>{spec.description}</div>
+                  <div style={{fontSize: '0.85em', color: 'var(--text-tertiary)', marginTop: '2px'}}>Methods: {spec.methods?.join(', ')}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {item.required_libraries && item.required_libraries.length > 0 && (
+            <div className="required-libraries" style={{background: 'rgba(34, 197, 94, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
+              <strong style={{color: '#22c55e'}}>📚 Required Libraries:</strong>
+              <div style={{marginTop: '5px', marginLeft: '10px'}}>
+                {item.required_libraries.join(', ')}
+              </div>
+            </div>
+          )}
           
           {item.proposal.dependencies && (item.proposal.dependencies.missing_libraries?.length > 0 || item.proposal.dependencies.missing_services?.length > 0) && (
             <div className="dependencies-warning" style={{background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
@@ -216,6 +262,14 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
           )}
 
           <div className="evolution-actions">
+            <button 
+              className="btn-test" 
+              onClick={() => handleRunTests(item.tool_name)}
+              disabled={testingTool === item.tool_name}
+              style={{backgroundColor: '#f59e0b'}}
+            >
+              {testingTool === item.tool_name ? 'Testing...' : 'Run Tests'}
+            </button>
             <button className="btn-approve" onClick={() => handleApprove(item.tool_name)}>
               <CheckCircle size={16} /> Approve
             </button>

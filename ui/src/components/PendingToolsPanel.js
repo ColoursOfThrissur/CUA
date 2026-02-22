@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import './PendingToolsPanel.css';
 
-const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode }) => {
+const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode, onRunTests }) => {
   const [processingToolId, setProcessingToolId] = useState(null);
+  const [testingToolId, setTestingToolId] = useState(null);
 
   const getToolTypeColor = (type) => {
     return type === 'new_tool' ? '#10b981' : '#3b82f6';
@@ -39,6 +40,16 @@ const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode }) =>
       await onReject(toolId);
     } finally {
       setProcessingToolId(null);
+    }
+  };
+
+  const handleRunTests = async (toolId) => {
+    if (testingToolId) return;
+    setTestingToolId(toolId);
+    try {
+      await onRunTests(toolId);
+    } finally {
+      setTestingToolId(null);
     }
   };
 
@@ -109,6 +120,18 @@ const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode }) =>
                   </div>
                 )}
 
+                {!tool.test_results && tool.sandbox_note && (
+                  <div className="sandbox-note" style={{background: 'rgba(59, 130, 246, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
+                    <strong style={{color: '#3b82f6'}}>ℹ️ Sandbox Note:</strong>
+                    <div style={{marginTop: '5px', color: 'var(--text-secondary)'}}>
+                      {tool.sandbox_note}
+                    </div>
+                    <div style={{marginTop: '5px', fontSize: '0.9em', color: 'var(--text-tertiary)'}}>
+                      Run LLM tests to validate functionality
+                    </div>
+                  </div>
+                )}
+
                 {tool.dependencies && (tool.dependencies.missing_libraries?.length > 0 || tool.dependencies.missing_services?.length > 0) && (
                   <div className="dependencies-warning" style={{background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
                     <strong style={{color: '#ef4444'}}>⚠️ Missing Dependencies:</strong>
@@ -137,21 +160,29 @@ const PendingToolsPanel = ({ pendingTools, onApprove, onReject, onViewCode }) =>
                 <button
                   className="btn-view-code"
                   onClick={() => onViewCode(tool)}
-                  disabled={processingToolId === tool.tool_id}
+                  disabled={processingToolId === tool.tool_id || testingToolId === tool.tool_id}
                 >
                   View Code
                 </button>
                 <button
+                  className="btn-test"
+                  onClick={() => handleRunTests(tool.tool_id)}
+                  disabled={processingToolId === tool.tool_id || testingToolId === tool.tool_id}
+                  style={{backgroundColor: '#f59e0b'}}
+                >
+                  {testingToolId === tool.tool_id ? 'Testing...' : 'Run Tests'}
+                </button>
+                <button
                   className="btn-reject"
                   onClick={() => handleRejectClick(tool.tool_id)}
-                  disabled={processingToolId === tool.tool_id}
+                  disabled={processingToolId === tool.tool_id || testingToolId === tool.tool_id}
                 >
                   Reject
                 </button>
                 <button
                   className="btn-approve"
                   onClick={() => handleApproveClick(tool.tool_id)}
-                  disabled={(tool.test_results && !tool.test_results.success) || processingToolId === tool.tool_id}
+                  disabled={(tool.test_results && !tool.test_results.success) || processingToolId === tool.tool_id || testingToolId === tool.tool_id}
                 >
                   {processingToolId === tool.tool_id ? 'Processing...' : 'Approve & Activate'}
                 </button>

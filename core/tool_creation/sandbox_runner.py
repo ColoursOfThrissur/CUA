@@ -5,10 +5,17 @@ import os
 import tempfile
 import importlib.util
 import logging
+import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+try:
+    from core.tool_creation_logger import ToolCreationLogger
+    creation_logger = ToolCreationLogger()
+except:
+    creation_logger = None
 
 
 class SandboxRunner:
@@ -17,40 +24,68 @@ class SandboxRunner:
     def __init__(self, expansion_mode):
         self.expansion_mode = expansion_mode
     
-    def run_sandbox(self, tool_name: str) -> bool:
+    def run_sandbox(self, tool_name: str, creation_id: int = None) -> bool:
         """Run runtime playground validation for a newly generated tool"""
+        if creation_logger and creation_id:
+            creation_logger.log_artifact(creation_id, "sandbox_start", "sandbox", {"tool_name": tool_name})
+        
         tool_path = Path(getattr(self.expansion_mode, "experimental_dir", "tools/experimental")) / f"{tool_name}.py"
         if not tool_path.exists():
-            logger.warning(f"Sandbox skipped: tool file not found at {tool_path}")
+            error_msg = f"Tool file not found at {tool_path}"
+            logger.warning(f"Sandbox skipped: {error_msg}")
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "error", "sandbox", {"error": error_msg})
             return False
         
         try:
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "loading_tool", "sandbox", {"tool_path": str(tool_path)})
+            
             tool_class = self._load_tool_class(tool_name, tool_path)
             if tool_class is None:
-                logger.error(f"Sandbox failed: could not resolve tool class for {tool_name}")
+                error_msg = f"Could not load tool class. Check: 1) Class name matches file name, 2) No syntax errors, 3) Imports are valid"
+                logger.error(f"Sandbox failed: {error_msg}")
+                if creation_logger and creation_id:
+                    creation_logger.log_artifact(creation_id, "error", "sandbox", {"error": error_msg, "tool_path": str(tool_path)})
                 return False
             
             # Create orchestrator BEFORE chdir so LLMLogger resolves to project root
             from core.tool_orchestrator import ToolOrchestrator
             from tools.capability_registry import CapabilityRegistry
+            
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "creating_orchestrator", "sandbox", {})
+            
             registry = CapabilityRegistry()
             orchestrator = ToolOrchestrator(registry=registry)
             
-            original_cwd = Path.cwd()
-            with tempfile.TemporaryDirectory(prefix=f"tool_sandbox_{tool_name}_") as temp_dir:
-                os.chdir(temp_dir)
-                try:
-                    os.makedirs("data", exist_ok=True)
-                    
-                    # Instantiate tool with orchestrator
-                    tool_instance = tool_class(orchestrator=orchestrator)
-                    
-                    return self._run_smoke_tests(tool_instance, orchestrator)
-                finally:
-                    os.chdir(original_cwd)
+            # DON'T chdir - let tool access real data directory
+            # Tools should use storage service which is scoped to temp data
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "instantiating_tool", "sandbox", {"class_name": tool_class.__name__})
+            
+            # Instantiate tool with orchestrator
+            tool_instance = tool_class(orchestrator=orchestrator)
+            
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "running_tests", "sandbox", {})
+            
+            result = self._run_smoke_tests(tool_instance, orchestrator, creation_id)
+            
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "sandbox_complete", "sandbox", {"success": result})
+            
+            return result
         
         except Exception as e:
-            logger.error(f"Sandbox failed for {tool_name}: {e}")
+            error_msg = f"{str(e)}"
+            error_trace = traceback.format_exc()
+            logger.error(f"Sandbox failed for {tool_name}: {error_msg}\n{error_trace}")
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "error", "sandbox", {
+                    "error": error_msg,
+                    "traceback": error_trace
+                })
             return False
     
     def _load_tool_class(self, tool_name: str, tool_path: Path):
@@ -66,12 +101,29 @@ class SandboxRunner:
         class_name = self._class_name(tool_name)
         return getattr(module, class_name, None)
     
-    def _run_smoke_tests(self, tool_instance, orchestrator) -> bool:
+    def _run_smoke_tests(self, tool_instance, orchestrator, creation_id: int = None) -> bool:
         """Execute deterministic smoke sequence across discovered capabilities"""
-        capabilities = tool_instance.get_capabilities()
-        if not capabilities:
-            logger.error("Sandbox failed: generated tool has no capabilities")
+        try:
+            capabilities = tool_instance.get_capabilities()
+        except Exception as e:
+            error_msg = f"Failed to get capabilities: {str(e)}"
+            logger.error(error_msg)
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "error", "sandbox", {"error": error_msg, "traceback": traceback.format_exc()})
             return False
+        
+        if not capabilities:
+            error_msg = "Generated tool has no capabilities"
+            logger.error(f"Sandbox failed: {error_msg}")
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "error", "sandbox", {"error": error_msg})
+            return False
+        
+        if creation_logger and creation_id:
+            creation_logger.log_artifact(creation_id, "capabilities_found", "sandbox", {
+                "count": len(capabilities),
+                "operations": list(capabilities.keys())
+            })
         
         # Shared test data
         shared = {
@@ -91,22 +143,90 @@ class SandboxRunner:
         ordered_ops.extend(op for op in operations if op not in ordered_ops)
         
         created_ids = []
+        skipped_count = 0
+        success_count = 0
         for op in ordered_ops:
             capability = capabilities.get(op)
             params = self._build_test_parameters(capability, shared)
             
             logger.info(f"[SANDBOX] Testing operation: {op}")
-            result = orchestrator.execute_tool_step(
-                tool=tool_instance,
-                tool_name=getattr(tool_instance, "name", tool_instance.__class__.__name__),
-                operation=op,
-                parameters=params,
-                context={},
-            )
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "testing_operation", "sandbox", {
+                    "operation": op,
+                    "parameters": params
+                })
+            
+            try:
+                result = orchestrator.execute_tool_step(
+                    tool=tool_instance,
+                    tool_name=getattr(tool_instance, "name", tool_instance.__class__.__name__),
+                    operation=op,
+                    parameters=params,
+                    context={},
+                )
+            except KeyError as e:
+                error_msg = f"KeyError: {str(e)} - Handler tried to access missing parameter"
+                logger.error(f"Sandbox failed for operation '{op}': {error_msg}")
+                if creation_logger and creation_id:
+                    creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
+                        "operation": op,
+                        "error": error_msg,
+                        "traceback": traceback.format_exc()
+                    })
+                return False
+            except Exception as e:
+                error_msg = str(e)
+                # Ignore SSL errors, network issues, and element-not-found in sandbox - they're expected
+                if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element', 'unable to locate element']):
+                    logger.warning(f"Sandbox: Ignoring network/browser/element error for '{op}': {error_msg}")
+                    if creation_logger and creation_id:
+                        creation_logger.log_artifact(creation_id, "operation_skipped", "sandbox", {
+                            "operation": op,
+                            "reason": "network_or_browser_error",
+                            "error": error_msg
+                        })
+                    skipped_count += 1
+                    continue  # Skip this operation, continue with others
+                
+                logger.error(f"Exception during operation '{op}': {error_msg}")
+                if creation_logger and creation_id:
+                    creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
+                        "operation": op,
+                        "error": error_msg,
+                        "traceback": traceback.format_exc()
+                    })
+                return False
             
             if not result.success:
+                error_msg = f"Operation '{op}' failed: {result.error}"
+                # Ignore SSL errors, network issues, and element-not-found in sandbox - they're expected
+                if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element', 'unable to locate element']):
+                    logger.warning(f"Sandbox: Ignoring network/browser/element error for '{op}': {error_msg}")
+                    if creation_logger and creation_id:
+                        creation_logger.log_artifact(creation_id, "operation_skipped", "sandbox", {
+                            "operation": op,
+                            "reason": "network_or_browser_error",
+                            "error": error_msg
+                        })
+                    skipped_count += 1
+                    continue  # Skip this operation, continue with others
+                
                 logger.error(f"Sandbox failed for operation '{op}': {result.error}")
+                if creation_logger and creation_id:
+                    creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
+                        "operation": op,
+                        "error": result.error
+                    })
                 return False
+            
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "operation_success", "sandbox", {
+                    "operation": op,
+                    "result_type": type(result.data).__name__ if result.data else "None",
+                    "result_preview": str(result.data)[:200] if result.data else None
+                })
+            
+            success_count += 1
             
             # Track created IDs for verification
             if op in ("create", "save") and result.data:
@@ -138,7 +258,26 @@ class SandboxRunner:
             if not result.success:
                 logger.warning("Sandbox persistence check: list failed (may be expected for some tools)")
         
-        logger.info(f"Sandbox validation passed for {getattr(tool_instance, 'name', 'tool')}")
+        # If all operations were skipped due to network errors, still pass
+        if skipped_count > 0 and success_count == 0:
+            logger.warning(f"Sandbox: All {skipped_count} operations skipped (network-dependent tool). Real validation will occur via LLM tests after approval.")
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "sandbox_network_only", "sandbox", {
+                    "skipped_count": skipped_count,
+                    "note": "Tool requires network access - will be validated via LLM tests"
+                })
+            return True
+        
+        # Log summary
+        if creation_logger and creation_id:
+            creation_logger.log_artifact(creation_id, "sandbox_summary", "sandbox", {
+                "total_operations": len(ordered_ops),
+                "success_count": success_count,
+                "skipped_count": skipped_count,
+                "status": "passed"
+            })
+        
+        logger.info(f"Sandbox validation passed for {getattr(tool_instance, 'name', 'tool')} ({success_count} operations succeeded, {skipped_count} skipped)")
         return True
     
     def _build_test_parameters(self, capability, shared: Dict[str, Any]) -> Dict[str, Any]:

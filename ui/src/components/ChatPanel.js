@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { User, Bot, Mic, Send } from 'lucide-react';
+import OutputRenderer from './output/OutputRenderer';
 import './ChatPanel.css';
 
 function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
@@ -75,12 +76,18 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
           </div>
         ) : (
           messages.map((msg, index) => (
-            <div key={index} className={`message ${msg.role}`}>
+            <div key={index} className={`message ${msg.role} ${msg.metadata?.type === 'progress' ? 'progress-message' : ''}`}>
               <div className="message-avatar">
                 {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
               </div>
               <div className="message-content">
-                <div className="message-text">{msg.content}</div>
+                <div className="message-text">
+                  {msg.metadata?.type === 'progress' && (
+                    <span className="progress-indicator">⏳ </span>
+                  )}
+                  {msg.content}
+                </div>
+                {msg.components && <OutputRenderer components={msg.components} />}
                 {msg.timestamp && (
                   <div className="message-time">{msg.timestamp}</div>
                 )}

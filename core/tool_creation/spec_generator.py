@@ -21,7 +21,33 @@ class SpecGenerator:
         preferred_tool_name: Optional[str] = None,
     ) -> Optional[dict]:
         """LLM proposes tool specification with fixed fallback logic"""
-        prompt = """Propose a tool specification for: {gap_description}
+        # Dynamically get valid parameter types from ParameterType enum
+        from tools.tool_capability import ParameterType
+        valid_types = [pt.value for pt in ParameterType]
+        types_list = "\n".join([f"- {t}: {self._get_type_description(t)}" for t in valid_types])
+        
+        # Dynamically get available services from dependency checker with method signatures
+        from core.dependency_checker import DependencyChecker
+        service_specs = {
+            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id), exists(id)',
+            'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
+            'http': 'get(url), post(url, data), put(url, data), delete(url)',
+            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
+            'json': 'parse(text), stringify(data), query(data, path)',
+            'shell': 'execute(command, args=[])',
+            'logging': 'info(msg), warning(msg), error(msg), debug(msg)',
+            'time': 'now_utc(), now_local(), now_utc_iso(), now_local_iso()',
+            'ids': 'generate(prefix=""), uuid()',
+            'browser': 'open_browser(), navigate(url), get_page_text(), find_element(by, value), take_screenshot(filename), close()'
+        }
+        
+        services_list = "\n".join([
+            f"- self.services.{name}: {methods}" 
+            for name, methods in service_specs.items() 
+            if name in DependencyChecker.AVAILABLE_SERVICES
+        ])
+        
+        prompt = f"""Propose a tool specification for: {gap_description}
 
 Return JSON with:
 - name: tool_name
@@ -31,12 +57,26 @@ Return JSON with:
 - dependencies: [list of tool dependencies]
 - risk_level: 0.0-1.0
 
+VALID PARAMETER TYPES (use ONLY these):
+{types_list}
+
+AVAILABLE SERVICES (access via self.services.X):
+{services_list}
+
+For dependencies field, list ONLY the services you need from above (e.g., ["self.services.browser", "self.services.storage"])
+
+IMPORTANT - Parameter Requirements:
+- If an operation works on CURRENT STATE (e.g., get current page content, close browser), use EMPTY parameters list: "parameters": []
+- If an operation needs INPUT (e.g., navigate to URL, find element), specify required parameters
+- Be explicit: operations that maintain state should not require repeated inputs
+
 Example inputs format:
 [
-  {{"operation": "create_project", "parameters": [{{"name": "project_name", "type": "string", "description": "Project name", "required": true}}]}},
-  {{"operation": "list_projects", "parameters": [{{"name": "limit", "type": "integer", "description": "Max results", "required": false, "default": 10}}]}}
+  {{"operation": "open_and_navigate", "parameters": [{{"name": "url", "type": "string", "description": "URL to navigate", "required": true}}]}},
+  {{"operation": "get_page_content", "parameters": []}},
+  {{"operation": "close", "parameters": []}}
 ]
-""".format(gap_description=gap_description)
+"""
         
         try:
             response = llm_client._call_llm(prompt, temperature=0.3, expect_json=True)
@@ -92,7 +132,7 @@ Example inputs format:
                 # FIXED: Fallback to common CRUD operations instead of empty list
                 logger.info("No structured operations in spec, using CRUD fallback")
                 inputs = [
-                    {"operation": "create", "parameters": []},
+                    {"operation": "create", "parameters": [{"name": "data", "type": "dict", "description": "Data to create", "required": True}]},
                     {"operation": "get", "parameters": [{"name": "id", "type": "string", "description": "Item ID", "required": True}]},
                     {"operation": "list", "parameters": [{"name": "limit", "type": "integer", "description": "Max results", "required": False, "default": 10}]},
                 ]
@@ -101,6 +141,12 @@ Example inputs format:
             outputs = self._normalize_to_string_list(spec.get('outputs', []))
             dependencies = self._normalize_to_string_list(spec.get('dependencies', []))
             domain = str(spec.get('domain', 'general'))
+            
+            # Resolve services from dependencies
+            service_resolution = self._resolve_services(dependencies)
+            spec['available_services'] = service_resolution['available']
+            spec['missing_services'] = service_resolution['missing']
+            spec['service_methods'] = service_resolution['methods']
             
             # Calculate dynamic risk based on domain and operations
             risk_level = self._calculate_risk(domain, dependencies, inputs)
@@ -127,6 +173,10 @@ Example inputs format:
                 maturity='experimental'
             )
             spec['inputs'] = inputs
+            
+            # Remove node before returning (not JSON serializable)
+            node = spec.pop('node', None)
+            
             return spec
             
         except Exception as e:
@@ -135,6 +185,21 @@ Example inputs format:
     
     def _normalize_parameters(self, params: List) -> List[dict]:
         """Normalize parameters from various formats to standard dict format"""
+        # Map common LLM-generated types to valid ParameterType values
+        type_mapping = {
+            'array': 'list',
+            'date': 'string',
+            'datetime': 'string',
+            'timestamp': 'string',
+            'number': 'integer',
+            'float': 'integer',
+            'object': 'dict',
+            'json': 'dict',
+            'bool': 'boolean',
+            'path': 'file_path',
+            'filepath': 'file_path',
+        }
+        
         normalized_params = []
         for p in params:
             if isinstance(p, str):
@@ -149,6 +214,9 @@ Example inputs format:
                 # Ensure dict has required fields
                 if 'name' not in p:
                     continue
+                # Normalize type to valid ParameterType
+                param_type = p.get('type', 'string').lower()
+                p['type'] = type_mapping.get(param_type, param_type)
                 normalized_params.append(p)
         return normalized_params
     
@@ -196,6 +264,60 @@ Example inputs format:
         if cleaned[0].isdigit():
             cleaned = f"tool_{cleaned}"
         return cleaned
+    
+    def _get_type_description(self, type_name: str) -> str:
+        """Get human-readable description for parameter type."""
+        descriptions = {
+            'string': 'Text values',
+            'integer': 'Numbers (int or float)',
+            'boolean': 'True/False',
+            'list': 'Arrays/lists',
+            'dict': 'Objects/JSON',
+            'file_path': 'File paths'
+        }
+        return descriptions.get(type_name.lower(), type_name)
+    
+    def _resolve_services(self, dependencies: List[str]) -> dict:
+        """Resolve which services are available vs missing"""
+        from core.dependency_checker import DependencyChecker
+        
+        # Service method signatures
+        service_specs = {
+            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id)',
+            'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
+            'http': 'get(url), post(url, data), put(url, data), delete(url)',
+            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
+            'json': 'parse(text), stringify(data), query(data, path)',
+            'shell': 'execute(command, args=[])',
+            'logging': 'info(msg), warning(msg), error(msg), debug(msg)',
+            'time': 'now_utc(), now_local(), now_utc_iso(), now_local_iso()',
+            'ids': 'generate(prefix=""), uuid()',
+            'browser': 'open_browser(), navigate(url), get_page_text(), find_element(by, value), take_screenshot(filename), close()'
+        }
+        
+        available = []
+        missing = []
+        methods = {}
+        
+        for dep in dependencies:
+            # Extract service name from "self.services.X" format
+            service_name = dep.replace('self.services.', '').strip()
+            
+            if service_name in DependencyChecker.AVAILABLE_SERVICES:
+                available.append(service_name)
+                methods[service_name] = service_specs.get(service_name, '')
+            elif service_name in ['email', 'sms', 'database', 'cache', 'queue', 'auth', 'crypto']:
+                # Known patterns that need to be created
+                missing.append(service_name)
+            else:
+                # Unknown service - treat as missing
+                missing.append(service_name)
+        
+        return {
+            'available': available,
+            'missing': missing,
+            'methods': methods
+        }
     
     def _calculate_confidence(self, spec: dict, raw_inputs: List, gap_description: str) -> float:
         """Calculate confidence score for spec quality"""

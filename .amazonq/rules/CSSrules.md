@@ -1,0 +1,1 @@
+please use main color vars instead of hardoced colors as much as possible.if missing var color for that ui lement create it in main or var css file

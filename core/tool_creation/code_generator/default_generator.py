@@ -108,14 +108,18 @@ Return only complete Python code with register_capabilities and execute methods 
     
     def _build_contract_pack(self) -> str:
         """Build contract reference"""
-        return """Required API contracts:
-- Parameter(name=..., type=ParameterType.<STRING|INTEGER|BOOLEAN|LIST|DICT|FILE_PATH>, description=..., required=..., default=...)
+        # Dynamically get valid parameter types
+        from tools.tool_capability import ParameterType
+        valid_types = "|".join([pt.name for pt in ParameterType])
+        
+        return f"""Required API contracts:
+- Parameter(name=..., type=ParameterType.<{valid_types}>, description=..., required=..., default=...)
 - ToolCapability(name=..., description=..., parameters=[...], returns="string description", safety_level=SafetyLevel.<LOW|MEDIUM|HIGH|CRITICAL>, examples=[...], dependencies=[...])
 - self.add_capability(capability_obj, self._handler)
 - execute(self, operation: str, **kwargs)
 
 Thin Tool Pattern:
-- __init__(self, orchestrator=None): Accept orchestrator, initialize self._cache = {} if needed
+- __init__(self, orchestrator=None): Accept orchestrator, initialize self._cache = {{}} if needed
 - Handlers return plain dict (orchestrator wraps in ToolResult)
 
 CRITICAL - ALWAYS use self.services prefix for ALL service calls:

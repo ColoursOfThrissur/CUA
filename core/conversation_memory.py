@@ -110,3 +110,11 @@ class ConversationMemory:
         conn.close()
         
         return [row[0] for row in rows]
+    
+    def clear_all(self):
+        """Clear all conversation history"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM conversations")
+        conn.commit()
+        conn.close()

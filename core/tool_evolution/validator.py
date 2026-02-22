@@ -19,7 +19,12 @@ class EvolutionValidator:
         """Validate improved code doesn't break interface."""
         
         # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
-        is_valid, error = self.enhanced_validator.validate(improved_code)
+        # Extract class name for proper validation
+        class_name = self._extract_class_name(improved_code)
+        if not class_name:
+            return False, "Could not extract class name from improved code"
+        
+        is_valid, error = self.enhanced_validator.validate(improved_code, class_name)
         if not is_valid:
             return False, f"Enhanced validation failed: {error}"
         
@@ -51,6 +56,17 @@ class EvolutionValidator:
             return False, "Missing required methods (get_capabilities or execute)"
         
         return True, ""
+    
+    def _extract_class_name(self, code: str) -> str:
+        """Extract primary class name from code."""
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    return node.name
+            return ""
+        except:
+            return ""
     
     def _extract_class_names(self, code: str) -> set:
         """Extract class names from code."""

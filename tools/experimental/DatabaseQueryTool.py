@@ -39,12 +39,13 @@ class DatabaseQueryTool(BaseTool):
 
         self.add_capability(ToolCapability(
             name='analyze_tool_performance',
-            description='ACTION: Query and return tool execution statistics from database. Use when user asks to analyze performance, check success rates, or get execution metrics.',
+            description='Get tool execution history and statistics. Use when user asks for "tool executions", "execution history", "recent executions", "last N executions", or performance metrics.',
             parameters=[
                 Parameter(name='tool_name', type=ParameterType.STRING, description='Specific tool name to analyze (optional)', required=False),
-                Parameter(name='hours_ago', type=ParameterType.INTEGER, description='Analyze executions from last N hours', required=False, default=24)
+                Parameter(name='hours_ago', type=ParameterType.INTEGER, description='Analyze executions from last N hours', required=False, default=24),
+                Parameter(name='limit', type=ParameterType.INTEGER, description='Max execution records to return', required=False, default=10)
             ],
-            returns="Tool performance statistics",
+            returns="Tool execution records with timestamps, success status, and parameters",
             safety_level=SafetyLevel.LOW,
             examples=[],
             dependencies=[]
@@ -164,7 +165,7 @@ class DatabaseQueryTool(BaseTool):
             pattern = kwargs.get('pattern')
             limit = kwargs.get('limit', 100)
 
-            cutoff_time = self.services.time.now_utc() - timedelta(hours=hours_ago)
+            cutoff_time = (self.services.time.now_local() - timedelta(hours=hours_ago)).isoformat()
             results = []
 
             for db_path in db_paths:
@@ -174,7 +175,7 @@ class DatabaseQueryTool(BaseTool):
                     cursor = conn.cursor()
 
                     query = "SELECT * FROM logs WHERE timestamp >= ?"
-                    params = [cutoff_time.isoformat()]
+                    params = [cutoff_time]
 
                     if level:
                         query += " AND level = ?"
@@ -202,7 +203,7 @@ class DatabaseQueryTool(BaseTool):
                 return {"performance": [], "count": 0, "error": "Database not found"}
 
             tool_name = kwargs.get('tool_name')
-            hours_ago = kwargs.get('hours_ago', 24)
+            hours_ago = kwargs.get('hours_ago') or 24
             cutoff_time = self.services.time.now_utc().timestamp() - (hours_ago * 3600)
 
             results = []
@@ -225,7 +226,7 @@ class DatabaseQueryTool(BaseTool):
                             WHERE tool_name = ? AND timestamp >= ?
                             GROUP BY tool_name
                         """
-                        cursor.execute(query, [tool_name, cutoff_time])
+                        cursor.execute(query, (tool_name, cutoff_time))
                     else:
                         query = """
                             SELECT 
@@ -240,7 +241,7 @@ class DatabaseQueryTool(BaseTool):
                             GROUP BY tool_name
                             ORDER BY total_executions DESC
                         """
-                        cursor.execute(query, [cutoff_time])
+                        cursor.execute(query, (cutoff_time,))
 
                     for row in cursor.fetchall():
                         data = dict(row)
@@ -256,41 +257,41 @@ class DatabaseQueryTool(BaseTool):
             return {"performance": results, "count": len(results)}
 
     def _handle_find_failure_patterns(self, **kwargs):
-        db_paths = [self.data_dir / "tool_executions.db"]
-        if not any(db_path.exists() for db_path in db_paths):
-            self.services.logging.error("Database not found")
-            return {"failures": [], "count": 0, "error": "Database not found"}
+            db_paths = [self.data_dir / "tool_executions.db"]
+            if not any(db_path.exists() for db_path in db_paths):
+                self.services.logging.error("Database not found")
+                return {"failures": [], "count": 0, "error": "Database not found"}
 
-        tool_name = kwargs.get('tool_name')
-        hours_ago = kwargs.get('hours_ago', 24)
-        limit = kwargs.get('limit', 50)
-        cutoff_time = self.services.time.now_utc().timestamp() - (hours_ago * 3600)
+            tool_name = kwargs.get('tool_name')
+            hours_ago = kwargs.get('hours_ago', 24)
+            limit = kwargs.get('limit', 50)
+            cutoff_time = self.services.time.now_utc().timestamp() - (hours_ago * 3600)
 
-        failures = []
-        for db_path in db_paths:
-            try:
-                conn = sqlite3.connect(str(db_path))
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
+            failures = []
+            for db_path in db_paths:
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
 
-                query = "SELECT * FROM executions WHERE success = 0 AND timestamp >= ?"
-                params = [cutoff_time]
+                    query = "SELECT * FROM executions WHERE success = 0 AND timestamp >= ?"
+                    params = [cutoff_time]
 
-                if tool_name:
-                    query += " AND tool_name = ?"
-                    params.append(tool_name)
+                    if tool_name:
+                        query += " AND tool_name = ?"
+                        params.append(tool_name)
 
-                query += " ORDER BY timestamp DESC LIMIT ?"
-                params.append(limit)
+                    query += " ORDER BY timestamp DESC LIMIT ?"
+                    params.append(limit)
 
-                cursor.execute(query, params)
-                failures.extend([dict(row) for row in cursor.fetchall()])
-                conn.close()
-            except Exception as e:
-                self.services.logging.error(f"Error fetching failures from {db_path}: {str(e)}")
+                    cursor.execute(query, params)
+                    failures.extend([dict(row) for row in cursor.fetchall()])
+                    conn.close()
+                except Exception as e:
+                    self.services.logging.error(f"Error fetching failures from {db_path}: {str(e)}")
 
-        self.services.logging.info(f"Found {len(failures)} failures")
-        return {"failures": failures, "count": len(failures)}
+            self.services.logging.info(f"Found {len(failures)} failures")
+            return {"failures": failures, "count": len(failures)}
 
     def _handle_get_evolution_history(self, **kwargs):
             db_paths = [self.data_dir / "tool_evolution.db"]
@@ -408,7 +409,7 @@ class DatabaseQueryTool(BaseTool):
 
                     mismatches = []
                     for table_name, table_info in registry_schema['tables'].items():
-                        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name=?", [table_name])
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type=? AND name=?", ('table', table_name))
                         if not cursor.fetchone():
                             mismatches.append({"type": "missing_table", "table": table_name})
                             continue

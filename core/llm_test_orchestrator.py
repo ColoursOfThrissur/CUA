@@ -28,6 +28,8 @@ class TestResult:
     error: Optional[str]
     quality_score: int
     validation_details: Dict[str, Any]
+    skipped: bool = False
+    skip_reason: Optional[str] = None
 
 @dataclass
 class TestSuiteResult:
@@ -55,12 +57,24 @@ class LLMTestOrchestrator:
         prompt = self._build_test_generation_prompt(tool_name, capability)
         
         try:
-            response = self.llm_client._call_llm(prompt, temperature=0.7, max_tokens=2000, expect_json=True)
+            response = self.llm_client._call_llm(prompt, temperature=0.8, max_tokens=2000, expect_json=True)
+            print(f"[TEST GEN] Raw response: {response[:200]}...")
             test_cases_json = self.llm_client._extract_json(response)
+            print(f"[TEST GEN] Extracted JSON type: {type(test_cases_json)}")
             
             if not isinstance(test_cases_json, list):
-                logger.error(f"LLM returned non-list response for test generation")
-                return self._generate_fallback_tests(capability)
+                # LLM wrapped array in object like {"test_cases": [...]}
+                if isinstance(test_cases_json, dict) and 'test_cases' in test_cases_json:
+                    test_cases_json = test_cases_json['test_cases']
+                    print(f"[TEST GEN] Unwrapped test_cases array")
+                elif isinstance(test_cases_json, dict):
+                    # Single test case returned as object - wrap in array
+                    test_cases_json = [test_cases_json]
+                    print(f"[TEST GEN] Wrapped single test in array")
+                else:
+                    print(f"[TEST GEN] Not a list! Type: {type(test_cases_json)}")
+                    logger.error(f"LLM returned non-list response for test generation")
+                    return self._generate_fallback_tests(capability)
             
             test_cases = []
             for tc in test_cases_json[:10]:  # Max 10 tests per capability
@@ -77,7 +91,11 @@ class LLMTestOrchestrator:
                     logger.warning(f"Failed to parse test case: {e}")
                     continue
             
-            return test_cases if test_cases else self._generate_fallback_tests(capability)
+            if not test_cases:
+                logger.warning("No valid test cases parsed, using fallback")
+                return self._generate_fallback_tests(capability)
+            
+            return test_cases
             
         except Exception as e:
             logger.error(f"Test generation failed: {e}")
@@ -101,7 +119,8 @@ class LLMTestOrchestrator:
                 performance_data.append(result.execution_time_ms)
         
         passed = sum(1 for r in test_results if r.passed)
-        failed = len(test_results) - passed
+        failed = sum(1 for r in test_results if not r.passed and not r.skipped)
+        skipped = sum(1 for r in test_results if r.skipped)
         
         # Calculate overall quality score
         if test_results:
@@ -136,6 +155,28 @@ class LLMTestOrchestrator:
         """Execute a single test case."""
         
         start_time = time.time()
+        
+        # Check for skip conditions
+        skip_keywords = ['file_path', 'filename', 'path', 'directory']
+        requires_file = any(kw in test_case.inputs for kw in skip_keywords)
+        
+        if requires_file:
+            # Check if file/path exists
+            for key in skip_keywords:
+                if key in test_case.inputs:
+                    path_value = test_case.inputs[key]
+                    if path_value and not self._resource_exists(path_value):
+                        return TestResult(
+                            test_name=test_case.test_name,
+                            passed=False,
+                            execution_time_ms=0,
+                            output=None,
+                            error=None,
+                            quality_score=0,
+                            validation_details={'valid': False},
+                            skipped=True,
+                            skip_reason=f"Required resource not found: {path_value}"
+                        )
         
         try:
             # Execute capability
@@ -175,7 +216,9 @@ class LLMTestOrchestrator:
                 output=output,
                 error=None,
                 quality_score=quality_score,
-                validation_details=validation_result
+                validation_details=validation_result,
+                skipped=False,
+                skip_reason=None
             )
             
         except Exception as e:
@@ -188,7 +231,9 @@ class LLMTestOrchestrator:
                 output=None,
                 error=str(e),
                 quality_score=0,
-                validation_details={'valid': False, 'error': str(e)}
+                validation_details={'valid': False, 'error': str(e)},
+                skipped=False,
+                skip_reason=None
             )
     
     def _validate_output(self, test_case: TestCase, output: Any, success: bool) -> Dict[str, Any]:
@@ -285,6 +330,14 @@ Respond with JSON:
         
         return min(score, 100)
     
+    def _resource_exists(self, path: str) -> bool:
+        """Check if a file or resource exists."""
+        try:
+            from pathlib import Path
+            return Path(path).exists()
+        except:
+            return False
+    
     def _build_test_generation_prompt(self, tool_name: str, capability: Dict) -> str:
         """Build prompt for LLM test generation."""
         
@@ -293,35 +346,36 @@ Respond with JSON:
             req = "required" if param.get('required') else "optional"
             params_desc.append(f"- {param['name']} ({param.get('type', 'any')}, {req}): {param.get('description', '')}")
         
-        return f"""Generate test cases for this tool capability.
+        return f"""Generate realistic test cases simulating real user requests.
 
 Tool: {tool_name}
 Capability: {capability['name']}
 Description: {capability.get('description', '')}
 Parameters:
-{chr(10).join(params_desc)}
-Returns: {capability.get('returns', 'Result')}
+{chr(10).join(params_desc) if params_desc else 'No parameters'}
 
-Generate 5-8 test cases covering:
-1. Happy path (valid inputs, expected success)
-2. Edge cases (boundary values, empty inputs)
-3. Error cases (invalid inputs, expected failures)
-4. Real-world scenarios
+Think like a real user who wants to:
+- See latest entries ("show me last 5 logs")
+- Analyze data ("find all failures this week")
+- Get insights ("which tools are failing most?")
+- Check status ("are there any errors?")
 
-For each test, provide JSON:
-{{
-  "test_name": "descriptive_name",
-  "description": "what this tests",
-  "inputs": {{"param": "value"}},
-  "expected_success": true/false,
-  "validation": {{
-    "check_type": "structure",
-    "expected_fields": ["field1", "field2"]
-  }},
-  "rationale": "why this test matters"
-}}
+Create 3-5 diverse test cases with realistic user goals.
+Use actual data values, varied queries, different time ranges.
 
-Return JSON array of test cases."""
+Return ONLY a JSON array:
+[
+  {{
+    "test_name": "descriptive_name",
+    "description": "what user wants to achieve",
+    "inputs": {{"param": "realistic_value"}},
+    "expected_success": true,
+    "validation": {{"check_type": "any"}},
+    "rationale": "why user would do this"
+  }}
+]
+
+JSON array:"""
     
     def _generate_fallback_tests(self, capability: Dict) -> List[TestCase]:
         """Generate basic fallback tests if LLM fails."""

@@ -24,17 +24,18 @@ class ToolCallingClient:
         messages = [
             {
                 "role": "system",
-                "content": """You are CUA, an autonomous agent. CRITICAL RULES:
-1. ONLY call tools when user explicitly requests an ACTION (analyze, summarize, create, list, read, write)
-2. NEVER call tools for conversational questions (what should, can you suggest, what do you think, recommendations)
-3. Questions ABOUT the system or asking for suggestions = respond conversationally, NO TOOLS
-4. Commands to DO something with data = use appropriate tool
+                "content": """You are CUA, an autonomous agent with access to tools. CRITICAL RULES:
+1. When user asks you to DO something (open, search, create, list, analyze, summarize, take screenshot), USE TOOLS
+2. ONLY respond conversationally for questions ABOUT what to do (suggestions, recommendations, opinions)
+3. "can you X" or "open X" or "search X" = ACTION = USE TOOLS
+4. "what should I X" or "can you suggest X" = QUESTION = NO TOOLS, respond conversationally
 
 Examples:
-- "what tool should we add next?" -> NO TOOLS, respond conversationally
-- "summarize this text: [text]" -> USE summarize_text tool
-- "can you suggest improvements?" -> NO TOOLS, respond conversationally  
-- "list files in directory" -> USE list_files tool"""
+- "open google and search X" -> USE BrowserAutomationTool
+- "take a screenshot" -> USE BrowserAutomationTool  
+- "what tool should we add?" -> NO TOOLS, respond conversationally
+- "can you suggest improvements?" -> NO TOOLS, respond conversationally
+- "summarize this text" -> USE ContextSummarizerTool"""
             }
         ]
         if conversation_history:
@@ -66,22 +67,70 @@ Examples:
             content = message.get("content", "")
             
             # Handle case where Mistral returns JSON in content instead of tool_calls
-            if not tool_calls and content.strip().startswith("{"):
-                try:
-                    import json as json_lib
-                    parsed = json_lib.loads(content.strip())
-                    if "name" in parsed and "arguments" in parsed:
-                        # Convert to tool_calls format
-                        tool_calls = [{"function": parsed}]
-                except:
-                    pass
+            if not tool_calls and content:
+                print(f"[DEBUG] No tool_calls, checking content: {content[:200]}")
+                # Strip markdown code blocks
+                stripped = content.strip()
+                if stripped.startswith("```"):
+                    lines = stripped.split("\n")
+                    # Remove first line (```json or ```) and last line (```)
+                    if len(lines) > 2:
+                        stripped = "\n".join(lines[1:-1]).strip()
+                        print(f"[DEBUG] Stripped markdown: {stripped[:200]}")
+                
+                # Try parsing as single tool call or array of tool calls
+                if stripped.startswith("{") or stripped.startswith("["):
+                    try:
+                        import json as json_lib
+                        print(f"[DEBUG] Attempting JSON parse...")
+                        parsed = json_lib.loads(stripped)
+                        print(f"[DEBUG] Parsed type: {type(parsed)}")
+                        
+                        # Handle array of tool calls
+                        if isinstance(parsed, list):
+                            print(f"[DEBUG] Found array with {len(parsed)} items")
+                            tool_calls = [{"function": call} for call in parsed if "name" in call]
+                            if tool_calls:
+                                print(f"[DEBUG] Extracted {len(tool_calls)} tool calls from array")
+                                content = ""  # Clear content since we extracted tool calls
+                        # Handle single tool call
+                        elif isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
+                            print(f"[DEBUG] Found single tool call: {parsed.get('name')}")
+                            tool_calls = [{"function": parsed}]
+                            content = ""  # Clear content since we extracted tool calls
+                    except Exception as e:
+                        print(f"[DEBUG] JSON parse failed: {e}")
+                        pass
+                # Handle multiple JSON objects separated by newlines (common LLM output)
+                elif "{" in stripped:
+                    try:
+                        import json as json_lib
+                        import re
+                        # Extract all complete JSON objects using regex
+                        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+                        matches = re.findall(json_pattern, stripped, re.DOTALL)
+                        calls = []
+                        for match in matches:
+                            try:
+                                parsed = json_lib.loads(match)
+                                if "name" in parsed and "arguments" in parsed:
+                                    calls.append({"function": parsed})
+                            except:
+                                pass
+                        if calls:
+                            tool_calls = calls
+                            content = ""  # Clear content since we extracted tool calls
+                    except:
+                        pass
             
             if tool_calls:
-                # Model selected tools - return them
+                # Model selected tools - return them (ignore any text content)
+                print(f"[DEBUG] Processing {len(tool_calls)} tool calls")
                 parsed_calls = []
                 for call in tool_calls:
                     func = call.get("function", {})
                     full_name = func.get("name", "")
+                    print(f"[DEBUG] Tool call: {full_name}")
                     # Parse ToolName_operation_name format
                     if "_" in full_name:
                         parts = full_name.split("_", 1)  # Split only on first underscore
@@ -96,10 +145,16 @@ Examples:
                         "operation": operation,
                         "parameters": func.get("arguments", {})
                     })
-                return True, parsed_calls, None
+                print(f"[DEBUG] Returning {len(parsed_calls)} parsed calls")
+                return True, parsed_calls, None  # Return None for content when tools are called
+            
+            # No tool calls - check if content looks like JSON that should be tool calls
+            if content and content.strip().startswith("{"):
+                print(f"[DEBUG] WARNING: Content looks like JSON but wasn't parsed as tool call: {content[:100]}")
             
             # No tool calls - return text response
             content = message.get("content", "")
+            print(f"[DEBUG] No tool calls, returning conversational response: {content[:100]}")
             return True, None, content
             
         except Exception as e:

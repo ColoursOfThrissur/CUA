@@ -6,6 +6,7 @@ import './ToolModeChat.css';
 
 function ToolModeChat() {
   const [input, setInput] = useState('');
+  const [toolName, setToolName] = useState('');
   const [loading, setLoading] = useState(false);
   const toast = useToast();
 
@@ -15,7 +16,12 @@ function ToolModeChat() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/improvement/tools/create?description=${encodeURIComponent(input)}`, {
+      const params = new URLSearchParams({ description: input });
+      if (toolName.trim()) {
+        params.append('tool_name', toolName.trim());
+      }
+      
+      const res = await fetch(`${API_URL}/improvement/tools/create?${params.toString()}`, {
         method: 'POST'
       });
       
@@ -24,6 +30,7 @@ function ToolModeChat() {
       if (res.ok) {
         toast.success(`Tool created: ${data.tool_name}`);
         setInput('');
+        setToolName('');
       } else {
         toast.error(data.detail || 'Failed to create tool');
       }
@@ -42,6 +49,14 @@ function ToolModeChat() {
       </div>
       
       <form className="tool-input-form" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={toolName}
+          onChange={(e) => setToolName(e.target.value)}
+          placeholder="Tool name (optional, e.g., PerformanceMetricsAnalyzer)"
+          disabled={loading}
+          className="tool-input tool-name-input"
+        />
         <input
           type="text"
           value={input}

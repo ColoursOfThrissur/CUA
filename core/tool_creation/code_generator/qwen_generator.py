@@ -19,6 +19,9 @@ class QwenCodeGenerator(BaseCodeGenerator):
         """Generate using multi-stage LLM approach: skeleton → handlers one-by-one"""
         from core.tool_creation.validator import ToolValidator
         
+        # Store creation_id for logging
+        self._creation_id = tool_spec.get('_creation_id')
+        
         prompt_spec = self._build_prompt_spec(tool_spec)
         contract = self._build_contract_pack()
         
@@ -27,6 +30,14 @@ class QwenCodeGenerator(BaseCodeGenerator):
         if not skeleton:
             logger.error("Stage 1 skeleton generation failed")
             return None
+        
+        # Log skeleton
+        try:
+            if self._creation_id:
+                from core.tool_creation_logger import get_tool_creation_logger
+                get_tool_creation_logger().log_artifact(self._creation_id, "generated_skeleton", "stage1", skeleton)
+        except:
+            pass
         
         validator = ToolValidator()
         is_valid, validation_error = validator.validate(skeleton, tool_spec)
@@ -39,6 +50,14 @@ class QwenCodeGenerator(BaseCodeGenerator):
         if not final_code:
             logger.error("Stage 2 handler generation failed")
             return None
+        
+        # Log final code
+        try:
+            if self._creation_id:
+                from core.tool_creation_logger import get_tool_creation_logger
+                get_tool_creation_logger().log_artifact(self._creation_id, "final_code", "stage2", final_code)
+        except:
+            pass
         
         is_valid, validation_error = validator.validate(final_code, tool_spec)
         if not is_valid:
@@ -106,13 +125,35 @@ Generate ONLY this base structure.
         op_name = operation.get("operation", "unknown")
         params = operation.get("parameters", [])
         
+        # Dynamically get valid parameter types
+        from tools.tool_capability import ParameterType
+        valid_types_str = ", ".join([pt.name for pt in ParameterType])
+        
         # Build parameter details with full context
         param_details = []
         param_objects = []
+        
+        # Map common LLM-generated types to valid ParameterType values
+        type_mapping = {
+            'ARRAY': 'LIST',
+            'DATE': 'STRING',
+            'DATETIME': 'STRING',
+            'TIMESTAMP': 'STRING',
+            'NUMBER': 'INTEGER',
+            'FLOAT': 'INTEGER',
+            'OBJECT': 'DICT',
+            'JSON': 'DICT',
+            'BOOL': 'BOOLEAN',
+            'PATH': 'FILE_PATH',
+            'FILEPATH': 'FILE_PATH',
+        }
+        
         for p in params:
             if isinstance(p, dict):
                 p_name = p.get('name', 'param')
                 p_type = p.get('type', 'string').upper()
+                # Normalize type to valid ParameterType
+                p_type = type_mapping.get(p_type, p_type)
                 p_desc = p.get('description', f'{p_name} parameter')
                 p_req = p.get('required', True)
                 
@@ -133,6 +174,9 @@ OPERATION TO ADD:
 Name: {op_name}
 Parameters:
 {param_context}
+
+VALID PARAMETER TYPES (use ONLY these):
+- {valid_types_str}
 
 WHAT TO ADD:
 
@@ -219,6 +263,26 @@ Return complete updated code with these additions.
         op_name = handler_name.replace("_handle_", "")
         operation_info = self._get_operation_info(prompt_spec, op_name)
         
+        # Build services list from spec (not hardcoded)
+        available_services = tool_spec.get('available_services', [])
+        service_methods = tool_spec.get('service_methods', {})
+        
+        services_list = []
+        for service_name in available_services:
+            methods = service_methods.get(service_name, '')
+            if methods:
+                services_list.append(f"{service_name}: {methods}")
+        
+        # If no services in spec, use minimal defaults
+        if not services_list:
+            services_list = [
+                "storage: save(id, data), get(id), list(limit)",
+                "ids: generate(prefix)",
+                "time: now_utc()"
+            ]
+        
+        services_context = "\n  * ".join(services_list)
+        
         prompt = f"""TASK: Implement handler method.
 
 CURRENT STUB:
@@ -231,28 +295,50 @@ OPERATION: {op_name}
 
 CONTEXT:
 - Tool has self.services with:
-  * storage: save(id, data), get(id), list(limit), update(id, updates), delete(id)
-  * llm: generate(prompt, temperature)
-  * http: get(url), post(url, data)
-  * ids: generate(prefix)
-  * time: now_utc()
+  * {services_context}
+
+{self._get_sandbox_error_context(tool_spec)}
 
 RULES:
 - Return plain dict (NOT ToolResult)
 - Raise ValueError for validation errors
 - Keep under 20 lines
-- Use self.services for all operations
+- Use self.services for ALL operations
+- ONLY use parameters from kwargs - match spec exactly
+- DO NOT create instance variables (self.x) - services maintain state
+- DO NOT parse/split parameter values (use as-is)
+- If operation has NO parameters, call service method directly
+- Wrap browser/http calls in try-except, return {{'success': False, 'error': str(e)}} on failure
 
 EXAMPLE PATTERNS:
 - CRUD: item_id = kwargs.get('id') or self.services.ids.generate(); return self.services.storage.save(item_id, dict(kwargs))
 - LLM: prompt = f"Analyze: {{kwargs['text']}}"; return {{'result': self.services.llm.generate(prompt, 0.3)}}
-- HTTP: return self.services.http.get(kwargs['url'])
+- HTTP: try: return self.services.http.get(kwargs['url']); except Exception as e: return {{'success': False, 'error': str(e)}}
+- Browser: try: self.services.browser.navigate(kwargs['url']); return {{'success': True, 'text': self.services.browser.get_page_text()}}; except Exception as e: return {{'success': False, 'error': str(e)}}
 
-Return ONLY the method definition.
+Return ONLY the method definition. Wrap browser/http/network calls in try-except.
 """
+        
+        # Log prompt
+        try:
+            from core.tool_creation_logger import get_tool_creation_logger
+            creation_logger = get_tool_creation_logger()
+            creation_id = getattr(self, '_creation_id', None)
+            if creation_id:
+                creation_logger.log_artifact(creation_id, "llm_prompt", f"handler_{handler_name}", prompt)
+        except:
+            pass
         
         for attempt in range(3):
             raw = self.llm_client._call_llm(prompt, temperature=0.1, expect_json=False)
+            
+            # Log response
+            try:
+                if creation_id and raw:
+                    creation_logger.log_artifact(creation_id, "llm_response", f"handler_{handler_name}_attempt_{attempt+1}", raw[:2000])
+            except:
+                pass
+            
             if not raw:
                 continue
             
@@ -265,6 +351,12 @@ Return ONLY the method definition.
             
             merged = self._replace_method(code, tool_spec, handler_name, method_code)
             if merged:
+                # Log generated code
+                try:
+                    if creation_id:
+                        creation_logger.log_artifact(creation_id, "generated_handler", handler_name, method_code)
+                except:
+                    pass
                 return merged
         
         logger.warning(f"Failed to generate {handler_name}, keeping stub")
@@ -396,14 +488,23 @@ Return ONLY the method definition.
         # Fallback: split at midpoint
         return len(func.body) // 2 if len(func.body) > 2 else None
     
+    def _get_sandbox_error_context(self, tool_spec: dict) -> str:
+        """Get sandbox error context if this is a retry."""
+        error = tool_spec.get('_sandbox_error')
+        if error:
+            return f"PREVIOUS ATTEMPT FAILED WITH ERROR:\n{error}\n\nFIX THE ERROR ABOVE."
+        return ""
+    
     def _get_operation_info(self, prompt_spec: dict, op_name: str) -> str:
         """Get operation details from spec"""
         for op in prompt_spec.get("inputs", []):
             if op.get("operation") == op_name:
                 params = op.get("parameters", [])
+                if not params:
+                    return "Parameters: NONE - DO NOT ACCESS kwargs. Call service method directly without parameters."
                 param_names = [p.get("name") for p in params if isinstance(p, dict)]
-                return f"Parameters: {param_names}"
-        return "No parameters"
+                return f"Parameters: {param_names} (REQUIRED - validate these exist in kwargs)"
+        return "Parameters: NONE - DO NOT ACCESS kwargs. Call service method directly without parameters."
     
     def _build_operation_contract(self, operations: List) -> str:
         """Build operation contract text"""

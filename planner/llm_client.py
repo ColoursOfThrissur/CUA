@@ -638,7 +638,17 @@ Respond naturally."""
             except:
                 pass
         
-        # Strategy 4: Find JSON object by braces
+        # Strategy 4: Find JSON array by brackets
+        try:
+            start = response.find("[")
+            end = response.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                json_str = response[start:end+1]
+                return json.loads(json_str)
+        except:
+            pass
+        
+        # Strategy 5: Find JSON object by braces
         try:
             start = response.find("{")
             end = response.rfind("}")

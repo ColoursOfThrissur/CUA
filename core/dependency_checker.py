@@ -10,6 +10,7 @@ class DependencyReport:
     """Report of missing dependencies."""
     missing_libraries: List[str]
     missing_services: List[str]
+    pending_services: List[str]  # Services that need to be created
     all_imports: List[str]
     all_service_calls: List[str]
     is_valid: bool
@@ -23,7 +24,7 @@ class DependencyChecker:
     
     # Available services in ToolServices
     AVAILABLE_SERVICES = {
-        'storage', 'time', 'ids', 'llm', 'http', 'json', 'shell', 'fs', 'logging',
+        'storage', 'time', 'ids', 'llm', 'http', 'json', 'shell', 'fs', 'logging', 'browser',
         'extract_key_points', 'sentiment_analysis', 'detect_language', 
         'generate_json_output', 'call_tool', 'list_tools', 'has_capability'
     }
@@ -50,11 +51,12 @@ class DependencyChecker:
         
         # Check which are missing
         missing_libs = self._check_libraries(imports)
-        missing_services = self._check_services(service_calls)
+        missing_services, pending_services = self._check_services(service_calls)
         
         return DependencyReport(
             missing_libraries=missing_libs,
             missing_services=missing_services,
+            pending_services=pending_services,
             all_imports=imports,
             all_service_calls=service_calls,
             is_valid=True
@@ -108,15 +110,29 @@ class DependencyChecker:
         
         return missing
     
-    def _check_services(self, service_calls: List[str]) -> List[str]:
-        """Check which services don't exist."""
+    def _check_services(self, service_calls: List[str]) -> tuple[List[str], List[str]]:
+        """Check which services don't exist.
+        
+        Returns:
+            (missing_services, pending_services)
+            - missing_services: Invalid service names
+            - pending_services: Valid patterns that need to be created
+        """
         missing = []
+        pending = []
+        
+        # Common service patterns that are valid but might not exist yet
+        valid_patterns = ['email', 'sms', 'database', 'cache', 'queue', 'auth', 'crypto']
         
         for service in service_calls:
             if service not in self.AVAILABLE_SERVICES:
-                missing.append(service)
+                # Check if it's a valid service pattern
+                if service.lower() in valid_patterns or service.endswith('_service'):
+                    pending.append(service)
+                else:
+                    missing.append(service)
         
-        return missing
+        return missing, pending
     
     def _is_installed(self, module: str) -> bool:
         """Check if module is installed."""

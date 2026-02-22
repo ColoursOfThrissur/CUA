@@ -172,7 +172,9 @@ class ToolValidator:
     
     def _validate_parameters_and_capabilities(self, register_method: ast.FunctionDef) -> Optional[str]:
         """Validate Parameter and ToolCapability objects"""
-        allowed_parameter_types = {"STRING", "INTEGER", "BOOLEAN", "LIST", "DICT", "FILE_PATH"}
+        # Dynamically get allowed parameter types from ParameterType enum
+        from tools.tool_capability import ParameterType
+        allowed_parameter_types = {pt.name for pt in ParameterType}
         
         for node in ast.walk(register_method):
             if not isinstance(node, ast.Call):

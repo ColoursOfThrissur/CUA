@@ -28,9 +28,9 @@ class ShellTool(BaseTool):
             return self._execute(parameters)
         return ToolResult(tool_name=self.name, capability_name=operation, status=ResultStatus.FAILURE, error_message='Unknown operation')
 
-    def _execute(self, params: dict) -> ToolResult:
-        command = params.get('command')
-        arguments = params.get('arguments', [])
+    def _execute(self, **kwargs) -> ToolResult:
+        command = kwargs.get('command')
+        arguments = kwargs.get('arguments', [])
         if not command:
             return self._handle_error('Command required')
         if not command in self.ALLOWED_COMMANDS:

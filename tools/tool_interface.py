@@ -52,11 +52,7 @@ class BaseTool(ABC):
         start_time = time.time()
         try:
             handler = getattr(self, f"_handle_{capability_name}")
-            try:
-                result_data = handler(**kwargs)
-            except TypeError:
-                # Compatibility shim: some legacy handlers expect a single params dict.
-                result_data = handler(kwargs)
+            result_data = handler(**kwargs)
             execution_time = time.time() - start_time
             
             # Track performance

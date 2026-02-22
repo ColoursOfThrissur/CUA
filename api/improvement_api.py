@@ -527,6 +527,7 @@ async def create_tool_from_description(
                 "file_path": tool_file.replace("\\", "/") if tool_file else None,
                 "status": "pending_approval" if pending_id else "experimental",
                 "pending_tool_id": pending_id,
+                "missing_services": tool_creation.last_spec.get('missing_services', []) if hasattr(tool_creation, 'last_spec') else [],
                 "note": "Tool created in experimental namespace and queued for approval." if pending_id else "Tool created in experimental namespace. Pending manager unavailable."
             }
         else:

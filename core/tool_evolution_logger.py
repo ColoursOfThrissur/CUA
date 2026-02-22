@@ -113,6 +113,58 @@ class ToolEvolutionLogger:
                 (evolution_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
+    
+    def get_evolution_details(self, evolution_id: int) -> Optional[Dict[str, Any]]:
+        """Get complete evolution details including all artifacts."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Get run info
+            cursor = conn.execute(
+                "SELECT * FROM evolution_runs WHERE id = ?",
+                (evolution_id,)
+            )
+            run = cursor.fetchone()
+            if not run:
+                return None
+            
+            run_dict = dict(run)
+            
+            # Get all artifacts
+            cursor = conn.execute(
+                "SELECT * FROM evolution_artifacts WHERE evolution_id = ? ORDER BY timestamp",
+                (evolution_id,)
+            )
+            artifacts = [dict(row) for row in cursor.fetchall()]
+            
+            # Organize artifacts by type
+            run_dict['artifacts'] = {}
+            for artifact in artifacts:
+                artifact_type = artifact['artifact_type']
+                if artifact_type not in run_dict['artifacts']:
+                    run_dict['artifacts'][artifact_type] = []
+                run_dict['artifacts'][artifact_type].append(artifact)
+            
+            return run_dict
+    
+    def get_last_error(self, evolution_id: int, step: str) -> Optional[str]:
+        """Get last error message from artifacts for retry (matches creation logger)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """SELECT content FROM evolution_artifacts 
+                   WHERE evolution_id = ? AND artifact_type = 'error' AND step = ?
+                   ORDER BY timestamp DESC LIMIT 1""",
+                (evolution_id, step)
+            )
+            row = cursor.fetchone()
+            if row:
+                try:
+                    error_data = json.loads(row['content'])
+                    return error_data.get('error', str(error_data))
+                except:
+                    return row['content']
+            return None
 
 
 _logger = None

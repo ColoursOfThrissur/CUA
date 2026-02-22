@@ -10,6 +10,9 @@ function ToolsManagementPage({ onBack }) {
   const [toolDetail, setToolDetail] = useState(null);
   const [executions, setExecutions] = useState([]);
   const [toolCode, setToolCode] = useState(null);
+  const [testResults, setTestResults] = useState(null);
+  const [testHistory, setTestHistory] = useState([]);
+  const [runningTests, setRunningTests] = useState(false);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
@@ -25,6 +28,7 @@ function ToolsManagementPage({ onBack }) {
     if (selectedTool) {
       fetchToolDetail(selectedTool);
       fetchExecutions(selectedTool);
+      fetchTestHistory(selectedTool);
     }
   }, [selectedTool]);
 
@@ -80,6 +84,38 @@ function ToolsManagementPage({ onBack }) {
     } catch (err) {
       console.error('Failed to fetch tool code:', err);
       toast.error('Failed to load tool code');
+    }
+  };
+
+  const fetchTestHistory = async (toolName) => {
+    try {
+      const res = await fetch(`${API_URL}/tools-management/executions/${toolName}?limit=50`);
+      const data = await res.json();
+      const tests = data.filter(e => e.metadata && e.metadata.test_name);
+      setTestHistory(tests);
+    } catch (err) {
+      console.error('Failed to fetch test history:', err);
+    }
+  };
+
+  const runTests = async (toolName) => {
+    setRunningTests(true);
+    try {
+      const res = await fetch(`${API_URL}/api/tools/test/${toolName}`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Tests passed: ${data.passed_tests}/${data.total_tests} (Quality: ${data.overall_quality_score})`);
+        setTestResults(data);
+        fetchTestHistory(toolName);
+      } else {
+        toast.error('Tests failed: ' + data.detail);
+      }
+    } catch (err) {
+      toast.error('Failed to run tests: ' + err.message);
+    } finally {
+      setRunningTests(false);
     }
   };
 
@@ -218,6 +254,14 @@ function ToolsManagementPage({ onBack }) {
                 <div className="tool-actions">
                   <button
                     className="action-btn"
+                    onClick={() => runTests(selectedTool)}
+                    disabled={runningTests}
+                    style={{backgroundColor: '#f59e0b'}}
+                  >
+                    <Activity size={16} /> {runningTests ? 'Testing...' : 'Run Tests'}
+                  </button>
+                  <button
+                    className="action-btn"
                     onClick={() => triggerHealthCheck(selectedTool)}
                     disabled={loading}
                   >
@@ -337,6 +381,70 @@ function ToolsManagementPage({ onBack }) {
                         </div>
                         {exec.error_message && (
                           <div className="exec-error">{exec.error_message}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {testResults && (
+                <div className="tool-info-section test-results-section">
+                  <h3>Latest Test Run</h3>
+                  <div className="test-summary">
+                    <span>Quality Score: {testResults.overall_quality_score}/100</span>
+                    <span>Passed: {testResults.passed_tests}/{testResults.total_tests}</span>
+                  </div>
+                  {testResults.results_by_capability.map((capResult, idx) => (
+                    <div key={idx} className="capability-tests">
+                      <h4>{capResult.capability} ({capResult.passed}/{capResult.total_tests} passed)</h4>
+                      <div className="test-list">
+                        {capResult.test_results.map((test, tidx) => (
+                          <div key={tidx} className={`test-card ${test.skipped ? 'skipped' : test.passed ? 'passed' : 'failed'}`}>
+                            <div className="test-card-header">
+                              {test.skipped ? '⏭️' : test.passed ? <CheckCircle size={16} /> : <XCircle size={16} />}
+                              <span className="test-name">{test.test_name}</span>
+                              <span className="test-time">{test.execution_time_ms.toFixed(0)}ms</span>
+                              <span className="test-quality">Quality: {test.quality_score}/100</span>
+                            </div>
+                            {test.skipped && test.skip_reason && (
+                              <div className="test-skip-reason">
+                                <strong>Skipped:</strong> {test.skip_reason}
+                              </div>
+                            )}
+                            {test.inputs && Object.keys(test.inputs).length > 0 && (
+                              <div className="test-data">
+                                <strong>Input:</strong> <code>{JSON.stringify(test.inputs)}</code>
+                              </div>
+                            )}
+                            {test.output && (
+                              <div className="test-data">
+                                <strong>Output:</strong> <code>{test.output}</code>
+                              </div>
+                            )}
+                            {test.error && <div className="test-error">Error: {test.error}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {testHistory && testHistory.length > 0 && (
+                <div className="tool-info-section">
+                  <h3>Test History ({testHistory.length})</h3>
+                  <div className="executions-list">
+                    {testHistory.slice(0, 10).map((test, idx) => (
+                      <div key={idx} className={`execution-item ${test.status}`}>
+                        <div className="exec-header">
+                          {test.status === 'success' ? <CheckCircle size={16} /> : <XCircle size={16} />}
+                          <span className="exec-operation">{test.metadata.test_name}</span>
+                          <span className="exec-time">{test.execution_time_ms}ms</span>
+                          <span className="test-quality">Q: {test.metadata.quality_score}</span>
+                        </div>
+                        {test.error_message && (
+                          <div className="exec-error">{test.error_message}</div>
                         )}
                       </div>
                     ))}

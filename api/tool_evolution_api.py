@@ -96,6 +96,114 @@ async def approve_evolution(tool_name: str):
     
     return {"success": True, "message": f"Evolution approved: {tool_name}"}
 
+@router.post("/evolution/test/{tool_name}")
+async def test_evolution(tool_name: str):
+    """Run LLM-generated tests on evolved tool."""
+    if not _pending_manager:
+        raise HTTPException(status_code=500, detail="Pending manager not initialized")
+    
+    evolution = _pending_manager.get_pending_evolution(tool_name)
+    if not evolution:
+        raise HTTPException(status_code=404, detail="Evolution not found")
+    
+    improved_code = evolution.get("improved_code", "")
+    if not improved_code:
+        raise HTTPException(status_code=400, detail="No improved code found")
+    
+    try:
+        from core.llm_test_orchestrator import LLMTestOrchestrator
+        from planner.llm_client import LLMClient
+        from tools.capability_registry import CapabilityRegistry
+        from core.tool_orchestrator import ToolOrchestrator
+        import tempfile
+        import importlib.util
+        from pathlib import Path
+        
+        # Write improved code to temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(improved_code)
+            temp_path = f.name
+        
+        try:
+            # Load tool
+            spec = importlib.util.spec_from_file_location("temp_evolved_tool", temp_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            # Get tool class
+            class_name = ''.join(p[:1].upper() + p[1:] for p in tool_name.split('_') if p)
+            tool_class = getattr(module, class_name)
+            
+            # Create registry and instantiate
+            registry = CapabilityRegistry()
+            orchestrator = ToolOrchestrator(registry=registry)
+            tool_instance = tool_class(orchestrator=orchestrator)
+            
+            # Register temporarily
+            registry.register_tool(tool_instance)
+            
+            # Get capabilities
+            capabilities = tool_instance.get_capabilities()
+            if not capabilities:
+                raise HTTPException(status_code=400, detail="Tool has no capabilities")
+            
+            # Run LLM tests
+            llm_client = LLMClient()
+            test_orchestrator = LLMTestOrchestrator(llm_client, registry)
+            
+            all_results = []
+            for cap_name, capability in capabilities.items():
+                cap_dict = {
+                    'name': cap_name,
+                    'description': getattr(capability, 'description', ''),
+                    'parameters': [{
+                        'name': p.name,
+                        'type': p.type.value if hasattr(p.type, 'value') else str(p.type),
+                        'description': getattr(p, 'description', ''),
+                        'required': getattr(p, 'required', True)
+                    } for p in getattr(capability, 'parameters', [])],
+                    'returns': getattr(capability, 'returns', 'Result')
+                }
+                
+                test_cases = test_orchestrator.generate_test_cases(tool_name, cap_dict)
+                result = test_orchestrator.execute_test_suite(tool_name, cap_name, test_cases)
+                
+                all_results.append({
+                    'capability': cap_name,
+                    'total_tests': result.total_tests,
+                    'passed': result.passed_tests,
+                    'failed': result.failed_tests,
+                    'quality_score': result.overall_quality_score,
+                    'test_results': [{
+                        'test_name': tr.test_name,
+                        'passed': tr.passed,
+                        'execution_time_ms': tr.execution_time_ms,
+                        'error': tr.error,
+                        'quality_score': tr.quality_score
+                    } for tr in result.test_results]
+                })
+            
+            overall_passed = sum(r['passed'] for r in all_results)
+            overall_total = sum(r['total_tests'] for r in all_results)
+            overall_quality = sum(r['quality_score'] for r in all_results) / len(all_results) if all_results else 0
+            
+            return {
+                'success': True,
+                'tool_name': tool_name,
+                'overall_quality_score': int(overall_quality),
+                'total_tests': overall_total,
+                'passed_tests': overall_passed,
+                'failed_tests': overall_total - overall_passed,
+                'results_by_capability': all_results
+            }
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {str(e)}")
+
 
 @router.post("/evolution/reject/{tool_name}")
 async def reject_evolution(tool_name: str):

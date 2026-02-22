@@ -15,6 +15,7 @@ class ToolCreationOrchestrator:
     def __init__(self, capability_graph, expansion_mode):
         self.capability_graph = capability_graph
         self.expansion_mode = expansion_mode
+        self.last_spec = None  # Store last generated spec for API access
     
     def create_tool(
         self,
@@ -36,24 +37,80 @@ class ToolCreationOrchestrator:
         FIXED: Removed bypass_budget parameter (security risk)
         FIXED: Check budget BEFORE scaffolding (correct order)
         """
+        from core.tool_creation_logger import get_tool_creation_logger
+        creation_logger = get_tool_creation_logger()
         
         # Step 1: Detect capability gap
         logger.info(f"Capability gap detected: {gap_description}")
+        print(f"[FLOW] Step 1: Starting tool creation for: {gap_description[:50]}...")
+        creation_id = creation_logger.log_creation(
+            tool_name="unknown",
+            user_prompt=gap_description,
+            status="started",
+            step="gap_detection"
+        )
+        print(f"[FLOW] Creation ID: {creation_id}")
         
         # Step 2: LLM proposes tool spec
         from core.tool_creation import SpecGenerator
         spec_generator = SpecGenerator(self.capability_graph)
-        tool_spec = spec_generator.propose_tool_spec(
-            gap_description,
-            llm_client,
-            preferred_tool_name=preferred_tool_name,
-        )
+        try:
+            print(f"[FLOW DEBUG] Starting spec generation for: {gap_description}")
+            tool_spec = spec_generator.propose_tool_spec(
+                gap_description,
+                llm_client,
+                preferred_tool_name=preferred_tool_name,
+            )
+            print(f"[FLOW DEBUG] Spec generation returned: {tool_spec is not None}")
+        except Exception as e:
+            print(f"[FLOW DEBUG] Exception in spec generation: {e}")
+            creation_logger.log_creation(
+                tool_name="unknown",
+                user_prompt=gap_description,
+                status="failed",
+                step="spec_generation",
+                error_message=f"Exception during spec generation: {str(e)}"
+            )
+            logger.error(f"Spec generation exception: {e}", exc_info=True)
+            return False, f"Failed to generate tool spec: {str(e)}"
+        
         if not tool_spec:
+            creation_logger.log_creation(
+                tool_name="unknown",
+                user_prompt=gap_description,
+                status="failed",
+                step="spec_generation",
+                error_message="LLM returned None/empty spec"
+            )
             return False, "Failed to generate tool spec"
+        
+        # Store spec for API access
+        self.last_spec = tool_spec
+        
+        tool_name = tool_spec.get('name', 'unknown')
+        # Remove non-serializable objects before logging
+        spec_for_logging = {k: v for k, v in tool_spec.items() if k != 'node'}
+        creation_logger.log_artifact(creation_id, "spec", "spec_generation", spec_for_logging)
+        
+        # Log service resolution
+        missing_services = tool_spec.get('missing_services', [])
+        if missing_services:
+            creation_logger.log_artifact(creation_id, "missing_services", "spec_generation", {
+                "services": missing_services,
+                "note": "These services need to be created before tool can be fully functional"
+            })
+            logger.warning(f"Tool requires missing services: {missing_services}")
         
         # Check confidence score
         confidence = tool_spec.get('confidence', 1.0)
         if confidence < 0.5:
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="confidence_check",
+                error_message=f"Low confidence spec ({confidence:.2f})"
+            )
             return False, f"Low confidence spec ({confidence:.2f}) - gap description too vague"
         
         # Log human review requirement
@@ -67,15 +124,47 @@ class ToolCreationOrchestrator:
         from core.tool_creation.code_generator import QwenCodeGenerator, DefaultCodeGenerator
         generator = self._select_generator(llm_client)
         
-        filled_code = generator.generate(None, tool_spec)  # No template needed
+        # Pass creation_id to generator for logging
+        tool_spec['_creation_id'] = creation_id
+        
+        try:
+            filled_code = generator.generate(None, tool_spec)  # No template needed
+        except Exception as e:
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="code_generation",
+                error_message=f"Exception during code generation: {str(e)}"
+            )
+            logger.error(f"Code generation exception: {e}", exc_info=True)
+            return False, f"Failed to generate tool logic: {str(e)}"
+        
         if not filled_code:
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="code_generation",
+                error_message="Generator returned None/empty code"
+            )
             return False, "Failed to generate tool logic"
+        
+        creation_logger.log_artifact(creation_id, "code", "code_generation", filled_code)
         
         # Step 5: Validate generated code
         from core.tool_creation.validator import ToolValidator
         validator = ToolValidator()
         is_valid, validation_error = validator.validate(filled_code, tool_spec)
         if not is_valid:
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="validation",
+                error_message=f"Validation failed: {validation_error}",
+                code_size=len(filled_code)
+            )
             return False, f"Generated tool code invalid: {validation_error}"
         
         # Step 6: Create in experimental namespace
@@ -83,18 +172,68 @@ class ToolCreationOrchestrator:
             tool_spec['name'], filled_code, tool_spec  # Pass spec for test generation
         )
         if not success:
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="file_creation",
+                error_message=msg
+            )
             return False, msg
         
-        # Step 7: Run sandbox validation
+        # Step 7: Run sandbox validation (with retry on failure)
         from core.tool_creation.sandbox_runner import SandboxRunner
         sandbox_runner = SandboxRunner(self.expansion_mode)
-        sandbox_passed = sandbox_runner.run_sandbox(tool_spec['name'])
+        
+        for attempt in range(2):  # 2 attempts max
+            sandbox_passed = sandbox_runner.run_sandbox(tool_spec['name'], creation_id=creation_id)
+            if sandbox_passed:
+                break
+            
+            if attempt == 0:  # First failure - try to fix
+                logger.info(f"Sandbox failed (attempt {attempt+1}/2), regenerating with error feedback")
+                
+                # Get sandbox error from last artifact
+                error_msg = creation_logger.get_last_error(creation_id, "sandbox")
+                if not error_msg:
+                    error_msg = "Sandbox validation failed"
+                
+                # Regenerate code with error feedback
+                tool_spec['_sandbox_error'] = error_msg
+                try:
+                    filled_code = generator.generate(None, tool_spec)
+                    if filled_code:
+                        is_valid, validation_error = validator.validate(filled_code, tool_spec)
+                        if is_valid:
+                            # Update file with fixed code
+                            self.expansion_mode.create_experimental_tool(
+                                tool_spec['name'], filled_code, tool_spec
+                            )
+                            creation_logger.log_artifact(creation_id, "code_retry", "sandbox_retry", filled_code)
+                except Exception as e:
+                    logger.warning(f"Retry generation failed: {e}")
+        
         if not sandbox_passed:
             self._cleanup_artifacts(tool_spec["name"])
-            return False, "Sandbox validation failed"
+            creation_logger.log_creation(
+                tool_name=tool_name,
+                user_prompt=gap_description,
+                status="failed",
+                step="sandbox",
+                error_message="Sandbox validation failed after 2 attempts"
+            )
+            return False, "Sandbox validation failed after 2 attempts"
         
         # Step 8: Register as experimental
         logger.info(f"Tool registered as experimental: {tool_spec['name']}")
+        creation_logger.log_creation(
+            tool_name=tool_name,
+            user_prompt=gap_description,
+            status="success",
+            step="completed",
+            code_size=len(filled_code),
+            capabilities_count=len(tool_spec.get('inputs', []))
+        )
         
         return True, f"Experimental tool created: {tool_spec['name']}"
     

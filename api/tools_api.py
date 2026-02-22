@@ -206,3 +206,111 @@ async def get_capabilities_text():
         raise HTTPException(status_code=500, detail="Registry manager not initialized")
     
     return {"capabilities": registry_manager.get_all_capabilities_text()}
+
+@router.post("/test/{tool_name}")
+async def test_tool(tool_name: str):
+    """Run LLM-generated tests on active tool and record in DB"""
+    if not runtime_registry:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    # Find tool in capability registry
+    tool_instance = None
+    for tool in runtime_registry.tools:
+        if tool.__class__.__name__ == tool_name or getattr(tool, 'name', None) == tool_name:
+            tool_instance = tool
+            break
+    
+    if not tool_instance:
+        available = [t.__class__.__name__ for t in runtime_registry.tools]
+        raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}. Available: {available}")
+    
+    try:
+        from core.llm_test_orchestrator import LLMTestOrchestrator
+        from planner.llm_client import LLMClient
+        from core.tool_execution_logger import ToolExecutionLogger
+        import time
+        
+        capabilities = tool_instance.get_capabilities()
+        if not capabilities:
+            raise HTTPException(status_code=400, detail="Tool has no capabilities")
+        
+        llm_client = LLMClient()
+        test_orchestrator = LLMTestOrchestrator(llm_client, runtime_registry)
+        execution_logger = ToolExecutionLogger()
+        
+        all_results = []
+        for cap_name, capability in capabilities.items():
+            try:
+                cap_dict = {
+                    'name': cap_name,
+                    'description': getattr(capability, 'description', ''),
+                    'parameters': [{
+                        'name': p.name,
+                        'type': p.type.value if hasattr(p.type, 'value') else str(p.type),
+                        'description': getattr(p, 'description', ''),
+                        'required': getattr(p, 'required', True)
+                    } for p in getattr(capability, 'parameters', [])],
+                    'returns': getattr(capability, 'returns', 'Result')
+                }
+                
+                test_cases = test_orchestrator.generate_test_cases(tool_name, cap_dict)
+                result = test_orchestrator.execute_test_suite(tool_name, cap_name, test_cases)
+                
+                # Log each test execution to DB
+                for tr in result.test_results:
+                    execution_logger.log_execution(
+                        tool_name=tool_name,
+                        operation=cap_name,
+                        success=tr.passed,
+                        error=tr.error,
+                        execution_time_ms=tr.execution_time_ms,
+                        parameters={'test_name': tr.test_name},
+                        output_data={'quality_score': tr.quality_score, 'output': tr.output}
+                    )
+                
+                all_results.append({
+                    'capability': cap_name,
+                    'total_tests': result.total_tests,
+                    'passed': result.passed_tests,
+                    'failed': result.failed_tests,
+                    'quality_score': result.overall_quality_score,
+                    'test_results': [{
+                        'test_name': tr.test_name,
+                        'passed': tr.passed,
+                        'skipped': tr.skipped,
+                        'skip_reason': tr.skip_reason,
+                        'execution_time_ms': tr.execution_time_ms,
+                        'error': tr.error,
+                        'quality_score': tr.quality_score,
+                        'inputs': test_cases[idx].inputs if idx < len(test_cases) else {},
+                        'output': str(tr.output)[:500] if tr.output else None
+                    } for idx, tr in enumerate(result.test_results)]
+                })
+            except Exception as e:
+                print(f"[TEST] Error testing capability {cap_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        overall_passed = sum(r['passed'] for r in all_results)
+        overall_total = sum(r['total_tests'] for r in all_results)
+        overall_quality = sum(r['quality_score'] for r in all_results) / len(all_results) if all_results else 0
+        
+        return {
+            'success': True,
+            'tool_name': tool_name,
+            'overall_quality_score': int(overall_quality),
+            'total_tests': overall_total,
+            'passed_tests': overall_passed,
+            'failed_tests': overall_total - overall_passed,
+            'results_by_capability': all_results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"[TEST] Full error trace:\n{error_trace}")
+        # Return clean error message without full trace
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {str(e)[:200]}")

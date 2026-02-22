@@ -71,6 +71,7 @@ try:
     from api.tools_management_api import router as tools_management_router
     from api.metrics_api import router as metrics_router
     from api.auto_evolution_api import router as auto_evolution_router
+    from api.agent_api import router as agent_router
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
@@ -111,6 +112,7 @@ if ROUTERS_AVAILABLE:
     app.include_router(tools_management_router)
     app.include_router(metrics_router)
     app.include_router(auto_evolution_router)
+    app.include_router(agent_router)
 
 cors_origins, cors_allow_credentials = _get_cors_settings()
 
@@ -152,6 +154,10 @@ conversation_memory = None
 scheduler = None
 registry_manager = None
 libraries_manager = None
+task_planner = None
+execution_engine = None
+memory_system = None
+autonomous_agent = None
 
 if SYSTEM_AVAILABLE:
     try:
@@ -230,6 +236,24 @@ if SYSTEM_AVAILABLE:
         # Initialize scheduler
         scheduler = ImprovementScheduler()
 
+        # Initialize autonomous agent components
+        from core.task_planner import TaskPlanner
+        from core.execution_engine import ExecutionEngine
+        from core.memory_system import MemorySystem
+        from core.autonomous_agent import AutonomousAgent
+        
+        task_planner = TaskPlanner(llm_client, registry)
+        execution_engine = ExecutionEngine(registry)
+        memory_system = MemorySystem()
+        autonomous_agent = AutonomousAgent(
+            task_planner=task_planner,
+            execution_engine=execution_engine,
+            memory_system=memory_system,
+            llm_client=llm_client
+        )
+        
+        print("Autonomous agent initialized successfully")
+
         async def _run_scheduled_loop(max_iter: int, dry: bool):
             improvement_loop.controller.max_iterations = max_iter
             improvement_loop.dry_run = dry
@@ -279,6 +303,10 @@ if SYSTEM_AVAILABLE:
             set_tool_registrar_for_sync(tool_registrar)
             set_tool_orchestrator_for_sync(tool_orchestrator)
             set_libraries_manager(libraries_manager)
+            
+            # Set agent dependencies
+            from api.agent_api import set_agent_dependencies
+            set_agent_dependencies(autonomous_agent, memory_system, execution_engine)
         
         print("CUA system initialized successfully")
     except Exception as e:
@@ -457,7 +485,59 @@ async def chat(request: ChatRequest):
                 except Exception:
                     pass
 
-            # Try native tool calling first (Mistral function calling)
+            # Use LLM to classify intent: multi-step task vs direct answer
+            intent_prompt = f"""Classify this user request:
+
+User: {request.message}
+
+Is this:
+A) A multi-step task requiring planning (e.g., "open google and search X and take screenshot")
+B) A simple direct request (e.g., "open google", "what is X?")
+
+Respond with ONLY 'A' or 'B'."""
+            
+            try:
+                intent_response = llm_client._call_llm(intent_prompt, temperature=0.1, max_tokens=10)
+                is_multi_step = 'A' in intent_response.strip().upper()
+            except:
+                is_multi_step = False
+            
+            # If multi-step task, use autonomous agent
+            if is_multi_step and autonomous_agent:
+                try:
+                    from core.autonomous_agent import AgentGoal
+                    goal = AgentGoal(
+                        goal_text=request.message,
+                        success_criteria=[],
+                        max_iterations=5,
+                        require_approval=False
+                    )
+                    result = autonomous_agent.achieve_goal(goal, session_id)
+                    
+                    if result.get('success'):
+                        response_text = f"✓ {result.get('message', 'Task completed')}"
+                    else:
+                        response_text = result.get('message', 'Task failed')
+                    
+                    sessions[session_id]["messages"].append({
+                        "role": "assistant",
+                        "content": response_text,
+                        "timestamp": time.time()
+                    })
+                    
+                    if conversation_memory:
+                        conversation_memory.save_message(session_id, "assistant", response_text)
+                    
+                    return ChatResponse(
+                        response=response_text,
+                        session_id=session_id,
+                        success=True,
+                        execution_result={"success": True, "mode": "autonomous_agent"}
+                    )
+                except Exception as e:
+                    print(f"[DEBUG] Autonomous agent failed: {e}, falling back to tool calling")
+            
+            # Try native tool calling (Mistral function calling)
             from planner.tool_calling import ToolCallingClient
             tool_caller = ToolCallingClient(
                 ollama_url=llm_client.ollama_url,
@@ -481,11 +561,33 @@ async def chat(request: ChatRequest):
                 results = []
                 errors = []
                 
-                for call in tool_calls:
+                # Send progress update for multi-step
+                if len(tool_calls) > 1:
+                    response_text = f"I'll do this in {len(tool_calls)} steps...\n"
+                    sessions[session_id]["messages"].append({
+                        "role": "assistant",
+                        "content": response_text,
+                        "timestamp": time.time()
+                    })
+                
+                for idx, call in enumerate(tool_calls, 1):
                     try:
                         tool_name = call["tool"]
                         operation = call["operation"]
                         parameters = call["parameters"]
+                        
+                        # Show progress
+                        step_msg = f"Step {idx}/{len(tool_calls)}: {operation.replace('_', ' ')}..."
+                        print(f"[DEBUG] {step_msg}")
+                        
+                        # Add step message to session
+                        if len(tool_calls) > 1:
+                            sessions[session_id]["messages"].append({
+                                "role": "assistant",
+                                "content": step_msg,
+                                "timestamp": time.time(),
+                                "metadata": {"type": "progress", "step": idx, "total": len(tool_calls)}
+                            })
                         
                         print(f"[DEBUG] Executing: {operation} with params: {parameters}")
                         
@@ -502,24 +604,79 @@ async def chat(request: ChatRequest):
                             errors.append(f"{operation}: {result.error_message if result else 'failed'}")
                     except Exception as e:
                         print(f"[DEBUG] Exception executing tool: {e}")
-                        errors.append(f"{call.get('operation', 'unknown')}: {str(e)}")
+                        error_msg = str(e)
+                        if "got an unexpected keyword argument" in error_msg:
+                            error_msg = f"I tried to use {call.get('operation', 'a tool')}, but I don't have the right capabilities for that task yet."
+                        elif "missing" in error_msg.lower() and "parameter" in error_msg.lower():
+                            error_msg = f"I need more information to complete this task."
+                        elif "not found" in error_msg.lower():
+                            error_msg = f"I don't have the capability to do that yet."
+                        errors.append(f"{call.get('operation', 'Task')}: {error_msg}")
                 
                 if results and not errors:
-                    # Success - generate natural response
-                    print(f"[DEBUG] Generating summary for {len(results)} results")
+                    # Success - analyze output and generate UI components
+                    print(f"[DEBUG] Analyzing {len(results)} results")
                     result_data = results[0]
-                    summary_prompt = f"""User asked: {request.message}
+                    
+                    # Use output analyzer to generate components
+                    from core.output_analyzer import OutputAnalyzer
+                    components = OutputAnalyzer.analyze(result_data, tool_name, operation)
+                    
+                    # Generate natural language summary using LLM
+                    tool_summary = f"Tool: {tool_calls[0].get('operation', 'unknown')}\nParameters: {tool_calls[0].get('parameters', {})}\nResult: {str(result_data)[:500]}"
+                    
+                    summary_prompt = f"""You just executed a tool successfully. Explain what you did in a natural, conversational way.
 
-Tool returned this data: {json.dumps(result_data, indent=2)}
+Tool executed: {tool_calls[0].get('operation', 'unknown')}
+Parameters: {tool_calls[0].get('parameters', {})}
+Result summary: {str(result_data)[:500]}
 
-Provide a helpful, natural response that includes all relevant information from the data (summary, detected_language, tone, etc.). Be concise but complete."""
-                    response_text = llm_client._call_llm(summary_prompt, temperature=0.7, max_tokens=500, expect_json=False)
-                    print(f"[DEBUG] Generated response: {response_text[:100] if response_text else 'None'}")
-                    execution_result = {"success": True, "results": results, "tool_calling": True}
+Respond naturally as if you're explaining what you just did. Be concise (1-2 sentences). Don't say "I executed" - say what you DID.
+Example: "I found 5 log entries from the last hour" or "I listed 12 files in the directory"""
+                    
+                    try:
+                        response_text = llm_client.generate_response(summary_prompt, [])
+                    except:
+                        # Fallback to simple summary
+                        if isinstance(result_data, dict):
+                            if 'executions' in result_data or 'performance' in result_data:
+                                count = len(result_data.get('executions') or result_data.get('performance', []))
+                                response_text = f"Found {count} results."
+                            elif 'logs' in result_data:
+                                count = len(result_data.get('logs', []))
+                                response_text = f"Found {count} log entries."
+                            else:
+                                response_text = "Done."
+                        else:
+                            response_text = "Done."
+                    
+                    print(f"[DEBUG] Generated {len(components)} components")
+                    execution_result = {
+                        "success": True, 
+                        "results": results, 
+                        "tool_calling": True,
+                        "components": components
+                    }
                 else:
                     error_msg = "; ".join(errors) if errors else "Execution failed"
                     print(f"[DEBUG] Tool execution failed: {error_msg}")
-                    response_text = f"Failed: {error_msg}"
+                    
+                    # Generate natural language error explanation using LLM
+                    error_prompt = f"""A tool execution failed. Explain what went wrong in a natural, helpful way.
+
+Error: {error_msg}
+
+Respond naturally as if you're explaining the problem to a user. Be concise (1-2 sentences). Suggest what they might try instead if appropriate."""
+                    
+                    try:
+                        response_text = llm_client.generate_response(error_prompt, [])
+                    except:
+                        # Fallback to user-friendly error
+                        if "don't have" in error_msg or "not found" in error_msg.lower():
+                            response_text = f"I don't have the capability to do that yet. You can create a new tool in Tools Mode to add this functionality."
+                        else:
+                            response_text = f"I encountered an issue: {error_msg}"
+                    
                     execution_result = {"success": False, "errors": errors}
             else:
                 # Pure conversation response (no tools selected)

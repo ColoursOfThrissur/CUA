@@ -1,0 +1,1 @@
+Use main docs already available to update only if u feel we reached a main checkpoint.Also if the new details tobe documented are of importance u can create a new doc..but updating existing one is preffered

@@ -5,6 +5,9 @@
 ## 🎯 What CUA Does
 
 CUA is an autonomous agent that:
+- **Plans & Executes** multi-step tasks autonomously with goal achievement
+- **Learns & Remembers** conversation context and successful patterns
+- **Self-corrects** by analyzing failures and iterating toward goals
 - **Executes tasks** using 20+ tools via Mistral's native function calling
 - **Creates tools** through LLM-driven generation with validation pipeline
 - **Evolves tools** by detecting weak tools and generating improvements
@@ -34,7 +37,14 @@ cd ui && npm install && npm start
 
 ```
 CUA System
-├── API Layer (FastAPI - 16 routers)
+├── Autonomous Agent (NEW)
+│   ├── Task Planner - Breaks goals into executable steps
+│   ├── Execution Engine - Runs multi-step plans with state tracking
+│   ├── Memory System - Conversation context & learned patterns
+│   └── Goal Achievement Loop - Plan → Execute → Verify → Iterate
+│
+├── API Layer (FastAPI - 17 routers)
+│   ├── Agent API (NEW) - Autonomous goal achievement
 │   ├── Chat endpoint (/chat) - Native tool calling with agentic response
 │   ├── Tool Creation API - LLM-driven tool generation
 │   ├── Tool Evolution API - 6-step improvement workflow
@@ -95,13 +105,31 @@ CUA System
 
 ## 🔧 Key Features
 
-### 1. Native Tool Calling
+### 1. Autonomous Goal Achievement (NEW)
+- **Multi-Step Planning**: LLM breaks complex goals into executable steps
+- **Dependency Management**: Steps execute in correct order based on dependencies
+- **State Tracking**: Full execution state with step results and timing
+- **Error Recovery**: Automatic retry logic with configurable max attempts
+- **Self-Correction**: Analyzes failures and adjusts approach for next iteration
+- **Memory Integration**: Learns from past successes and failures
+- **Verification**: LLM verifies if goal achieved against success criteria
+- **Pause/Resume**: Can pause execution and resume later
+
+### 2. Memory & Learning (NEW)
+- **Conversation Context**: Maintains full conversation history per session
+- **User Preferences**: Stores and applies user-specific preferences
+- **Execution History**: Links conversations to execution plans
+- **Pattern Learning**: Stores successful approaches for similar goals
+- **Session Management**: Create, retrieve, and clear sessions
+- **Context Summarization**: Provides relevant context for planning
+
+### 3. Native Tool Calling
 - **Mistral Function Calling**: LLM automatically selects tools based on capability descriptions
 - **Scales to 20+ tools**: No manual tool specification needed
 - **OpenAI-compatible format**: Works with any function-calling model
 - **Agentic Response**: Filters tool call JSON, shows only natural language responses
 
-### 2. Tool Creation
+### 4. Tool Creation
 **6-Step Flow**:
 1. **Spec Generation**: LLM proposes tool specification with confidence scoring
 2. **Code Generation**: Multi-stage (Qwen) or single-shot (GPT/Claude) generation
@@ -110,7 +138,7 @@ CUA System
 5. **Sandbox Testing**: Isolated execution with ordered operations
 6. **Approval**: Human review before activation
 
-### 3. Tool Evolution
+### 5. Tool Evolution
 **6-Step Flow with Context-Aware Improvements**:
 1. **Analyze**: Quality analyzer scores tool health (0-100)
 2. **Propose**: LLM reads evolution context and proposes ONLY necessary fixes
@@ -127,14 +155,14 @@ CUA System
 - Skips evolution if no critical issues found
 - Requires justification for all changes
 
-### 4. Dependency Management
+### 6. Dependency Management
 - **AST-based detection**: Parses generated code for missing imports and service calls
 - **Auto-resolution**: Install libraries via pip, generate services via LLM
 - **Non-blocking**: Evolutions with missing deps are blocked until resolved
 - **Auto-refresh**: Re-checks dependencies on approval
 - **Service Pattern Enforcement**: Validates `self.services.X` usage
 
-### 5. Enhanced Validation
+### 7. Enhanced Validation
 **12+ Validation Gates**:
 - AST syntax validation
 - Required methods (register_capabilities, execute)
@@ -153,7 +181,7 @@ CUA System
 - **NEW**: Code truncation detection
 - **NEW**: Service usage pattern validation
 
-### 6. Observability
+### 8. Observability
 **10 SQLite Databases**:
 - `logs.db` - System logs (info, warning, error, debug)
 - `tool_executions.db` - Tool execution history with timing/success
@@ -172,7 +200,7 @@ CUA System
 - Schema validation and auto-update
 - Common query patterns for each table
 
-### 7. Quality System
+### 9. Quality System
 - **Health Scoring**: 0-100 based on success rate, usage, output size
 - **LLM Health Analysis**: Context-aware code quality checking
 - **Recommendations**: HEALTHY (80+), WEAK (50-79), BROKEN (<50)
@@ -182,7 +210,7 @@ CUA System
 - **Filtering**: Only show tools with actual files
 - **Auto-refresh**: Quality metrics update on evolution approval
 
-### 8. Tools Management Page
+### 10. Tools Management Page
 **Comprehensive Tool Dashboard**:
 - **Summary Cards**: Total tools, healthy/weak/broken/unknown counts
 - **Tool List**: All tools (core + experimental) with health scores
@@ -193,7 +221,7 @@ CUA System
 - **Code Viewer**: Modal popup showing tool source code
 - **Real-time Updates**: Cache-busted API calls for fresh data
 
-### 9. Observability Page
+### 11. Observability Page
 **Full-Page Database Viewer**:
 - **Table List**: Sidebar with all tables from 10 databases
 - **Data View**: Paginated table data with search and filters
@@ -208,7 +236,8 @@ CUA System
 
 ```
 CUA/
-├── api/                    # FastAPI endpoints (15 routers)
+├── api/                    # FastAPI endpoints (17 routers)
+│   ├── agent_api.py       # NEW: Autonomous agent operations
 │   ├── server.py          # Main server with native tool calling
 │   ├── tool_evolution_api.py  # Evolution workflow
 │   ├── tool_creation_api.py   # Tool creation (via improvement_api)
@@ -222,6 +251,11 @@ CUA/
 │   └── tools_api.py       # Tool management & sync
 │
 ├── core/                   # Core logic
+│   ├── autonomous_agent.py    # NEW: Goal achievement loop
+│   ├── task_planner.py        # NEW: Multi-step planning
+│   ├── execution_engine.py    # NEW: Plan execution with state
+│   ├── memory_system.py       # NEW: Context & learning
+│   │
 │   ├── tool_creation/     # Tool creation pipeline
 │   │   ├── flow.py        # Main orchestrator
 │   │   ├── spec_generator.py  # Spec generation
@@ -294,6 +328,21 @@ CUA/
 ```
 
 ## 🔄 Data Flow
+
+### Autonomous Goal Flow (NEW)
+```
+User: "Analyze sales data and create report"
+    ↓
+1. Plan (break into steps: fetch data, analyze, generate report)
+    ↓
+2. Execute (run each step with dependencies)
+    ↓
+3. Verify (check if goal achieved)
+    ↓
+4. Iterate (if failed, adjust and retry)
+    ↓
+Goal Achieved → Store success pattern
+```
 
 ### Chat Request Flow
 ```
@@ -515,6 +564,9 @@ self.services.has_capability(capability_name)
 ## 🚦 Status
 
 **Working**:
+- ✅ Autonomous goal achievement (multi-step planning & execution)
+- ✅ Memory system (conversation context & learned patterns)
+- ✅ Self-correction (failure analysis & iteration)
 - ✅ Native tool calling (20+ tools)
 - ✅ Tool creation (6-step flow with validation)
 - ✅ Tool evolution (context-aware, minimal changes)

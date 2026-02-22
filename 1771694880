@@ -1,0 +1,6 @@
+Recent errors:
+2026-02-21T19:50:33.893825 - Evolution processing error for test_integration_tool: 'LLMTestOrchestrator' object has no attribute 'run_test_suite'
+2026-02-21T19:50:13.271337 - Evolution processing error for TaskBreakdownTool: 'LLMTestOrchestrator' object has no attribute 'run_test_suite'
+2026-02-21T19:49:58.281765 - Evolution processing error for SystemIntrospectionTool: 'LLMTestOrchestrator' object has no attribute 'run_test_suite'
+2026-02-21T19:49:05.148924 - Evolution processing error for LocalRunNoteTool: 'LLMTestOrchestrator' object has no attribute 'run_test_suite'
+2026-02-21T19:47:05.373386 - Evolution processing error for ExecutionPlanEvaluatorTool: 'LLMTestOrchestrator' object has no attribute 'run_test_suite'

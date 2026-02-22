@@ -306,6 +306,9 @@
   flex: 1;
   overflow-y: auto;
   padding: 1.5rem;
+  padding-top: 3rem;
+  position: relative;
+  bottom: 40px;
 }
 
 .no-selection {
@@ -515,6 +518,109 @@
 .issue-low .issue-severity { background: var(--accent-blue-light); color: var(--accent-blue); }
 
 .executions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.test-card {  padding: 1rem;
+  margin-bottom: 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.test-card.skipped {
+  border-left: 3px solid var(--text-tertiary);
+  opacity: 0.7;
+}
+
+.test-skip-reason {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.test-card.passed {
+  border-left: 3px solid var(--accent-green);
+}
+
+.test-card.failed {
+  border-left: 3px solid var(--accent-red);
+}
+
+.test-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.test-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.test-time, .test-quality {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.test-data {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .test-data {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.test-data code {
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.test-error {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: var(--accent-red-light);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--accent-red);
+}
+
+.test-summary {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.capability-tests {
+  margin-bottom: 1.5rem;
+}
+
+.capability-tests h4 {
+  margin: 0 0 0.75rem 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.test-list {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;

@@ -84,9 +84,16 @@ async def get_queue():
     
     if not orchestrator:
         raise HTTPException(400, "Orchestrator not initialized")
+    
+    # Manually add priority_score to each queue item
+    queue_with_priority = []
+    for e in orchestrator.queue.queue:
+        item = asdict(e)
+        item['priority_score'] = e.priority_score  # Add computed property
+        queue_with_priority.append(item)
         
     return {
-        "queue": [asdict(e) for e in orchestrator.queue.queue],
+        "queue": queue_with_priority,
         "in_progress": orchestrator.queue.in_progress
     }
 

@@ -124,7 +124,7 @@ class LocalRunNoteTool(BaseTool):
                 return data
             except FileNotFoundError as e:
                 self.services.logging.error(f"Note with ID '{note_id}' not found.")
-                raise e
+                raise ValueError(f"Note with ID '{note_id}' does not exist.") from e
 
     def _handle_list(self, **kwargs):
             try:

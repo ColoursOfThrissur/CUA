@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap, Sun, Moon, Activity, Bot } from 'lucide-react';
+import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap, Sun, Moon, Activity, Bot, Target } from 'lucide-react';
 import './Header.css';
 
 function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange, theme, onThemeToggle, onOpenAutoEvolution }) {
   const [showSettings, setShowSettings] = useState(false);
 
   const modes = [
-    { id: 'chat', label: 'CUA Chat', icon: MessageSquare },
+    { id: 'chat', label: 'CUA', icon: MessageSquare },
     { id: 'tools', label: 'Tools', icon: Wrench },
     { id: 'evolution', label: 'Evolution', icon: Zap }
   ];

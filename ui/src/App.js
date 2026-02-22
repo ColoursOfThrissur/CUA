@@ -6,6 +6,7 @@ import { ToastProvider, useToast } from './components/Toast';
 import Header from './components/Header';
 import ModeTabBar from './components/ModeTabBar';
 import MainCanvas from './components/MainCanvas';
+import AgentMode from './components/AgentMode';
 import RightOverlay from './components/RightOverlay';
 import QualityOverlay from './components/QualityOverlay';
 import PendingEvolutionsOverlay from './components/PendingEvolutionsOverlay';
@@ -346,6 +347,23 @@ function AppContent() {
     setCodePreview(tool);
   };
 
+  const handleRunToolTests = async (toolId) => {
+    try {
+      const response = await fetch(`${API_URL}/pending-tools/${toolId}/test`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        toast.success(`Tests passed: ${data.passed_tests}/${data.total_tests} (Quality: ${data.overall_quality_score})`);
+        await refreshPendingTools();
+      } else {
+        toast.error(`Tests failed: ${data.detail || 'Unknown error'}`);
+      }
+    } catch (error) {
+      toast.error(`Failed to run tests: ${error.message}`);
+    }
+  };
+
   const handleClearCache = async () => {
     if (!window.confirm('Clear all caches? This will clear LLM cache, tool execution cache, and temporary data.')) return;
     
@@ -381,6 +399,7 @@ function AppContent() {
     setIsProcessing(true);
 
     try {
+      // Let backend/LLM decide: task planning or direct answer
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -389,11 +408,12 @@ function AppContent() {
 
       const data = await response.json();
       
-      if (data.response && !data.response.includes('```json')) {
+      if (data.response) {
         const assistantMsg = {
           role: 'assistant',
           content: data.response,
-          timestamp: new Date().toLocaleTimeString()
+          timestamp: new Date().toLocaleTimeString(),
+          components: data.execution_result?.components || null
         };
         setMessages(prev => [...prev, assistantMsg]);
       }
@@ -443,10 +463,13 @@ function AppContent() {
       case 'pending':
         if (activeMode === 'tools') {
           return (
-            <div style={{padding: '20px'}}>
-              <h3 style={{color: 'white', marginBottom: '20px'}}>Create Tool</h3>
-              <p style={{color: 'var(--text-secondary)'}}>Use the main interface to create tools</p>
-            </div>
+            <PendingToolsPanel 
+              pendingTools={globalState.pendingTools}
+              onApprove={handleApproveTool}
+              onReject={handleRejectTool}
+              onViewCode={handleViewCode}
+              onRunTests={handleRunToolTests}
+            />
           );
         } else if (activeMode === 'evolution') {
           return <PendingEvolutionsOverlay 
@@ -455,14 +478,7 @@ function AppContent() {
         }
         return null;
       case 'registry':
-        return (
-          <PendingToolsPanel 
-            pendingTools={globalState.pendingTools}
-            onApprove={handleApproveTool}
-            onReject={handleRejectTool}
-            onViewCode={handleViewCode}
-          />
-        );
+        return <ToolRegistryPanel apiUrl={API_URL} />;
       case 'sync':
         return <ToolRegistryPanel apiUrl={API_URL} />;
       case 'observability':
@@ -490,8 +506,8 @@ function AppContent() {
     const titles = {
       logs: 'Activity Logs',
       tasks: 'Active Tasks',
-      pending: activeMode === 'tools' ? 'Create Tool' : 'Pending Evolutions',
-      registry: 'Pending Tools',
+      pending: activeMode === 'tools' ? 'Pending Tools' : 'Pending Evolutions',
+      registry: 'Tool Registry',
       sync: 'Tool Registry',
       quality: 'Quality Dashboard',
       history: 'Evolution History',

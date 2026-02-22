@@ -14,13 +14,29 @@ class EvolutionCodeGenerator:
     def __init__(self, llm_client):
         self.llm = llm_client
     
-    def generate_improved_code(self, current_code: str, proposal: Dict[str, Any]) -> Optional[str]:
+    def generate_improved_code(
+        self, 
+        current_code: str, 
+        proposal: Dict[str, Any],
+        sandbox_error: Optional[str] = None
+    ) -> Optional[str]:
         """Generate improved code preserving structure."""
         
         # Extract class name
         class_name = self._extract_class_name(current_code)
         if not class_name:
             return None
+        
+        # Get service context from dependency checker
+        service_context = self._build_service_context()
+        
+        # Add new service specs if provided
+        new_services_context = ""
+        if proposal.get('new_service_specs'):
+            new_services_context = "\n\nNEW SERVICES TO BE CREATED:\n"
+            for svc_name, svc_spec in proposal['new_service_specs'].items():
+                new_services_context += f"- self.services.{svc_name}: {svc_spec['description']}\n"
+                new_services_context += f"  Methods: {', '.join(svc_spec['methods'])}\n"
         
         # Extract handlers to improve
         handlers = self._extract_handlers(current_code, class_name)
@@ -36,7 +52,9 @@ class EvolutionCodeGenerator:
                 handler_code,
                 handler_name,
                 proposal,
-                class_name
+                class_name,
+                service_context + new_services_context,
+                sandbox_error
             )
             if improved_handler:
                 improved_code = self._replace_handler(
@@ -48,14 +66,45 @@ class EvolutionCodeGenerator:
         
         return improved_code
     
+    def _build_service_context(self) -> str:
+        """Build service context from dependency checker (like spec_generator)."""
+        from core.dependency_checker import DependencyChecker
+        
+        service_specs = {
+            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id)',
+            'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
+            'http': 'get(url), post(url, data), put(url, data), delete(url)',
+            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
+            'json': 'parse(text), stringify(data), query(data, path)',
+            'shell': 'execute(command, args=[])',
+            'logging': 'info(msg), warning(msg), error(msg), debug(msg)',
+            'time': 'now_utc(), now_local(), now_utc_iso(), now_local_iso()',
+            'ids': 'generate(prefix=""), uuid()',
+            'browser': 'open_browser(), navigate(url), get_page_text(), find_element(by, value), take_screenshot(filename), close()'
+        }
+        
+        services_list = []
+        for name, methods in service_specs.items():
+            if name in DependencyChecker.AVAILABLE_SERVICES:
+                services_list.append(f"- self.services.{name}: {methods}")
+        
+        return "\n".join(services_list)
+    
     def _improve_single_handler(
         self,
         handler_code: str,
         handler_name: str,
         proposal: Dict[str, Any],
-        class_name: str
+        class_name: str,
+        service_context: str,
+        sandbox_error: Optional[str] = None
     ) -> Optional[str]:
         """Improve a single handler method."""
+        
+        # Build sandbox error context if this is a retry
+        error_context = ""
+        if sandbox_error:
+            error_context = f"\n\nPREVIOUS ATTEMPT FAILED WITH ERROR:\n{sandbox_error}\n\nFIX THE ERROR ABOVE.\n"
         
         prompt = f"""TASK: Improve this handler method.
 
@@ -70,32 +119,32 @@ IMPROVEMENT PROPOSAL:
 CHANGES TO MAKE:
 {chr(10).join(f"- {c}" for c in proposal['changes'])}
 
-CRITICAL - AVAILABLE SERVICES (ALWAYS use self.services prefix):
-- self.services.llm.generate(prompt, temperature, max_tokens) - Call LLM
-- self.services.storage.save/get/list/find - Store data
-- self.services.http.get/post - HTTP requests
-- self.services.fs.read/write - File operations
-- self.services.json.parse/stringify - JSON operations
-- self.services.time.now_utc() - Timestamps
-- self.services.ids.generate() - Generate IDs
-- self.services.logging.info/warning/error - Log messages
+AVAILABLE SERVICES (use self.services.X):
+{service_context}
+
+ADDITIONAL SERVICE HELPERS:
 - self.services.detect_language(text) - Detect language
 - self.services.extract_key_points(text, style, language) - Extract key points
 - self.services.sentiment_analysis(text, language) - Analyze sentiment
 - self.services.generate_json_output(**kwargs) - Generate JSON
-
-REQUIREMENTS:
+- self.services.call_tool(tool_name, operation, **params) - Call another tool
+{error_context}
+CRITICAL REQUIREMENTS:
 - Keep method name: {handler_name}
 - Keep method signature unchanged
 - Preserve all parameters
-- ALWAYS use self.services.X - NEVER call self.X directly for services
-- Initialize any cache/state attributes in __init__ (use self._cache not self.cache)
+- ALWAYS use self.services.X - NEVER call self.X directly
+- Initialize cache/state in __init__ as self._cache (with underscore)
 - Only improve internal logic using AVAILABLE SERVICES above
+- DO NOT add parameters to service methods beyond what's listed
+- If using NEW SERVICES, they will be created - use exact method signatures shown
 - Add error handling if missing
 - Keep under 20 lines
 - Return plain dict (not ToolResult)
-- DO NOT reference methods that don't exist
-- DO NOT use attributes not initialized in __init__
+- DO NOT add operations that don't exist in original tool
+- DO NOT reference undefined methods or uninitialized attributes
+- DO NOT add imports - use only self.services
+- Wrap network calls (http, browser) in try-except
 
 Return ONLY the improved method definition."""
         

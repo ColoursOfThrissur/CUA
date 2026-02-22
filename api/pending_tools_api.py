@@ -157,6 +157,108 @@ async def approve_tool(tool_id: str):
             "message": f"Tool '{reg_result['tool_name']}' activated successfully"
         }
 
+@router.post("/{tool_id}/test")
+async def test_tool(tool_id: str):
+    """Run LLM-generated tests on pending tool"""
+    if not pending_tools_manager or not tool_registrar:
+        raise HTTPException(status_code=503, detail="System not initialized")
+    
+    tool = pending_tools_manager.get_tool(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    
+    tool_file = tool.get('tool_file')
+    if not tool_file:
+        raise HTTPException(status_code=400, detail="No tool file specified")
+    
+    try:
+        from core.llm_test_orchestrator import LLMTestOrchestrator
+        from planner.llm_client import LLMClient
+        from tools.capability_extractor import CapabilityExtractor
+        from tools.capability_registry import CapabilityRegistry
+        import importlib.util
+        from pathlib import Path
+        
+        # Load tool temporarily
+        tool_path = Path(tool_file)
+        spec = importlib.util.spec_from_file_location("temp_tool", tool_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        # Get tool class
+        tool_name = tool_path.stem
+        class_name = ''.join(p[:1].upper() + p[1:] for p in tool_name.split('_') if p)
+        tool_class = getattr(module, class_name)
+        
+        # Create registry and instantiate
+        from core.tool_orchestrator import ToolOrchestrator
+        registry = CapabilityRegistry()
+        orchestrator = ToolOrchestrator(registry=registry)
+        tool_instance = tool_class(orchestrator=orchestrator)
+        
+        # Register temporarily
+        registry.register_tool(tool_instance)
+        
+        # Get capabilities
+        capabilities = tool_instance.get_capabilities()
+        if not capabilities:
+            raise HTTPException(status_code=400, detail="Tool has no capabilities")
+        
+        # Run LLM tests for each capability
+        llm_client = LLMClient()
+        test_orchestrator = LLMTestOrchestrator(llm_client, registry)
+        
+        all_results = []
+        for cap_name, capability in capabilities.items():
+            cap_dict = {
+                'name': cap_name,
+                'description': getattr(capability, 'description', ''),
+                'parameters': [{
+                    'name': p.name,
+                    'type': p.type.value if hasattr(p.type, 'value') else str(p.type),
+                    'description': getattr(p, 'description', ''),
+                    'required': getattr(p, 'required', True)
+                } for p in getattr(capability, 'parameters', [])],
+                'returns': getattr(capability, 'returns', 'Result')
+            }
+            
+            test_cases = test_orchestrator.generate_test_cases(tool_name, cap_dict)
+            result = test_orchestrator.execute_test_suite(tool_name, cap_name, test_cases)
+            
+            all_results.append({
+                'capability': cap_name,
+                'total_tests': result.total_tests,
+                'passed': result.passed_tests,
+                'failed': result.failed_tests,
+                'quality_score': result.overall_quality_score,
+                'test_results': [{
+                    'test_name': tr.test_name,
+                    'passed': tr.passed,
+                    'execution_time_ms': tr.execution_time_ms,
+                    'error': tr.error,
+                    'quality_score': tr.quality_score
+                } for tr in result.test_results]
+            })
+        
+        overall_passed = sum(r['passed'] for r in all_results)
+        overall_total = sum(r['total_tests'] for r in all_results)
+        overall_quality = sum(r['quality_score'] for r in all_results) / len(all_results) if all_results else 0
+        
+        return {
+            'success': True,
+            'tool_name': tool_name,
+            'overall_quality_score': int(overall_quality),
+            'total_tests': overall_total,
+            'passed_tests': overall_passed,
+            'failed_tests': overall_total - overall_passed,
+            'results_by_capability': all_results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {str(e)}")
+
 @router.post("/{tool_id}/reject")
 async def reject_tool(tool_id: str, request: RejectRequest):
     """Reject and remove pending tool"""

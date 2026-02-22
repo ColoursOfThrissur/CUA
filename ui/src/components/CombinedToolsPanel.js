@@ -5,7 +5,7 @@ import PendingLibrariesPanel from './PendingLibrariesPanel';
 import ToolRegistryPanel from './ToolRegistryPanel';
 import './CombinedToolsPanel.css';
 
-function CombinedToolsPanel({ pendingTools, onApprove, onReject, onViewCode, apiUrl }) {
+function CombinedToolsPanel({ pendingTools, onApprove, onReject, onViewCode, onRunTests, apiUrl }) {
   const [activeSubTab, setActiveSubTab] = useState('pending');
 
   return (
@@ -41,6 +41,7 @@ function CombinedToolsPanel({ pendingTools, onApprove, onReject, onViewCode, api
             onApprove={onApprove}
             onReject={onReject}
             onViewCode={onViewCode}
+            onRunTests={onRunTests}
           />
         )}
         {activeSubTab === 'libraries' && (

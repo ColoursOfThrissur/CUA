@@ -59,9 +59,11 @@ class ToolEvolutionOrchestrator:
                 health_before = analysis.get('health_score', 0)
                 evolution_id = evo_logger.log_run(tool_name, user_prompt, "in_progress", "analysis", None, health_before=health_before)
                 
-                # Store analysis artifact
+                # Store analysis artifact with original code
                 evo_logger.log_artifact(evolution_id, "analysis", "analyze", analysis)
+                evo_logger.log_artifact(evolution_id, "original_code", "analyze", analysis.get('current_code', ''))
                 
+                logger.info(f"[Evolution {evolution_id}] Analysis complete, health: {health_before}")
                 self._log_conversation("ANALYSIS", analysis['summary'])
             except Exception as e:
                 if evolution_id:
@@ -95,101 +97,85 @@ class ToolEvolutionOrchestrator:
                 evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", str(e), health_before=health_before)
                 return False, f"Proposal generation failed: {str(e)}"
             
-            # Step 3: Generate improved code
-            try:
-                code_gen = self._select_generator()
-                
-                improved_code = code_gen.generate_improved_code(
-                    analysis['current_code'],
-                    proposal
-                )
-                if not improved_code:
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "Failed to generate code", confidence, health_before)
-                    return False, "Failed to generate improved code"
-                
-                # Store generated code artifact
-                evo_logger.log_artifact(evolution_id, "code", "generate", improved_code)
-                
-            except Exception as e:
-                evo_logger.log_artifact(evolution_id, "error", "code_generation", {"error": str(e)})
-                evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", str(e), confidence, health_before)
-                return False, f"Code generation failed: {str(e)}"
+            # Step 3-5: Generate, validate, and test with retry on sandbox failure
+            code_gen = self._select_generator()
+            sandbox_error = None
             
-            # Step 3.5: Check dependencies
-            from core.dependency_checker import DependencyChecker
-            dep_checker = DependencyChecker()
-            
-            try:
-                dep_report = dep_checker.check_code(improved_code)
+            for attempt in range(2):
+                try:
+                    # Generate code
+                    improved_code = code_gen.generate_improved_code(
+                        analysis['current_code'],
+                        proposal,
+                        sandbox_error=sandbox_error
+                    )
+                    if not improved_code:
+                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "Failed to generate code", confidence, health_before)
+                        return False, "Failed to generate improved code"
+                    
+                    evo_logger.log_artifact(evolution_id, "improved_code", f"attempt_{attempt+1}", improved_code)
+                    logger.info(f"[Evolution {evolution_id}] Code generated (attempt {attempt+1})")
+                    
+                    # Check dependencies
+                    from core.dependency_checker import DependencyChecker
+                    dep_checker = DependencyChecker()
+                    dep_report = dep_checker.check_code(improved_code)
+                    evo_logger.log_artifact(evolution_id, "dependencies", f"attempt_{attempt+1}", {
+                        "missing_libraries": dep_report.missing_libraries,
+                        "missing_services": dep_report.missing_services
+                    })
+                    if dep_report.has_missing():
+                        proposal['dependencies'] = {
+                            'missing_libraries': dep_report.missing_libraries,
+                            'missing_services': dep_report.missing_services
+                        }
+                    
+                    # Validate
+                    from core.tool_evolution.validator import EvolutionValidator
+                    validator = EvolutionValidator()
+                    is_valid, error = validator.validate(
+                        original_code=analysis['current_code'],
+                        improved_code=improved_code,
+                        proposal=proposal
+                    )
+                    evo_logger.log_artifact(evolution_id, "validation", f"attempt_{attempt+1}", {"is_valid": is_valid, "error": error})
+                    if not is_valid:
+                        evo_logger.log_run(tool_name, user_prompt, "failed", "validation", error, confidence, health_before)
+                        return False, f"Validation failed: {error}"
+                    
+                    self._log_conversation("VALIDATION", "Code validated")
+                    
+                    # Sandbox test
+                    from core.tool_evolution.sandbox_runner import EvolutionSandboxRunner
+                    sandbox = EvolutionSandboxRunner(self.expansion_mode)
+                    sandbox_passed, sandbox_output = sandbox.test_improved_tool(
+                        tool_name,
+                        improved_code,
+                        analysis['tool_path'],
+                        new_service_specs=proposal.get('new_service_specs')
+                    )
+                    evo_logger.log_artifact(evolution_id, "sandbox", f"attempt_{attempt+1}", {
+                        "passed": sandbox_passed,
+                        "output": sandbox_output
+                    })
+                    
+                    if sandbox_passed:
+                        self._log_conversation("SANDBOX", "Sandbox tests passed")
+                        break
+                    else:
+                        sandbox_error = sandbox_output
+                        logger.warning(f"[Evolution {evolution_id}] Sandbox failed (attempt {attempt+1})")
+                        if attempt == 0:
+                            continue
+                        else:
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "sandbox", "Failed after retry", confidence, health_before)
+                            return False, f"Sandbox failed after retry: {sandbox_output}"
                 
-                # Store dependency check artifact
-                evo_logger.log_artifact(evolution_id, "dependencies", "check_deps", {
-                    "missing_libraries": dep_report.missing_libraries,
-                    "missing_services": dep_report.missing_services
-                })
-                
-                if dep_report.has_missing():
-                    self._log_conversation("DEPENDENCIES", f"Missing: {dep_report.missing_libraries + dep_report.missing_services}")
-                    proposal['dependencies'] = {
-                        'missing_libraries': dep_report.missing_libraries,
-                        'missing_services': dep_report.missing_services
-                    }
-            except Exception as e:
-                logger.warning(f"Dependency check failed: {e}")
-            
-            # Step 4: Validate
-            from core.tool_evolution.validator import EvolutionValidator
-            validator = EvolutionValidator()
-            
-            try:
-                is_valid, error = validator.validate(
-                    original_code=analysis['current_code'],
-                    improved_code=improved_code,
-                    proposal=proposal
-                )
-                
-                # Store validation artifact
-                evo_logger.log_artifact(evolution_id, "validation", "validate", {
-                    "is_valid": is_valid,
-                    "error": error
-                })
-                
-                if not is_valid:
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "validation", error, confidence, health_before)
-                    return False, f"Validation failed: {error}"
-                
-                self._log_conversation("VALIDATION", "Code validated successfully")
-            except Exception as e:
-                evo_logger.log_artifact(evolution_id, "error", "validation", {"error": str(e)})
-                evo_logger.log_run(tool_name, user_prompt, "failed", "validation", str(e), confidence, health_before)
-                return False, f"Validation failed: {str(e)}"
-            
-            # Step 5: Sandbox test
-            from core.tool_evolution.sandbox_runner import EvolutionSandboxRunner
-            sandbox = EvolutionSandboxRunner(self.expansion_mode)
-            
-            try:
-                sandbox_passed, sandbox_output = sandbox.test_improved_tool(
-                    tool_name,
-                    improved_code,
-                    analysis['tool_path']
-                )
-                
-                # Store sandbox artifact
-                evo_logger.log_artifact(evolution_id, "sandbox", "test", {
-                    "passed": sandbox_passed,
-                    "output": sandbox_output
-                })
-                
-                if not sandbox_passed:
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "sandbox", "Sandbox tests failed", confidence, health_before)
-                    return False, "Sandbox testing failed"
-                
-                self._log_conversation("SANDBOX", "Sandbox tests passed")
-            except Exception as e:
-                evo_logger.log_artifact(evolution_id, "error", "sandbox", {"error": str(e)})
-                evo_logger.log_run(tool_name, user_prompt, "failed", "sandbox", str(e), confidence, health_before)
-                return False, f"Sandbox testing failed: {str(e)}"
+                except Exception as e:
+                    evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": str(e)})
+                    if attempt == 1:
+                        evo_logger.log_run(tool_name, user_prompt, "failed", "generation", str(e), confidence, health_before)
+                        return False, f"Generation failed: {str(e)}"
             
             # Step 6: Send to pending approval
             try:
@@ -204,8 +190,10 @@ class ToolEvolutionOrchestrator:
                 if success:
                     self._log_conversation("COMPLETE", f"Evolution ready for approval: {tool_name}")
                     evo_logger.log_run(tool_name, user_prompt, "success", "complete", None, confidence, health_before)
+                    logger.info(f"[Evolution {evolution_id}] Complete - pending approval")
                 else:
                     evo_logger.log_run(tool_name, user_prompt, "failed", "pending", msg, confidence, health_before)
+                    logger.error(f"[Evolution {evolution_id}] Failed to create pending: {msg}")
                 
                 return success, msg
             except Exception as e:
@@ -214,12 +202,28 @@ class ToolEvolutionOrchestrator:
                 return False, f"Failed to create pending evolution: {str(e)}"
     
     def _select_generator(self):
-        """Select generator based on model (like tool creation)."""
+        """Select generator based on model (matches creation pattern)."""
         from pathlib import Path
         import json
         from core.tool_evolution.code_generator import EvolutionCodeGenerator
         
-        # For now, single generator (can add Qwen-specific later if needed)
+        # Check model capabilities config
+        config_path = Path("config/model_capabilities.json")
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    capabilities = json.load(f)
+                    model = str(getattr(self.llm_client, "model", "")).lower()
+                    
+                    # Match model pattern
+                    for pattern, config in capabilities.items():
+                        if pattern in model:
+                            logger.info(f"Using {config['strategy']} strategy for {model}")
+                            break
+            except Exception as e:
+                logger.warning(f"Failed to load model capabilities: {e}")
+        
+        # Single generator for now (can add Qwen-specific later)
         return EvolutionCodeGenerator(self.llm_client)
     
     def _create_pending_evolution(self, tool_name, improved_code, proposal, analysis, evolution_id):
@@ -236,7 +240,13 @@ class ToolEvolutionOrchestrator:
             "health_before": analysis.get('health_score', 0),
             "conversation_log": self.conversation_log,
             "status": "pending_approval",
-            "evolution_id": evolution_id  # Link to observability
+            "evolution_id": evolution_id,
+            "code_size": len(improved_code),
+            "capabilities_count": len(analysis.get('capabilities', [])),
+            "required_services": proposal.get('required_services', []),
+            "required_libraries": proposal.get('required_libraries', []),
+            "new_service_specs": proposal.get('new_service_specs', {}),
+            "service_descriptions": proposal.get('service_descriptions', {})
         }
         
         manager.add_pending_evolution(tool_name, evolution_data)
@@ -254,3 +264,8 @@ class ToolEvolutionOrchestrator:
     def get_conversation_log(self):
         """Get conversation log for UI display."""
         return self.conversation_log
+    
+    def _cleanup_failed_evolution(self, tool_name: str):
+        """Cleanup artifacts if evolution fails (matches creation pattern)."""
+        # Evolution doesn't create files until approval, so just log
+        logger.info(f"Evolution failed for {tool_name}, no cleanup needed (pending approval system)")

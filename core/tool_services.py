@@ -15,6 +15,82 @@ from core.services.json_service import JSONService
 from core.services.shell_service import ShellService
 
 
+class BrowserService:
+    """Browser automation service using Selenium with Brave."""
+    
+    def __init__(self):
+        self.driver = None
+        self.brave_path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+    
+    def is_available(self) -> bool:
+        """Check if Brave browser is available."""
+        from pathlib import Path
+        return Path(self.brave_path).exists()
+    
+    def open_browser(self):
+        """Open Brave browser."""
+        if self.driver:
+            return self.driver
+        
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            
+            options = Options()
+            options.binary_location = self.brave_path
+            options.add_argument('--start-maximized')
+            options.add_argument('--ignore-certificate-errors')
+            options.add_argument('--ignore-ssl-errors')
+            
+            self.driver = webdriver.Chrome(options=options)
+            return self.driver
+        except Exception as e:
+            raise RuntimeError(f"Failed to open browser: {e}")
+    
+    def navigate(self, url: str):
+        """Navigate to URL."""
+        if not self.driver:
+            self.open_browser()
+        self.driver.get(url)
+    
+    def find_element(self, by: str, value: str):
+        """Find element on page."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        from selenium.webdriver.common.by import By
+        by_map = {
+            'id': By.ID,
+            'name': By.NAME,
+            'xpath': By.XPATH,
+            'css': By.CSS_SELECTOR,
+            'class': By.CLASS_NAME
+        }
+        return self.driver.find_element(by_map.get(by, By.CSS_SELECTOR), value)
+    
+    def get_page_text(self) -> str:
+        """Get visible text from page."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        return self.driver.find_element('tag name', 'body').text
+    
+    def take_screenshot(self, filename: str) -> str:
+        """Take screenshot and save to file."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        from pathlib import Path
+        Path("output").mkdir(exist_ok=True)
+        filepath = f"output/{filename}"
+        self.driver.save_screenshot(filepath)
+        return filepath
+    
+    def close(self):
+        """Close browser."""
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+
+
 class StorageService:
     """Simple storage interface for tools - auto-scoped to tool name."""
     
@@ -25,11 +101,26 @@ class StorageService:
     
     def save(self, item_id: str, data: dict) -> dict:
         """Save data with automatic timestamp."""
+        # Auto-wrap non-dict data for convenience
         if not isinstance(data, dict):
-            raise ValueError("Data must be a dictionary")
+            if isinstance(data, (str, int, float, bool, list, bytes)):
+                # Convert bytes to base64 string for JSON storage
+                if isinstance(data, bytes):
+                    import base64
+                    data = {"value": base64.b64encode(data).decode('utf-8'), "type": "bytes"}
+                else:
+                    data = {"value": data}
+            else:
+                # Log what type we got for debugging
+                import logging
+                logging.error(f"StorageService.save received unsupported type: {type(data).__name__} - {data}")
+                raise ValueError(f"Data must be a dictionary or simple type (str/int/float/bool/list/bytes), got {type(data).__name__}")
+        
+        # Convert datetime objects to ISO strings for JSON serialization
+        data = self._serialize_datetimes(data)
         
         # Add timestamps if not present
-        now = TimeService.now_utc()
+        now = TimeService.now_utc_iso()
         if "created_at_utc" not in data:
             data["created_at_utc"] = now
         data["updated_at_utc"] = now
@@ -92,7 +183,7 @@ class StorageService:
         """Update existing item with partial data."""
         data = self.get(item_id)
         data.update(updates)
-        data["updated_at_utc"] = TimeService.now_utc()
+        data["updated_at_utc"] = TimeService.now_utc_iso()
         return self.save(item_id, data)
     
     def delete(self, item_id: str) -> bool:
@@ -112,18 +203,38 @@ class StorageService:
     def _safe_id(item_id: str) -> str:
         """Sanitize ID for filesystem."""
         return item_id.strip().replace("/", "_").replace("\\", "_")
+    
+    def _serialize_datetimes(self, data):
+        """Recursively convert datetime objects to ISO strings."""
+        if isinstance(data, datetime):
+            return data.isoformat()
+        elif isinstance(data, dict):
+            return {k: self._serialize_datetimes(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._serialize_datetimes(item) for item in data]
+        return data
 
 
 class TimeService:
     """Time and timestamp utilities."""
     
     @staticmethod
-    def now_utc() -> str:
+    def now_utc() -> datetime:
+        """Get current UTC datetime object."""
+        return datetime.now(timezone.utc)
+    
+    @staticmethod
+    def now_local() -> datetime:
+        """Get current local datetime object."""
+        return datetime.now()
+    
+    @staticmethod
+    def now_utc_iso() -> str:
         """Get current UTC timestamp in ISO format."""
         return datetime.now(timezone.utc).isoformat()
     
     @staticmethod
-    def now_local() -> str:
+    def now_local_iso() -> str:
         """Get current local timestamp in ISO format."""
         return datetime.now().isoformat()
 
@@ -182,6 +293,7 @@ class ToolServices:
         self.shell = ShellService()
         self.fs = FileSystemService(allowed_roots or [".", "data", "output"])
         self.logging = LoggingService(tool_name)
+        self.browser = BrowserService()
         self.orchestrator = orchestrator
         self.registry = registry
     

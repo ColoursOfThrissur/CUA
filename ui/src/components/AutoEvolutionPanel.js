@@ -35,10 +35,13 @@ const AutoEvolutionPanel = ({ onClose }) => {
       setScanProgress(data.scan_progress);
       if (data.config) setConfig(data.config);
       
-      if (data.running || data.scanning) {
+      // Always fetch queue to show items even when not running
+      try {
         const queueRes = await fetch('http://localhost:8000/auto-evolution/queue');
         const queueData = await queueRes.json();
         setQueue(queueData.queue || []);
+      } catch (err) {
+        // Queue fetch failed, keep existing queue
       }
     } catch (err) {
       console.error('Failed to fetch status:', err);

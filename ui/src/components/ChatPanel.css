@@ -250,3 +250,25 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.progress-message {
+  opacity: 0.8;
+}
+
+.progress-message .message-text {
+  background: color-mix(in srgb, var(--mode-color) 10%, transparent);
+  border-left: 3px solid var(--mode-color);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.progress-indicator {
+  display: inline-block;
+  margin-right: 0.5rem;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
