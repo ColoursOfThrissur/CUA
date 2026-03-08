@@ -16,11 +16,26 @@ from core.services.shell_service import ShellService
 
 
 class BrowserService:
-    """Browser automation service using Selenium with Brave."""
+    """Browser automation service using Selenium with Brave (Singleton)."""
+    
+    _instance = None
+    _driver = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        self.driver = None
         self.brave_path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+    
+    @property
+    def driver(self):
+        return BrowserService._driver
+    
+    @driver.setter
+    def driver(self, value):
+        BrowserService._driver = value
     
     def is_available(self) -> bool:
         """Check if Brave browser is available."""
@@ -52,7 +67,16 @@ class BrowserService:
         """Navigate to URL."""
         if not self.driver:
             self.open_browser()
-        self.driver.get(url)
+        try:
+            self.driver.get(url)
+        except Exception as e:
+            # Session lost, reopen browser
+            if 'invalid session id' in str(e).lower():
+                self.driver = None
+                self.open_browser()
+                self.driver.get(url)
+            else:
+                raise
     
     def find_element(self, by: str, value: str):
         """Find element on page."""
@@ -66,13 +90,24 @@ class BrowserService:
             'css': By.CSS_SELECTOR,
             'class': By.CLASS_NAME
         }
-        return self.driver.find_element(by_map.get(by, By.CSS_SELECTOR), value)
+        try:
+            return self.driver.find_element(by_map.get(by, By.CSS_SELECTOR), value)
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost. Please open browser again.")
+            raise
     
     def get_page_text(self) -> str:
         """Get visible text from page."""
         if not self.driver:
             raise RuntimeError("Browser not open")
-        return self.driver.find_element('tag name', 'body').text
+        try:
+            from selenium.webdriver.common.by import By
+            return self.driver.find_element(By.TAG_NAME, 'body').text
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost. Please open browser again.")
+            raise
     
     def take_screenshot(self, filename: str) -> str:
         """Take screenshot and save to file."""

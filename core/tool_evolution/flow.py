@@ -109,12 +109,31 @@ class ToolEvolutionOrchestrator:
                         proposal,
                         sandbox_error=sandbox_error
                     )
-                    if not improved_code:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "Failed to generate code", confidence, health_before)
-                        return False, "Failed to generate improved code"
+                    
+                    # Validate generated code
+                    if not improved_code or not improved_code.strip():
+                        evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": "Empty code"})
+                        if attempt == 1:
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "Empty code", confidence, health_before)
+                            return False, "Failed to generate improved code: empty output"
+                        continue
+                    
+                    if len(improved_code) < 100:
+                        evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": f"Code too short: {len(improved_code)}"})
+                        if attempt == 1:
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", f"Code too short: {len(improved_code)}", confidence, health_before)
+                            return False, "Failed to generate improved code: too short"
+                        continue
+                    
+                    if 'class ' not in improved_code:
+                        evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": "No class definition"})
+                        if attempt == 1:
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "No class definition", confidence, health_before)
+                            return False, "Failed to generate improved code: no class"
+                        continue
                     
                     evo_logger.log_artifact(evolution_id, "improved_code", f"attempt_{attempt+1}", improved_code)
-                    logger.info(f"[Evolution {evolution_id}] Code generated (attempt {attempt+1})")
+                    logger.info(f"[Evolution {evolution_id}] Code generated (attempt {attempt+1}), length: {len(improved_code)}")
                     
                     # Check dependencies
                     from core.dependency_checker import DependencyChecker
@@ -152,7 +171,8 @@ class ToolEvolutionOrchestrator:
                         tool_name,
                         improved_code,
                         analysis['tool_path'],
-                        new_service_specs=proposal.get('new_service_specs')
+                        new_service_specs=proposal.get('new_service_specs'),
+                        network_only=proposal.get('network_only', False)
                     )
                     evo_logger.log_artifact(evolution_id, "sandbox", f"attempt_{attempt+1}", {
                         "passed": sandbox_passed,
@@ -173,9 +193,11 @@ class ToolEvolutionOrchestrator:
                 
                 except Exception as e:
                     evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": str(e)})
+                    logger.error(f"[Evolution {evolution_id}] Generation error (attempt {attempt+1}): {e}")
                     if attempt == 1:
                         evo_logger.log_run(tool_name, user_prompt, "failed", "generation", str(e), confidence, health_before)
                         return False, f"Generation failed: {str(e)}"
+                    continue
             
             # Step 6: Send to pending approval
             try:
@@ -232,6 +254,9 @@ class ToolEvolutionOrchestrator:
         
         manager = PendingEvolutionsManager()
         
+        # Create backup of original file before any changes
+        backup_path = self._create_backup(tool_name, analysis['tool_path'])
+        
         evolution_data = {
             "tool_name": tool_name,
             "original_code": analysis['current_code'],
@@ -246,12 +271,83 @@ class ToolEvolutionOrchestrator:
             "required_services": proposal.get('required_services', []),
             "required_libraries": proposal.get('required_libraries', []),
             "new_service_specs": proposal.get('new_service_specs', {}),
-            "service_descriptions": proposal.get('service_descriptions', {})
+            "service_descriptions": proposal.get('service_descriptions', {}),
+            "backup_path": backup_path,  # Store backup location
+            "tool_path": analysis['tool_path']
         }
         
         manager.add_pending_evolution(tool_name, evolution_data)
         
         return True, f"Evolution pending approval: {tool_name}"
+    
+    def _create_backup(self, tool_name: str, tool_path: str) -> Optional[str]:
+        """Create backup of original tool file."""
+        try:
+            from pathlib import Path
+            import shutil
+            from datetime import datetime
+            
+            tool_file = Path(tool_path)
+            if not tool_file.exists():
+                logger.warning(f"Tool file not found for backup: {tool_path}")
+                return None
+            
+            # Create backups directory
+            backup_dir = Path("data/tool_backups")
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create timestamped backup
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"{tool_name}_{timestamp}.py.bak"
+            backup_path = backup_dir / backup_name
+            
+            shutil.copy2(tool_file, backup_path)
+            logger.info(f"Created backup: {backup_path}")
+            
+            return str(backup_path)
+        except Exception as e:
+            logger.error(f"Failed to create backup for {tool_name}: {e}")
+            return None
+    
+    def rollback_evolution(self, tool_name: str, backup_path: str) -> Tuple[bool, str]:
+        """Rollback tool to backup version."""
+        try:
+            from pathlib import Path
+            import shutil
+            
+            backup_file = Path(backup_path)
+            if not backup_file.exists():
+                return False, f"Backup file not found: {backup_path}"
+            
+            # Find tool file
+            tool_file = self._find_tool_file(tool_name)
+            if not tool_file:
+                return False, f"Tool file not found: {tool_name}"
+            
+            # Restore from backup
+            shutil.copy2(backup_file, tool_file)
+            logger.info(f"Rolled back {tool_name} from {backup_path}")
+            
+            return True, f"Successfully rolled back {tool_name}"
+        except Exception as e:
+            logger.error(f"Rollback failed for {tool_name}: {e}")
+            return False, f"Rollback failed: {str(e)}"
+    
+    def _find_tool_file(self, tool_name: str) -> Optional[Path]:
+        """Find tool file path."""
+        from pathlib import Path
+        
+        # Check experimental directory
+        exp_path = Path("tools/experimental") / f"{tool_name}.py"
+        if exp_path.exists():
+            return exp_path
+        
+        # Check core tools
+        core_path = Path("tools") / f"{tool_name.lower()}.py"
+        if core_path.exists():
+            return core_path
+        
+        return None
     
     def _log_conversation(self, step: str, message: str):
         """Log conversation for user visibility."""
@@ -260,6 +356,11 @@ class ToolEvolutionOrchestrator:
             "message": message
         })
         logger.info(f"[{step}] {message}")
+        
+        # Broadcast trace event
+        from api.trace_ws import broadcast_trace_sync
+        status = "in_progress" if step not in ["COMPLETE", "VALIDATION", "SANDBOX"] else "success"
+        broadcast_trace_sync("evolution", f"{step}: {message}", status)
     
     def get_conversation_log(self):
         """Get conversation log for UI display."""

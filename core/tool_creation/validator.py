@@ -22,17 +22,18 @@ class ToolValidator:
         # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
         is_valid, error = self.enhanced_validator.validate(code, expected_class)
         if not is_valid:
-            return False, f"Enhanced validation: {error}"
+            return False, self._format_error("Enhanced validation", error, code)
         
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
-            return False, f"line {e.lineno}: {e.msg}"
+            return False, self._format_error("Syntax error", f"line {e.lineno}: {e.msg}", code, e.lineno)
         except Exception as e:
-            return False, str(e)
+            return False, self._format_error("Parse error", str(e), code)
+        
         target_class = self._find_class(tree, expected_class)
         if not target_class:
-            return False, f"Expected class '{expected_class}' not found"
+            return False, self._format_error("Class not found", f"Expected class '{expected_class}' not found", code)
         
         # Get all methods
         methods = {n.name: n for n in target_class.body if isinstance(n, ast.FunctionDef)}
@@ -40,57 +41,57 @@ class ToolValidator:
         # Validate required methods exist
         register_method = methods.get("register_capabilities")
         if not register_method:
-            return False, "register_capabilities() missing"
+            return False, self._format_error("Missing method", "register_capabilities() missing", code)
         execute_method = methods.get("execute")
         if not execute_method:
-            return False, "execute() missing"
+            return False, self._format_error("Missing method", "execute() missing", code)
         
         # Validate execute signature
         error = self._validate_execute_signature(execute_method)
         if error:
-            return False, error
+            return False, self._format_error("Execute signature", error, code, execute_method.lineno)
         
         # Validate capabilities registration
         error = self._validate_capabilities_registration(register_method, target_class, methods)
         if error:
-            return False, error
+            return False, self._format_error("Capability registration", error, code, register_method.lineno)
         
         # Validate parameters and capabilities
         error = self._validate_parameters_and_capabilities(register_method)
         if error:
-            return False, error
+            return False, self._format_error("Parameter validation", error, code, register_method.lineno)
         
         # Validate __init__ accepts orchestrator
         init_method = methods.get("__init__")
         if init_method:
             init_params = [arg.arg for arg in init_method.args.args]
             if "orchestrator" not in init_params:
-                return False, "__init__ must accept 'orchestrator' parameter"
+                return False, self._format_error("Init signature", "__init__ must accept 'orchestrator' parameter", code, init_method.lineno)
         
         # Validate no mutable default arguments
         error = self._validate_no_mutable_defaults(target_class)
         if error:
-            return False, error
+            return False, self._format_error("Mutable defaults", error, code)
         
         # Validate no ./ paths
         error = self._validate_no_relative_paths(target_class)
         if error:
-            return False, error
+            return False, self._format_error("Relative paths", error, code)
         
         # Validate no undefined helper calls
         error = self._validate_no_undefined_helpers(target_class)
         if error:
-            return False, error
+            return False, self._format_error("Undefined helpers", error, code)
         
         # Validate imports
         error = self._validate_imports(tree)
         if error:
-            return False, error
+            return False, self._format_error("Missing imports", error, code)
         
         # Validate isinstance usage
         error = self._validate_isinstance_usage(target_class)
         if error:
-            return False, error
+            return False, self._format_error("Isinstance usage", error, code)
         
         return True, ""
     
@@ -352,6 +353,45 @@ class ToolValidator:
                 return node
         return None
 
+    
+    def _format_error(self, category: str, message: str, code: str, line_num: int = None) -> str:
+        """Format validation error with code snippet and fix suggestion"""
+        lines = code.split('\n')
+        
+        # Build error message
+        parts = [f"[{category}] {message}"]
+        
+        # Add line number if available
+        if line_num and 1 <= line_num <= len(lines):
+            parts.append(f"\nLine {line_num}:")
+            # Show 2 lines before and after for context
+            start = max(0, line_num - 3)
+            end = min(len(lines), line_num + 2)
+            for i in range(start, end):
+                prefix = ">>> " if i == line_num - 1 else "    "
+                parts.append(f"{prefix}{i+1:4d} | {lines[i]}")
+        
+        # Add fix suggestion based on category
+        fix = self._get_fix_suggestion(category, message)
+        if fix:
+            parts.append(f"\nFix: {fix}")
+        
+        return '\n'.join(parts)
+    
+    def _get_fix_suggestion(self, category: str, message: str) -> str:
+        """Get fix suggestion based on error category"""
+        suggestions = {
+            "Missing method": "Add the required method to your class",
+            "Execute signature": "Change execute signature to: def execute(self, operation: str, **kwargs)",
+            "Init signature": "Change __init__ signature to: def __init__(self, orchestrator=None)",
+            "Capability registration": "Use self.add_capability(capability, handler_method)",
+            "Parameter validation": "Check Parameter() objects have required fields: name, type, description, required",
+            "Missing imports": "Add missing import at top of file",
+            "Mutable defaults": "Replace mutable default with None, then assign in method body",
+            "Relative paths": "Use absolute paths like 'data/tool_name/' instead of './'",
+            "Undefined helpers": "Define the helper method or remove the call",
+        }
+        return suggestions.get(category, "Review the error and fix the code")
     
     def _class_name(self, tool_name: str) -> str:
         """Convert tool_name to ClassName"""

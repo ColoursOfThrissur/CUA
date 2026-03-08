@@ -5,9 +5,9 @@ import traceback
 import re
 from pathlib import Path
 from typing import Optional, Dict, Any
-import logging
+from core.sqlite_logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("sandbox_runner")
 
 
 class EvolutionSandboxRunner:
@@ -21,11 +21,23 @@ class EvolutionSandboxRunner:
         tool_name: str,
         improved_code: str,
         original_path: str,
-        new_service_specs: Optional[Dict[str, Any]] = None
+        new_service_specs: Optional[Dict[str, Any]] = None,
+        network_only: bool = False
     ) -> tuple[bool, str]:
         """Test improved tool in isolated environment. Returns (success, output)."""
         
         output_lines = []
+        
+        # Check for missing dependencies
+        missing_deps = self._check_dependencies(improved_code, new_service_specs)
+        if missing_deps['libraries'] or missing_deps['services']:
+            output_lines.append("⚠ MISSING DEPENDENCIES DETECTED:")
+            if missing_deps['libraries']:
+                output_lines.append(f"  Libraries: {', '.join(missing_deps['libraries'])}")
+            if missing_deps['services']:
+                output_lines.append(f"  Services: {', '.join(missing_deps['services'])}")
+            output_lines.append("  These must be resolved before deployment")
+            return False, "\n".join(output_lines)
         
         # Check for new services
         if new_service_specs:
@@ -147,35 +159,65 @@ class EvolutionSandboxRunner:
                 return False
             except Exception as e:
                 error_msg = str(e)
-                # Ignore network/browser errors in sandbox
-                if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element']):
-                    logger.warning(f"Sandbox: Ignoring network/browser error for '{op}': {error_msg}")
+                # Only skip specific network/browser errors that are expected in sandbox
+                skip_patterns = [
+                    'ssl', 'certificate', 'tls',  # SSL/TLS errors
+                    'connection refused', 'connection reset', 'connection timeout',  # Connection errors
+                    'network is unreachable', 'no route to host',  # Network errors
+                    'browser not open', 'browser is not initialized',  # Browser state errors
+                    'no such element', 'element not found', 'stale element'  # Element errors
+                ]
+                if any(pattern in error_msg.lower() for pattern in skip_patterns):
+                    logger.warning(f"Sandbox: Skipping expected network/browser error for '{op}': {error_msg}")
                     skipped_count += 1
                     continue
                 
+                # Real errors should fail
                 logger.error(f"Exception during '{op}': {error_msg}")
                 output_lines.append(f"✗ Operation '{op}' failed: {error_msg}")
                 return False
             
             if not result.success:
                 error_msg = result.error
-                # Ignore network/browser errors in sandbox
-                if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element']):
-                    logger.warning(f"Sandbox: Ignoring network/browser error for '{op}': {error_msg}")
+                # Only skip specific network/browser errors that are expected in sandbox
+                skip_patterns = [
+                    'ssl', 'certificate', 'tls',  # SSL/TLS errors
+                    'connection refused', 'connection reset', 'connection timeout',  # Connection errors
+                    'network is unreachable', 'no route to host',  # Network errors
+                    'browser not open', 'browser is not initialized',  # Browser state errors
+                    'no such element', 'element not found', 'stale element'  # Element errors
+                ]
+                if any(pattern in error_msg.lower() for pattern in skip_patterns):
+                    logger.warning(f"Sandbox: Skipping expected network/browser error for '{op}': {error_msg}")
                     skipped_count += 1
                     continue
                 
+                # Real errors should fail
                 logger.error(f"Operation '{op}' failed: {error_msg}")
                 output_lines.append(f"✗ Operation '{op}' failed: {error_msg}")
                 return False
             
             success_count += 1
         
-        # If all operations were skipped (network-dependent tool), still pass
-        if skipped_count > 0 and success_count == 0:
-            logger.warning(f"All {skipped_count} operations skipped (network-dependent tool)")
-            output_lines.append(f"⚠ All operations skipped (network-dependent tool) - will validate after deployment")
-            return True
+        # CRITICAL: Require at least 1 successful operation
+        # If all operations skipped with no successes, this is a failure
+        if success_count == 0:
+            if skipped_count > 0:
+                # Check if tool is explicitly marked as network-only
+                if network_only:
+                    logger.warning(f"All {skipped_count} operations skipped (network-only tool)")
+                    output_lines.append(f"⚠ Network-only tool - all operations skipped in sandbox")
+                    output_lines.append(f"⚠ Manual testing required after deployment")
+                    return True
+                else:
+                    logger.error(f"All {skipped_count} operations skipped but tool not marked network-only")
+                    output_lines.append(f"✗ All operations skipped - no successful execution paths")
+                    output_lines.append(f"✗ Tool may be broken or requires network access")
+                    return False
+            else:
+                logger.error("No operations succeeded")
+                output_lines.append(f"✗ No successful operations")
+                return False
         
         output_lines.append(f"✓ Smoke tests passed ({success_count} operations succeeded, {skipped_count} skipped)")
         logger.info(f"Sandbox validation passed ({success_count} operations succeeded, {skipped_count} skipped)")
@@ -211,7 +253,7 @@ class EvolutionSandboxRunner:
                     params[name] = 3 if "priority" not in name_lower else 2
                 elif p_type == ParameterType.STRING:
                     if "url" in name_lower:
-                        params[name] = "https://example.com"
+                        params[name] = "https://webscraper.io/test-sites/e-commerce/allinone"
                     elif "query" in name_lower:
                         params[name] = "demo query"
                     else:
@@ -228,6 +270,26 @@ class EvolutionSandboxRunner:
                     params[name] = f"demo_{name}"
         
         return params
+    
+    def _check_dependencies(self, code: str, new_service_specs: Optional[Dict[str, Any]]) -> Dict[str, list]:
+        """Check for missing dependencies in code."""
+        from core.dependency_checker import DependencyChecker
+        
+        checker = DependencyChecker()
+        report = checker.check_code(code)
+        
+        missing = {
+            'libraries': report.missing_libraries,
+            'services': []
+        }
+        
+        # Filter out services that will be created
+        pending_service_names = set(new_service_specs.keys()) if new_service_specs else set()
+        for svc in report.missing_services:
+            if svc not in pending_service_names:
+                missing['services'].append(svc)
+        
+        return missing
     
     def _extract_class_name(self, code: str) -> Optional[str]:
         """Extract class name from code."""

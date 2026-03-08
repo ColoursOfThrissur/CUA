@@ -47,10 +47,20 @@ class ExecutionState:
 class ExecutionEngine:
     """Executes multi-step plans with error recovery."""
     
-    def __init__(self, tool_registry, execution_logger=None):
+    def __init__(self, tool_registry, tool_orchestrator=None, execution_logger=None):
         self.tool_registry = tool_registry
+        self.tool_orchestrator = tool_orchestrator
         self.execution_logger = execution_logger
         self.active_executions: Dict[str, ExecutionState] = {}
+        
+        # Initialize error recovery
+        from core.error_recovery import ErrorRecovery, RecoveryConfig, RecoveryStrategy
+        self.error_recovery = ErrorRecovery(RecoveryConfig(
+            max_retries=3,
+            initial_delay=1.0,
+            backoff_factor=2.0,
+            strategy=RecoveryStrategy.RETRY
+        ))
     
     def execute_plan(
         self,
@@ -145,29 +155,60 @@ class ExecutionEngine:
         except Exception as e:
             result.status = StepStatus.FAILED
             result.error = f"Parameter resolution failed: {e}"
+            logger.error(f"Parameter resolution error for {step.step_id}: {e}")
             return result
         
-        # Execute with retries
+        # Get tool instance
+        tool = None
+        for tool_instance in getattr(self.tool_registry, 'tools', []):
+            if tool_instance.__class__.__name__ == step.tool_name:
+                tool = tool_instance
+                break
+        
+        if not tool:
+            result.status = StepStatus.FAILED
+            result.error = f"Tool not found: {step.tool_name}"
+            return result
+        
+        # Execute with retries using orchestrator if available
         last_error = None
         for attempt in range(step.max_retries if step.retry_on_failure else 1):
             try:
-                # Execute tool operation via registry (proper orchestrator usage)
-                tool_result = self.tool_registry.execute_capability(
-                    step.operation,
-                    **resolved_params
-                )
-                
-                # Check result
-                if tool_result.status.value == "success":
-                    result.status = StepStatus.COMPLETED
-                    result.output = tool_result.data
-                    result.retry_count = attempt
-                    break
+                # Use orchestrator if available for consistent execution
+                if self.tool_orchestrator:
+                    orchestrated_result = self.tool_orchestrator.execute_tool_step(
+                        tool=tool,
+                        tool_name=step.tool_name,
+                        operation=step.operation,
+                        parameters=resolved_params
+                    )
+                    
+                    if orchestrated_result.success:
+                        result.status = StepStatus.COMPLETED
+                        result.output = orchestrated_result.data
+                        result.retry_count = attempt
+                        break
+                    else:
+                        last_error = orchestrated_result.error
                 else:
-                    last_error = tool_result.error_message
-                    if attempt < step.max_retries - 1:
-                        logger.warning(f"Step {step.step_id} attempt {attempt + 1} failed, retrying...")
-                        time.sleep(1)  # Brief delay before retry
+                    # Fallback to direct registry execution
+                    tool_result = self.tool_registry.execute_capability(
+                        step.operation,
+                        **resolved_params
+                    )
+                    
+                    # Check result
+                    if tool_result.status.value == "success":
+                        result.status = StepStatus.COMPLETED
+                        result.output = tool_result.data
+                        result.retry_count = attempt
+                        break
+                    else:
+                        last_error = tool_result.error_message
+                
+                if attempt < step.max_retries - 1:
+                    logger.warning(f"Step {step.step_id} attempt {attempt + 1} failed, retrying...")
+                    time.sleep(1)  # Brief delay before retry
                     
             except Exception as e:
                 last_error = str(e)
@@ -197,40 +238,41 @@ class ExecutionEngine:
         return result
     
     def _resolve_parameters(self, params: Dict[str, Any], state: ExecutionState) -> Dict[str, Any]:
-        """Resolve parameters that reference previous step outputs."""
+        """Resolve parameters that reference previous step outputs with validation."""
+        import re
         resolved = {}
         
         for key, value in params.items():
-            # Check if value references a previous step output
-            if isinstance(value, str) and value.startswith("$step."):
-                # Format: $step.step_id.output_field
-                parts = value.split(".")
-                if len(parts) >= 2:
-                    step_id = parts[1]
+            # Handle {{step_X}}, ${step_X}, $step.step_X formats
+            if isinstance(value, str):
+                # Check for {{step_X_output}}, {{step_X.field}}, ${step_X.field} formats
+                template_match = re.match(r'[\{\$]\{?(step_\d+)(?:[_\.]?(\w+))?\}?\}?', value)
+                if template_match:
+                    step_id = template_match.group(1)
+                    field = template_match.group(2)
                     
                     if step_id not in state.step_results:
                         raise ValueError(f"Referenced step not found: {step_id}")
                     
                     step_result = state.step_results[step_id]
                     if step_result.status != StepStatus.COMPLETED:
-                        raise ValueError(f"Referenced step not completed: {step_id}")
+                        raise ValueError(f"Referenced step not completed: {step_id} (status: {step_result.status.value})")
                     
-                    # Get output
                     output = step_result.output
                     
-                    # Navigate to nested field if specified
-                    if len(parts) > 2:
-                        for field in parts[2:]:
-                            if isinstance(output, dict):
-                                output = output.get(field)
-                            else:
-                                raise ValueError(f"Cannot access field {field} in output")
-                    
-                    resolved[key] = output
-                else:
-                    resolved[key] = value
-            else:
-                resolved[key] = value
+                    # Get field from output or use entire output
+                    if field and isinstance(output, dict) and field in output:
+                        resolved[key] = output[field]
+                    elif field in ['output', 'expected_output'] or not field:
+                        # Use entire output if 'output'/'expected_output' requested or no field specified
+                        resolved[key] = output
+                    elif isinstance(output, dict):
+                        raise ValueError(f"Field '{field}' not found in {step_id} output. Available: {list(output.keys())}")
+                    else:
+                        resolved[key] = output
+                    continue
+            
+            resolved[key] = value
         
         return resolved
     

@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import { API_URL, WS_URL } from './config';
 import { GlobalStateProvider, useGlobalState } from './GlobalState';
 import { ToastProvider, useToast } from './components/Toast';
+import ErrorBoundary from './components/ErrorBoundary';
 import Header from './components/Header';
 import ModeTabBar from './components/ModeTabBar';
 import MainCanvas from './components/MainCanvas';
@@ -21,7 +22,8 @@ import ApprovalNotification from './components/ApprovalNotification';
 import ObservabilityOverlay from './components/ObservabilityOverlay';
 import ObservabilityPage from './components/ObservabilityPage';
 import ToolsManagementPage from './components/ToolsManagementPage';
-import ErrorBoundary from './components/ErrorBoundary';
+import SessionManagement from './components/SessionManagement';
+import TraceOverlay from './components/TraceOverlay';
 import './styles/variables.css';
 import './styles/theme.css';
 import './App.css';
@@ -69,6 +71,13 @@ function AppContent() {
         setCurrentModel(data.current_model || 'mistral:latest');
       })
       .catch(err => console.error('Failed to load models:', err));
+    
+    // Listen for overlay open events from Header
+    const handleOpenOverlay = (e) => {
+      setOverlayOpen(e.detail);
+    };
+    window.addEventListener('openOverlay', handleOpenOverlay);
+    return () => window.removeEventListener('openOverlay', handleOpenOverlay);
   }, []);
 
   const handleClearLogs = async () => {
@@ -487,6 +496,8 @@ function AppContent() {
         return <QualityOverlay />;
       case 'auto-evolution':
         return <AutoEvolutionPanel onClose={() => setOverlayOpen(null)} />;
+      case 'sessions':
+        return <SessionManagement onClose={() => setOverlayOpen(null)} />;
       case 'history':
         return <div style={{padding: '40px', textAlign: 'center', color: 'white'}}>Evolution History</div>;
       case 'tasks':
@@ -510,8 +521,9 @@ function AppContent() {
       registry: 'Tool Registry',
       sync: 'Tool Registry',
       quality: 'Quality Dashboard',
+      'auto-evolution': 'Auto-Evolution',
+      sessions: 'Session Management',
       history: 'Evolution History',
-      'auto-evolution': 'Auto-Evolution'
     };
     return titles[overlayOpen] || '';
   };
@@ -519,6 +531,8 @@ function AppContent() {
   return (
     <ErrorBoundary>
       <div className={`app mode-${activeMode}`}>
+        <TraceOverlay />
+        
         {!globalState.backendConnected && (
           <div style={{
             position: 'fixed',

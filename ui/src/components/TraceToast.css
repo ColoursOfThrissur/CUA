@@ -1,0 +1,57 @@
+.trace-toast {
+  position: fixed;
+  left: 20px;
+  color: var(--text-primary);
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  animation: slideIn 0.3s ease, fadeOut 0.5s ease 2.5s forwards;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 9999;
+  max-width: 250px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.trace-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-success {
+  border-color: var(--success-color, #4caf50);
+}
+
+.trace-error {
+  border-color: var(--error-color, #f44336);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  to {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+}

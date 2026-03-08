@@ -82,6 +82,14 @@ class TaskPlanner:
         """Get all available tools and their capabilities from live registry."""
         tools_info = {}
         
+        # Force registry refresh to get latest tools
+        if hasattr(self.tool_registry, 'refresh'):
+            try:
+                self.tool_registry.refresh()
+                logger.info("Registry refreshed before planning")
+            except Exception as e:
+                logger.warning(f"Failed to refresh registry: {e}")
+        
         # Get fresh tools list from registry (not cached)
         current_tools = getattr(self.tool_registry, 'tools', [])
         
@@ -226,6 +234,13 @@ Return ONLY valid JSON, no explanation."""
         for field in required:
             if field not in plan_data:
                 raise ValueError(f"Missing required field: {field}")
+        
+        # Force registry refresh to get latest tools
+        if hasattr(self.tool_registry, 'refresh'):
+            try:
+                self.tool_registry.refresh()
+            except Exception as e:
+                logger.warning(f"Failed to refresh registry during validation: {e}")
         
         # Get fresh tools from registry
         current_tools = {tool.__class__.__name__: tool for tool in getattr(self.tool_registry, 'tools', [])}

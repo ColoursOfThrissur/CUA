@@ -341,7 +341,7 @@ class SandboxRunner:
                     elif "description" in name_lower or "desc" in name_lower:
                         params[name] = "Demo description"
                     elif "url" in name_lower:
-                        params[name] = "https://example.com"
+                        params[name] = "https://webscraper.io/test-sites/e-commerce/allinone"
                     elif "query" in name_lower:
                         params[name] = "demo query"
                     else:

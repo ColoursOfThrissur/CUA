@@ -167,6 +167,50 @@ class ToolCreationOrchestrator:
             )
             return False, f"Generated tool code invalid: {validation_error}"
         
+        # Step 5.5: Check and resolve dependencies
+        from core.dependency_checker import DependencyChecker
+        from core.dependency_resolver import DependencyResolver
+        
+        dep_checker = DependencyChecker()
+        dep_report = dep_checker.check_code(filled_code)
+        
+        if dep_report.has_missing():
+            logger.info(f"Found missing dependencies: libs={dep_report.missing_libraries}, services={dep_report.missing_services}")
+            creation_logger.log_artifact(creation_id, "dependencies", "dependency_check", {
+                "missing_libraries": dep_report.missing_libraries,
+                "missing_services": dep_report.missing_services,
+                "pending_services": dep_report.pending_services
+            })
+            
+            # Try to resolve
+            dep_resolver = DependencyResolver(llm_client=llm_client)
+            
+            # Install missing libraries
+            for lib in dep_report.missing_libraries:
+                logger.info(f"Installing library: {lib}")
+                success, msg = dep_resolver.install_library(lib)
+                if success:
+                    logger.info(f"Installed {lib}: {msg}")
+                else:
+                    logger.warning(f"Failed to install {lib}: {msg}")
+                    creation_logger.log_creation(
+                        tool_name=tool_name,
+                        user_prompt=gap_description,
+                        status="failed",
+                        step="dependency_resolution",
+                        error_message=f"Failed to install required library: {lib} - {msg}"
+                    )
+                    return False, f"Missing required library: {lib}. Installation failed: {msg}"
+            
+            # Log warning for missing services (don't block creation)
+            if dep_report.missing_services:
+                logger.warning(f"Tool uses undefined services: {dep_report.missing_services}")
+                creation_logger.log_artifact(creation_id, "service_warning", "dependency_check", {
+                    "message": "Tool uses undefined service methods",
+                    "services": dep_report.missing_services,
+                    "note": "These service calls may fail at runtime"
+                })
+        
         # Step 6: Create in experimental namespace
         success, msg = self.expansion_mode.create_experimental_tool(
             tool_spec['name'], filled_code, tool_spec  # Pass spec for test generation
@@ -185,22 +229,32 @@ class ToolCreationOrchestrator:
         from core.tool_creation.sandbox_runner import SandboxRunner
         sandbox_runner = SandboxRunner(self.expansion_mode)
         
-        for attempt in range(2):  # 2 attempts max
+        max_retries = 5  # Increased from 2 to 5
+        for attempt in range(max_retries):
             sandbox_passed = sandbox_runner.run_sandbox(tool_spec['name'], creation_id=creation_id)
             if sandbox_passed:
                 break
             
-            if attempt == 0:  # First failure - try to fix
-                logger.info(f"Sandbox failed (attempt {attempt+1}/2), regenerating with error feedback")
+            if attempt < max_retries - 1:  # Not last attempt - try to fix
+                logger.info(f"Sandbox failed (attempt {attempt+1}/{max_retries}), regenerating with error feedback")
                 
-                # Get sandbox error from last artifact
-                error_msg = creation_logger.get_last_error(creation_id, "sandbox")
-                if not error_msg:
-                    error_msg = "Sandbox validation failed"
+                # Get sandbox error and validation error
+                error_msg = creation_logger.get_last_error(creation_id, "sandbox") or "Sandbox validation failed"
                 
-                # Regenerate code with error feedback
-                tool_spec['_sandbox_error'] = error_msg
+                # Build correction prompt with specific fixes
+                correction_prompt = self._build_correction_prompt(
+                    tool_spec,
+                    filled_code,
+                    error_msg,
+                    validation_error if not is_valid else None
+                )
+                
+                # Regenerate with corrections
+                tool_spec['_correction_prompt'] = correction_prompt
+                tool_spec['_retry_attempt'] = attempt + 1
+                
                 try:
+                    # Use slightly higher temperature for retries to explore alternatives
                     filled_code = generator.generate(None, tool_spec)
                     if filled_code:
                         is_valid, validation_error = validator.validate(filled_code, tool_spec)
@@ -209,7 +263,10 @@ class ToolCreationOrchestrator:
                             self.expansion_mode.create_experimental_tool(
                                 tool_spec['name'], filled_code, tool_spec
                             )
-                            creation_logger.log_artifact(creation_id, "code_retry", "sandbox_retry", filled_code)
+                            creation_logger.log_artifact(creation_id, f"code_retry_{attempt+1}", "sandbox_retry", filled_code)
+                        else:
+                            # Log validation failure for next retry
+                            creation_logger.log_artifact(creation_id, f"validation_error_{attempt+1}", "validation", validation_error)
                 except Exception as e:
                     logger.warning(f"Retry generation failed: {e}")
         
@@ -220,9 +277,9 @@ class ToolCreationOrchestrator:
                 user_prompt=gap_description,
                 status="failed",
                 step="sandbox",
-                error_message="Sandbox validation failed after 2 attempts"
+                error_message=f"Sandbox validation failed after {max_retries} attempts"
             )
-            return False, "Sandbox validation failed after 2 attempts"
+            return False, f"Sandbox validation failed after {max_retries} attempts"
         
         # Step 8: Register as experimental
         logger.info(f"Tool registered as experimental: {tool_spec['name']}")
@@ -248,7 +305,39 @@ class ToolCreationOrchestrator:
             except Exception as e:
                 logger.warning(f"Failed cleaning generated artifact {p}: {e}")
     
-    def _select_generator(self, llm_client):
+    def _build_correction_prompt(self, tool_spec: dict, failed_code: str, sandbox_error: str, validation_error: str = None) -> str:
+        """Build targeted correction prompt based on specific errors"""
+        parts = ["PREVIOUS ATTEMPT FAILED. Fix these specific issues:\n"]
+        
+        # Parse validation error for specific fixes
+        if validation_error:
+            parts.append(f"VALIDATION ERROR:\n{validation_error}\n")
+            
+            # Extract specific issues and suggest fixes
+            if "Missing method" in validation_error:
+                parts.append("FIX: Add the missing method to your class")
+            elif "signature" in validation_error.lower():
+                parts.append("FIX: Correct the method signature as shown in the error")
+            elif "Parameter" in validation_error:
+                parts.append("FIX: Ensure all Parameter() objects have: name, type, description, required")
+            elif "import" in validation_error.lower():
+                parts.append("FIX: Add the missing import statement at the top of the file")
+        
+        # Parse sandbox error for runtime issues
+        if sandbox_error:
+            parts.append(f"\nSANDBOX ERROR:\n{sandbox_error}\n")
+            
+            if "AttributeError" in sandbox_error:
+                parts.append("FIX: Check that all attributes are initialized in __init__")
+            elif "TypeError" in sandbox_error:
+                parts.append("FIX: Check parameter types and method signatures")
+            elif "KeyError" in sandbox_error:
+                parts.append("FIX: Validate dictionary keys exist before accessing")
+            elif "ImportError" in sandbox_error or "ModuleNotFoundError" in sandbox_error:
+                parts.append("FIX: Use only available services via self.services")
+        
+        parts.append("\nREGENERATE the complete corrected code.")
+        return '\n'.join(parts)
         """Select generator based on model capabilities config"""
         from pathlib import Path
         import json

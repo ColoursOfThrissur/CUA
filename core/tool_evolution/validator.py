@@ -1,7 +1,8 @@
 """Validator for tool evolution - ensures no breaking changes."""
 import ast
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 from core.enhanced_code_validator import EnhancedCodeValidator
+from core.cua_code_analyzer import CUACodeAnalyzer, CodeIssue
 
 
 class EvolutionValidator:
@@ -9,6 +10,7 @@ class EvolutionValidator:
     
     def __init__(self):
         self.enhanced_validator = EnhancedCodeValidator()
+        self.cua_analyzer = CUACodeAnalyzer()
     
     def validate(
         self,
@@ -27,6 +29,16 @@ class EvolutionValidator:
         is_valid, error = self.enhanced_validator.validate(improved_code, class_name)
         if not is_valid:
             return False, f"Enhanced validation failed: {error}"
+        
+        # 0.5. CUA architecture validation (NEW)
+        tool_spec = proposal.get('tool_spec')  # May be None for some evolutions
+        cua_issues = self.cua_analyzer.analyze(improved_code, tool_spec)
+        
+        # Block on CRITICAL and HIGH issues
+        critical_issues = [i for i in cua_issues if i.severity in ['CRITICAL', 'HIGH']]
+        if critical_issues:
+            error_msg = self._format_issues(critical_issues)
+            return False, f"CUA validation failed:\n{error_msg}"
         
         # 1. Syntax check
         try:
@@ -56,6 +68,16 @@ class EvolutionValidator:
             return False, "Missing required methods (get_capabilities or execute)"
         
         return True, ""
+    
+    def _format_issues(self, issues: List[CodeIssue]) -> str:
+        """Format issues for error message"""
+        lines = []
+        for issue in issues[:5]:  # Show first 5
+            line_info = f" (line {issue.line})" if issue.line else ""
+            lines.append(f"  [{issue.severity}] {issue.description}{line_info}")
+        if len(issues) > 5:
+            lines.append(f"  ... and {len(issues) - 5} more issues")
+        return "\n".join(lines)
     
     def _extract_class_name(self, code: str) -> str:
         """Extract primary class name from code."""

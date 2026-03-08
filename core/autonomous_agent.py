@@ -15,7 +15,7 @@ class AgentGoal:
     """Goal for autonomous agent."""
     goal_text: str
     success_criteria: List[str]
-    max_iterations: int = 5
+    max_iterations: int = 3
     require_approval: bool = False
 
 
@@ -221,10 +221,11 @@ class AutonomousAgent:
             return {
                 "success": False,
                 "reason": f"{len(failed_steps)} steps failed",
-                "failed_steps": [s.step_id for s in failed_steps]
+                "failed_steps": [s.step_id for s in failed_steps],
+                "failed_details": {s.step_id: s.error for s in failed_steps}
             }
         
-        # Use LLM to verify against success criteria
+        # Use LLM to verify against success criteria with structured JSON response
         if goal.success_criteria:
             verification_prompt = self._build_verification_prompt(
                 goal,
@@ -233,19 +234,33 @@ class AutonomousAgent:
             )
             
             try:
-                response = self.llm_client.generate_response(
-                    verification_prompt
+                response = self.llm_client._call_llm(
+                    verification_prompt,
+                    temperature=0.1,
+                    expect_json=True
                 )
                 
-                # Parse verification response
-                if "SUCCESS" in response.upper():
-                    return {"success": True, "reason": "Success criteria met"}
-                else:
+                # Parse JSON response
+                import json
+                try:
+                    result = json.loads(response) if isinstance(response, str) else response
                     return {
-                        "success": False,
-                        "reason": "Success criteria not met",
-                        "details": response
+                        "success": result.get("success", False),
+                        "reason": result.get("reason", "Unknown"),
+                        "details": result.get("details", ""),
+                        "missing_parts": result.get("missing_parts", [])
                     }
+                except json.JSONDecodeError:
+                    # Fallback to keyword matching if JSON parsing fails
+                    logger.warning("Failed to parse verification JSON, using fallback")
+                    if "\"success\": true" in response.lower() or "'success': true" in response.lower():
+                        return {"success": True, "reason": "Success criteria met"}
+                    else:
+                        return {
+                            "success": False,
+                            "reason": "Success criteria not met",
+                            "details": response
+                        }
                     
             except Exception as e:
                 logger.error(f"LLM verification failed: {e}")
@@ -275,7 +290,7 @@ class AutonomousAgent:
                 f"- {step_id}: {result.status.value} - Output: {str(result.output)[:200]}"
             )
         
-        return f"""Verify if the goal was achieved based on execution results.
+        return f"""Verify if the ENTIRE goal was achieved based on execution results.
 
 GOAL: {goal.goal_text}
 
@@ -285,10 +300,26 @@ SUCCESS CRITERIA:
 EXECUTION RESULTS:
 {chr(10).join(results_summary)}
 
-Did the execution achieve the goal and meet all success criteria?
-Respond with either:
-- "SUCCESS: <brief explanation>"
-- "FAILURE: <what's missing>"
+CRITICAL: Check if ALL parts of the goal were completed:
+1. Break down the goal into individual sub-tasks
+2. Verify EACH sub-task was completed in the execution results
+3. Only respond SUCCESS if EVERY part of the goal is done
+
+For example, if goal is "Go to Google, search Wikipedia, then go to Wikipedia and search AGI":
+- Must verify: Went to Google ✓
+- Must verify: Searched for Wikipedia ✓
+- Must verify: Navigated to Wikipedia ✓
+- Must verify: Searched for AGI on Wikipedia ✓
+
+If ANY part is missing, respond FAILURE.
+
+Respond with ONLY valid JSON in this format:
+{{
+  "success": true/false,
+  "reason": "brief explanation",
+  "details": "detailed analysis",
+  "missing_parts": ["list of incomplete parts if any"]
+}}
 """
     
     def _analyze_failure(
@@ -301,19 +332,36 @@ Respond with either:
         """Analyze why goal wasn't achieved and learn from it."""
         logger.info("Analyzing failure for next iteration")
         
-        # Log failure analysis
+        # Detailed failure analysis
+        failed_steps = verification.get("failed_steps", [])
+        failed_details = verification.get("failed_details", {})
+        missing_parts = verification.get("missing_parts", [])
+        
+        # Log failure analysis with details
+        failure_msg = f"Iteration failed: {verification.get('reason', 'Unknown')}"
+        if failed_steps:
+            failure_msg += f" | Failed steps: {', '.join(failed_steps)}"
+        if missing_parts:
+            failure_msg += f" | Missing: {', '.join(missing_parts)}"
+        
         self.memory.add_message(
             session_id,
             "system",
-            f"Iteration failed: {verification.get('reason', 'Unknown')}"
+            failure_msg
         )
         
-        # Store failure pattern for learning
+        # Store detailed failure pattern for learning
         failure_pattern = {
             "goal": goal.goal_text,
             "reason": verification.get("reason"),
-            "failed_steps": verification.get("failed_steps", []),
-            "plan_complexity": state.plan.complexity
+            "failed_steps": failed_steps,
+            "failed_details": failed_details,
+            "missing_parts": missing_parts,
+            "plan_complexity": state.plan.complexity,
+            "completed_steps": [
+                step_id for step_id, result in state.step_results.items()
+                if result.status == StepStatus.COMPLETED
+            ]
         }
         
         self.memory.learn_pattern("failed_attempts", failure_pattern)
@@ -327,18 +375,56 @@ Respond with either:
         """Update context with learnings for next iteration."""
         updated = context.copy() if context else {}
         
-        # Add previous attempt info
+        # Add previous attempt info with detailed error analysis
         updated["previous_attempt"] = {
             "status": state.status,
             "failed_steps": verification.get("failed_steps", []),
+            "failed_details": verification.get("failed_details", {}),
+            "missing_parts": verification.get("missing_parts", []),
             "reason": verification.get("reason"),
             "completed_steps": [
                 step_id for step_id, result in state.step_results.items()
                 if result.status == StepStatus.COMPLETED
-            ]
+            ],
+            "step_outputs": {
+                step_id: str(result.output)[:500] for step_id, result in state.step_results.items()
+                if result.status == StepStatus.COMPLETED
+            }
         }
         
+        # Add correction guidance
+        updated["retry_guidance"] = self._generate_retry_guidance(verification, state)
+        
         return updated
+    
+    def _generate_retry_guidance(self, verification: Dict, state: ExecutionState) -> str:
+        """Generate guidance for retry based on failure analysis."""
+        guidance = []
+        
+        # Analyze failure type
+        failed_steps = verification.get("failed_steps", [])
+        missing_parts = verification.get("missing_parts", [])
+        
+        if failed_steps:
+            guidance.append(f"Fix or replace these failed steps: {', '.join(failed_steps)}")
+            
+            # Add specific error details
+            failed_details = verification.get("failed_details", {})
+            for step_id, error in failed_details.items():
+                if "parameter" in error.lower():
+                    guidance.append(f"Step {step_id}: Check parameter values and types")
+                elif "not found" in error.lower() or "unknown" in error.lower():
+                    guidance.append(f"Step {step_id}: Verify tool/operation exists")
+                elif "timeout" in error.lower() or "network" in error.lower():
+                    guidance.append(f"Step {step_id}: Add retry logic or increase timeout")
+        
+        if missing_parts:
+            guidance.append(f"Add steps to complete: {', '.join(missing_parts)}")
+        
+        if not guidance:
+            guidance.append("Review plan structure and step dependencies")
+        
+        return " | ".join(guidance)
     
     def get_status(self, session_id: str) -> Dict[str, Any]:
         """Get current agent status for session."""

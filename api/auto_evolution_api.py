@@ -10,11 +10,13 @@ from pydantic import BaseModel
 from typing import Dict, Optional
 from dataclasses import asdict
 from core.auto_evolution_orchestrator import AutoEvolutionOrchestrator
+from core.auto_evolution_trigger import AutoEvolutionTrigger
 
 router = APIRouter(prefix="/auto-evolution", tags=["auto-evolution"])
 
-# Global orchestrator instance
+# Global instances
 orchestrator: Optional[AutoEvolutionOrchestrator] = None
+trigger_manager: Optional[AutoEvolutionTrigger] = None
 
 class ConfigUpdate(BaseModel):
     mode: Optional[str] = None
@@ -27,16 +29,19 @@ class ConfigUpdate(BaseModel):
 @router.post("/start")
 async def start_orchestrator():
     """Start auto-evolution engine"""
-    global orchestrator
+    global orchestrator, trigger_manager
     
     if orchestrator and orchestrator.running:
         raise HTTPException(400, "Orchestrator already running")
     
-    # Get dependencies from server (will be set by server.py)
     try:
         from api.server import llm_client, registry
         orchestrator = AutoEvolutionOrchestrator(llm_client, registry)
         await orchestrator.start()
+        
+        # Start trigger manager
+        trigger_manager = AutoEvolutionTrigger(orchestrator)
+        await trigger_manager.start()
     except Exception as e:
         raise HTTPException(500, f"Failed to start: {str(e)}")
     
@@ -45,10 +50,13 @@ async def start_orchestrator():
 @router.post("/stop")
 async def stop_orchestrator():
     """Stop auto-evolution engine"""
-    global orchestrator
+    global orchestrator, trigger_manager
     
     if not orchestrator or not orchestrator.running:
         raise HTTPException(400, "Orchestrator not running")
+    
+    if trigger_manager:
+        await trigger_manager.stop()
         
     await orchestrator.stop()
     
@@ -57,12 +65,16 @@ async def stop_orchestrator():
 @router.get("/status")
 async def get_status():
     """Get orchestrator status"""
-    global orchestrator
+    global orchestrator, trigger_manager
     
     if not orchestrator:
         return {"running": False, "message": "Orchestrator not initialized"}
+    
+    status = orchestrator.get_status()
+    if trigger_manager:
+        status["triggers"] = trigger_manager.get_status()
         
-    return orchestrator.get_status()
+    return status
 
 @router.post("/config")
 async def update_config(config: ConfigUpdate):
@@ -115,3 +127,38 @@ async def trigger_scan():
         import traceback
         error_detail = traceback.format_exc()
         raise HTTPException(500, f"Scan failed: {str(e)}\n{error_detail}")
+
+
+@router.post("/triggers/enable")
+async def enable_trigger(trigger_type: str, config: Dict = None):
+    """Enable a trigger"""
+    global trigger_manager
+    
+    if not trigger_manager:
+        raise HTTPException(400, "Trigger manager not initialized")
+    
+    trigger_manager.enable_trigger(trigger_type, **(config or {}))
+    return {"success": True, "trigger": trigger_type, "config": config}
+
+
+@router.post("/triggers/disable")
+async def disable_trigger(trigger_type: str):
+    """Disable a trigger"""
+    global trigger_manager
+    
+    if not trigger_manager:
+        raise HTTPException(400, "Trigger manager not initialized")
+    
+    trigger_manager.disable_trigger(trigger_type)
+    return {"success": True, "trigger": trigger_type}
+
+
+@router.get("/triggers/status")
+async def get_triggers_status():
+    """Get trigger status"""
+    global trigger_manager
+    
+    if not trigger_manager:
+        return {"running": False, "triggers": {}}
+    
+    return trigger_manager.get_status()

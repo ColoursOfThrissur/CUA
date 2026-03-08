@@ -1,10 +1,10 @@
 """Analyzer for tool evolution - uses LLM health analysis."""
 from pathlib import Path
 from typing import Optional, Dict, Any
-import logging
+from core.sqlite_logging import get_logger
 from core.tool_evolution_logger import get_evolution_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("analyzer")
 evo_logger = get_evolution_logger()
 
 
@@ -63,6 +63,14 @@ class ToolAnalyzer:
             # Adjust based on runtime success rate
             if runtime_report.success_rate < 0.5:
                 health_score = min(health_score, 50.0)
+            
+            # CRITICAL: Block evolution if tool is fundamentally broken
+            # Low success rate with healthy code = external factors (network, browser)
+            # But critically low success rate = broken tool regardless of code quality
+            if runtime_report.success_rate < 0.3 and runtime_report.usage_frequency > 5:
+                logger.error(f"Tool {tool_name} has critically low success rate ({runtime_report.success_rate:.1%}) - blocking evolution")
+                logger.error("Tool may need manual inspection or redesign, not automated evolution")
+                return None
             
             logger.info(f"Analysis complete: category={category}, health={health_score:.0f}")
             

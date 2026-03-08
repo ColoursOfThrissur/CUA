@@ -74,7 +74,33 @@ class ContextSummarizerTool(BaseTool):
             examples=[],
             dependencies=[]
         )
+
+        batch_summarize_texts_capability = ToolCapability(
+            name="batch_summarize_texts",
+            description="Add batch processing support to ContextSummarizerTool",
+            parameters=[],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(batch_summarize_texts_capability, self._handle_batch_summarize_texts)
         self.add_capability(generate_json_output_capability, self._handle_generate_json_output)
+
+    def _handle_batch_summarize_texts(self, **kwargs) -> dict:
+        texts = kwargs.get('texts', [])
+        summaries = []
+
+        for text in texts:
+            try:
+                prompt = f"Summarize the following text: {text}"
+                summary = self.services.llm.generate(prompt)
+                summaries.append(summary)
+            except Exception as e:
+                self.services.logging.error(f"Failed to summarize text: {e}")
+                summaries.append(None)
+
+        return {'summaries': summaries}
 
     def execute(self, operation: str, **kwargs) -> ToolResult:
         """Execute tool operation"""
@@ -87,6 +113,9 @@ class ContextSummarizerTool(BaseTool):
             return self._handle_sentiment_analysis(**parameters)
         elif operation == 'generate_json_output':
             return self._handle_generate_json_output(**parameters)
+        if operation == "batch_summarize_texts":
+            return self._handle_batch_summarize_texts(**kwargs)
+
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _handle_summarize_text(self, **kwargs):

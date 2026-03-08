@@ -41,6 +41,10 @@ class LLMClient:
         self.registry = registry
         self.llm_logger = LLMLogger()  # Add logger
         
+        # Response cache for repeated prompts
+        self._response_cache = {}
+        self._cache_enabled = True
+        
         # Load config
         self.config = self._load_config(config_path)
         self.available_models = self.config.get('llm', {}).get('models', {})
@@ -445,10 +449,19 @@ Respond naturally."""
             return prompt
     
     def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False) -> Optional[str]:
-        """Call Mistral 7B via Ollama with structured output enforcement"""
+        """Call Mistral 7B via Ollama with structured output enforcement and caching"""
         
         from core.logging_system import get_logger
+        import hashlib
         logger = get_logger("llm_client")
+        
+        # Generate cache key from prompt + params
+        cache_key = None
+        if self._cache_enabled and temperature < 0.3:  # Only cache deterministic calls
+            cache_key = hashlib.md5(f"{prompt}|{temperature}|{max_tokens}|{expect_json}".encode()).hexdigest()
+            if cache_key in self._response_cache:
+                logger.debug(f"Cache hit for prompt (key={cache_key[:8]}...)")
+                return self._response_cache[cache_key]
         
         logger.debug(f"LLM call: model={self.model}, temp={temperature}, expect_json={expect_json}")
         
@@ -530,9 +543,18 @@ Respond naturally."""
                         "tokens_generated": result.get('eval_count', 0),
                         "tokens_prompt": result.get('prompt_eval_count', 0),
                         "prompt_ends_with": prompt[-100:] if len(prompt) > 100 else prompt,
-                        "response_ends_with": llm_response[-100:] if len(llm_response) > 100 else llm_response
+                        "response_ends_with": llm_response[-100:] if len(llm_response) > 100 else llm_response,
+                        "cached": False
                     }
                 )
+                
+                # Cache response if enabled
+                if cache_key:
+                    self._response_cache[cache_key] = llm_response
+                    # Limit cache size to 100 entries
+                    if len(self._response_cache) > 100:
+                        # Remove oldest entry
+                        self._response_cache.pop(next(iter(self._response_cache)))
                 
                 return llm_response
             else:

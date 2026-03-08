@@ -41,7 +41,7 @@ class DependencyChecker:
         try:
             tree = ast.parse(code)
         except SyntaxError:
-            return DependencyReport([], [], [], [], False)
+            return DependencyReport([], [], [], [], [], False)
         
         # Extract imports
         imports = self._extract_imports(tree)

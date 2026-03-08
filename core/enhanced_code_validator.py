@@ -6,13 +6,27 @@ from typing import Tuple, Set, Dict, List, Optional
 class EnhancedCodeValidator:
     """Validates code for architectural issues beyond syntax."""
     
-    def __init__(self, available_services: Optional[List[str]] = None):
-        """Initialize with list of available service methods."""
+    def __init__(self, available_services: Optional[List[str]] = None, service_registry: Optional[Dict] = None):
+        """Initialize with list of available service methods and service registry."""
         self.available_services = available_services or [
             'storage', 'llm', 'http', 'fs', 'json', 'shell', 'time', 'ids', 'logging',
             'orchestrator', 'registry', 'extract_key_points', 'sentiment_analysis',
-            'detect_language', 'generate_json_output', 'call_tool', 'list_tools', 'has_capability'
+            'detect_language', 'generate_json_output', 'call_tool', 'list_tools', 'has_capability', 'browser'
         ]
+        # Service registry maps service names to their available methods
+        self.service_registry = service_registry or {
+            'storage': ['save', 'get', 'list', 'find', 'count', 'update', 'delete', 'exists'],
+            'llm': ['generate'],
+            'http': ['get', 'post', 'put', 'delete', 'request'],
+            'fs': ['read', 'write', 'list', 'exists', 'delete', 'mkdir'],
+            'json': ['parse', 'stringify', 'query'],
+            'shell': ['execute'],
+            'time': ['now_utc', 'now_local', 'now_utc_iso', 'now_local_iso'],
+            'ids': ['generate', 'uuid'],
+            'logging': ['info', 'warning', 'error', 'debug'],
+            'browser': ['open_browser', 'navigate', 'find_element', 'get_page_text', 'take_screenshot', 'close', 'is_available']
+        }
+        self.missing_services = []  # Track missing services for generation
         # BaseTool inherited methods and attributes
         self.base_tool_methods = {
             'add_capability', 'get_capabilities', 'has_capability', 'execute_capability',
@@ -28,6 +42,9 @@ class EnhancedCodeValidator:
     
     def validate(self, code: str, class_name: Optional[str] = None) -> Tuple[bool, str]:
         """Run all enhanced validations."""
+        
+        # Reset missing services tracker
+        self.missing_services = []
         
         # 1. Check for truncation
         is_complete, truncation_error = self._check_truncation(code)
@@ -61,12 +78,16 @@ class EnhancedCodeValidator:
         if not is_valid:
             return False, error
         
-        # 6. Check service usage
+        # 6. Check service usage (detects missing services)
         is_valid, error = self._check_service_usage(target_class)
         if not is_valid:
             return False, error
         
         return True, ""
+    
+    def get_missing_services(self) -> List[Dict[str, str]]:
+        """Get list of missing services detected during validation."""
+        return self.missing_services
     
     def _check_truncation(self, code: str) -> Tuple[bool, str]:
         """Check if code appears truncated."""
@@ -203,7 +224,9 @@ class EnhancedCodeValidator:
         return True, ""
     
     def _check_service_usage(self, target_class: ast.ClassDef) -> Tuple[bool, str]:
-        """Check that service methods are called correctly."""
+        """Check that service methods are called correctly and detect missing services."""
+        errors = []
+        
         for method in target_class.body:
             if not isinstance(method, ast.FunctionDef):
                 continue
@@ -212,7 +235,7 @@ class EnhancedCodeValidator:
                 if not isinstance(node, ast.Call):
                     continue
                 
-                # Check for self.services.X.Y() pattern
+                # Check for self.services.service_name.method_name() pattern
                 if isinstance(node.func, ast.Attribute):
                     if isinstance(node.func.value, ast.Attribute):
                         if (isinstance(node.func.value.value, ast.Name) and 
@@ -220,8 +243,42 @@ class EnhancedCodeValidator:
                             node.func.value.attr == 'services'):
                             
                             service_name = node.func.attr
-                            # This is a valid service call pattern
+                            
+                            # Check if service exists in registry
+                            if service_name not in self.service_registry:
+                                # Unknown service - mark as missing
+                                line_num = node.lineno if hasattr(node, 'lineno') else 0
+                                self.missing_services.append({
+                                    'service_name': service_name,
+                                    'method_name': None,
+                                    'line': line_num,
+                                    'type': 'full_service'
+                                })
+                                errors.append(f"Unknown service: self.services.{service_name} (line {line_num})")
                             continue
+                    
+                    # Check for self.services.service_name.method_name() - validate method exists
+                    if isinstance(node.func.value, ast.Attribute):
+                        if isinstance(node.func.value.value, ast.Attribute):
+                            if (isinstance(node.func.value.value.value, ast.Name) and
+                                node.func.value.value.value.id == 'self' and
+                                node.func.value.value.attr == 'services'):
+                                
+                                service_name = node.func.value.attr
+                                method_name = node.func.attr
+                                
+                                # Check if service exists
+                                if service_name in self.service_registry:
+                                    # Check if method exists in service
+                                    if method_name not in self.service_registry[service_name]:
+                                        line_num = node.lineno if hasattr(node, 'lineno') else 0
+                                        self.missing_services.append({
+                                            'service_name': service_name,
+                                            'method_name': method_name,
+                                            'line': line_num,
+                                            'type': 'method'
+                                        })
+                                        errors.append(f"Unknown method: self.services.{service_name}.{method_name}() (line {line_num})")
                     
                     # Check for direct self.service_method() that should be self.services.method()
                     if isinstance(node.func.value, ast.Name) and node.func.value.id == 'self':
@@ -230,6 +287,9 @@ class EnhancedCodeValidator:
                         # Check if this looks like a service method
                         if method_name in self.available_services:
                             return False, f"Method '{method.name}' calls 'self.{method_name}()' but should use 'self.services.{method_name}()'"
+        
+        if errors:
+            return False, "CUA validation failed:\n  " + "\n  ".join(f"[HIGH] {e}" for e in errors)
         
         return True, ""
     

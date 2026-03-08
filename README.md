@@ -8,13 +8,13 @@ CUA is an autonomous agent that:
 - **Plans & Executes** multi-step tasks autonomously with goal achievement
 - **Learns & Remembers** conversation context and successful patterns
 - **Self-corrects** by analyzing failures and iterating toward goals
-- **Executes tasks** using 20+ tools via Mistral's native function calling
+- **Executes tasks** via tool calling (function calling) and a tool registry
 - **Creates tools** through LLM-driven generation with validation pipeline
 - **Evolves tools** by detecting weak tools and generating improvements
 - **Manages dependencies** automatically (detects missing libraries/services)
 - **Validates everything** via enhanced AST validation and sandbox testing
-- **Observes everything** via SQLite-based logging across 10 databases
-- **Self-improves** through hybrid improvement engine with 80% success rate
+- **Observes everything** via SQLite-based logging (multiple databases)
+- **Self-improves** through a hybrid improvement engine with human approval gates
 
 ## 🚀 Quick Start
 
@@ -31,6 +31,140 @@ cd ui && npm install && npm start
 
 **Access**: http://localhost:3000
 
+Backend API docs (FastAPI):
+- Swagger UI: http://localhost:8000/docs
+- OpenAPI JSON: http://localhost:8000/openapi.json
+
+## Backend API (Current)
+
+Core
+- `POST /chat` - Chat endpoint (intent classification + tool calling + autonomous-agent fallback when available)
+- `GET /health` - Basic health + `system_available`
+- `GET /status` - Runtime summary (sessions, connections, tools, capabilities)
+- `POST /cache/clear` - Clears sessions + caches
+
+Realtime
+- `GET /events` - SSE stream (event bus)
+- `WS /ws` - WebSocket stream (event bus + initial state)
+- `WS /ws/trace` - WebSocket stream for trace events (UI trace overlay)
+
+Settings
+- `GET /settings/models`
+- `POST /settings/model`
+- `POST /settings/reload-config`
+
+Tools (registry + sync)
+- `POST /api/tools/sync` - AST-based capability snapshot + runtime refresh
+- `GET /api/tools/registry` - Current tool registry snapshot
+- `GET /api/tools/capabilities` - Formatted capability text
+- `POST /api/tools/test/{tool_name}` - LLM-generated tests for an active tool
+
+Self-improvement
+- `POST /improvement/start`
+- `POST /improvement/start-continuous`
+- `POST /improvement/stop`
+- `POST /improvement/approve`
+- `GET /improvement/status`
+- `GET /improvement/logs`
+- `POST /improvement/clear-logs`
+- `GET /improvement/previews`
+- `GET /improvement/history`
+- `GET /improvement/analytics`
+- `POST /improvement/export/{proposal_id}`
+- `POST /improvement/import`
+- `GET /improvement/history/{plan_id}`
+- `POST /improvement/rollback/{plan_id}`
+- `POST /improvement/tools/create`
+
+Pending tools + pending libraries
+- `GET /pending-tools/list`
+- `GET /pending-tools/{tool_id}`
+- `POST /pending-tools/{tool_id}/test`
+- `POST /pending-tools/{tool_id}/approve`
+- `POST /pending-tools/{tool_id}/reject`
+- `GET /pending-tools/active/list`
+- `GET /api/libraries/pending`
+- `POST /api/libraries/{lib_id}/approve`
+- `POST /api/libraries/{lib_id}/reject`
+
+Tool evolution + auto-evolution
+- `POST /evolution/evolve`
+- `GET /evolution/pending`
+- `POST /evolution/approve/{tool_name}`
+- `POST /evolution/test/{tool_name}`
+- `POST /evolution/reject/{tool_name}`
+- `GET /evolution/conversation/{tool_name}`
+- `POST /evolution/resolve-dependencies/{tool_name}`
+- `POST /auto-evolution/start`
+- `POST /auto-evolution/stop`
+- `GET /auto-evolution/status`
+- `POST /auto-evolution/config`
+- `GET /auto-evolution/queue`
+- `POST /auto-evolution/trigger-scan`
+
+Quality + metrics
+- `GET /quality/summary`
+- `GET /quality/tool/{tool_name}`
+- `GET /quality/all`
+- `GET /quality/weak`
+- `GET /quality/llm-analysis/{tool_name}`
+- `GET /quality/llm-analysis-all`
+- `GET /quality/llm-weak`
+- `GET /quality/llm-summary`
+- `POST /quality/refresh-llm-analysis`
+- `GET /metrics/tool/{tool_name}`
+- `GET /metrics/system`
+- `POST /metrics/aggregate`
+- `GET /metrics/summary`
+
+Observability
+- `GET /observability/logs`
+- `GET /observability/tool-executions`
+- `GET /observability/tool-creation`
+- `GET /observability/tool-evolution`
+- `GET /observability/chat`
+- `GET /observability/tables`
+- `GET /observability/data/{db_name}/{table_name}`
+- `GET /observability/detail/{db_name}/{table_name}/{row_id}`
+- `GET /observability/filters/{db_name}/{table_name}/{column}`
+- `POST /observability/cleanup`
+- `POST /observability/refresh`
+
+UI dashboards
+- `GET /tools-management/summary`
+- `GET /tools-management/list`
+- `GET /tools-management/detail/{tool_name}`
+- `GET /tools-management/executions/{tool_name}`
+- `GET /tools-management/code/{tool_name}`
+- `POST /tools-management/trigger-check/{tool_name}`
+- `GET /tools/list`
+- `GET /tools/info/{tool_name}`
+
+Task manager
+- `GET /tasks/active`
+- `GET /tasks/history`
+- `POST /tasks/{parent_id}/abort`
+- `GET /tasks/{parent_id}/staging`
+
+Notes
+- Many routers are conditionally included at startup (see `api/server.py`). If imports fail, `/health` will still work but feature endpoints may 503/500 until dependencies/config are fixed.
+- For the canonical list of tool capabilities at runtime, prefer `GET /api/tools/registry` and `GET /api/tools/capabilities`.
+
+## Tools and Capabilities (Current)
+
+Core tools loaded by default (see `api/server.py`)
+- `FilesystemTool`: `read_file`, `write_file`, `list_directory`
+- `HTTPTool`: `get`, `post`, `put`, `delete` (domain allowlist is enforced in `tools/http_tool.py`)
+- `JSONTool`: `parse`, `stringify`, `query`
+- `ShellTool`: `execute` (command allowlist is enforced in `tools/shell_tool.py`)
+
+Experimental tools (available in `tools/experimental/`; some are loaded by default)
+- `BrowserAutomationTool`
+- `ContextSummarizerTool`
+- `DatabaseQueryTool`
+- `LocalRunNoteTool`
+- additional experimental tools exist and can be activated/loaded via the tool sync + approval flows
+
 ## 🏗️ Architecture Overview
 
 ### Core Components
@@ -43,7 +177,7 @@ CUA System
 │   ├── Memory System - Conversation context & learned patterns
 │   └── Goal Achievement Loop - Plan → Execute → Verify → Iterate
 │
-├── API Layer (FastAPI - 17 routers)
+├── API Layer (FastAPI - multiple routers)
 │   ├── Agent API (NEW) - Autonomous goal achievement
 │   ├── Chat endpoint (/chat) - Native tool calling with agentic response
 │   ├── Tool Creation API - LLM-driven tool generation
@@ -53,12 +187,12 @@ CUA System
 │   ├── Observability Data API - Paginated data access with filters
 │   ├── Tools Management API - Comprehensive tool management
 │   ├── Cleanup API - Maintenance & cache clearing
-│   ├── Hybrid API - 80% success improvement engine
+│   ├── Hybrid API - hybrid improvement engine
 │   └── Settings/Scheduler/Libraries/Tools APIs
 │
 ├── Tool System
 │   ├── Registry (20+ tools)
-│   ├── Native Function Calling (Mistral)
+│   ├── Tool calling (function calling)
 │   ├── Tool Services (storage, llm, http, fs, logging, etc.)
 │   ├── Orchestrator (execution & inter-tool calls)
 │   └── Enhanced Validator (AST + architectural checks)
@@ -141,11 +275,11 @@ CUA System
 ### 5. Tool Evolution
 **6-Step Flow with Context-Aware Improvements**:
 1. **Analyze**: Quality analyzer scores tool health (0-100)
-2. **Propose**: LLM reads evolution context and proposes ONLY necessary fixes
-3. **Generate**: Code generator creates minimal improved version
+2. **Propose**: LLM reads evolution context and proposes ONLY necessary fixes with action_type
+3. **Generate**: Code generator respects action_type (fix_bug/add_capability/improve_logic/refactor)
 4. **Check Deps**: Dependency checker validates imports/services
-5. **Validate**: Enhanced AST validation + structure checks
-6. **Sandbox**: Test in isolated environment
+5. **Validate**: Enhanced AST validation + CUA architecture checks
+6. **Sandbox**: Test in isolated environment with dependency detection
 7. **Approve**: Human reviews and approves (auto-removes from pending)
 
 **Evolution Context**:
@@ -155,6 +289,12 @@ CUA System
 - Skips evolution if no critical issues found
 - Requires justification for all changes
 
+**Action Types**:
+- **fix_bug**: Fixes broken code by modifying existing handlers
+- **add_capability**: Creates new handler + registers new operation
+- **improve_logic**: Enhances existing handler logic
+- **refactor**: Restructures code for clarity/performance
+
 ### 6. Dependency Management
 - **AST-based detection**: Parses generated code for missing imports and service calls
 - **Auto-resolution**: Install libraries via pip, generate services via LLM
@@ -163,7 +303,12 @@ CUA System
 - **Service Pattern Enforcement**: Validates `self.services.X` usage
 
 ### 7. Enhanced Validation
-**12+ Validation Gates**:
+**Validation Layers**:
+1. **AST Validation** (12+ gates): Syntax, imports, signatures, patterns
+2. **CUA Architecture Validation**: Service method existence, capability-spec matching, hardcoded values, return types
+3. **Dependency Detection**: Missing libraries and services
+
+**Validation Gates**:
 - AST syntax validation
 - Required methods (register_capabilities, execute)
 - Execute signature validation
@@ -176,10 +321,14 @@ CUA System
 - Orchestrator parameter check
 - Tool name assignment
 - Contract compliance
-- **NEW**: Undefined method detection
-- **NEW**: Uninitialized attribute detection
-- **NEW**: Code truncation detection
-- **NEW**: Service usage pattern validation
+- Undefined method detection
+- Uninitialized attribute detection
+- Code truncation detection
+- Service usage pattern validation
+- **NEW**: Service method existence (via service_registry)
+- **NEW**: Capability-spec parameter matching
+- **NEW**: Hardcoded value detection (example.com, test_user, passwords)
+- **NEW**: Return type validation (dict not ToolResult)
 
 ### 8. Observability
 **10 SQLite Databases**:
@@ -569,13 +718,15 @@ self.services.has_capability(capability_name)
 - ✅ Self-correction (failure analysis & iteration)
 - ✅ Native tool calling (20+ tools)
 - ✅ Tool creation (6-step flow with validation)
-- ✅ Tool evolution (context-aware, minimal changes)
+- ✅ Tool evolution (action-type aware, context-aware improvements)
+- ✅ CUA architecture validation (service methods, capability matching)
+- ✅ Smart sandbox (dependency detection, network error handling)
 - ✅ LLM health analyzer (reduced false positives)
 - ✅ Tools Management page (comprehensive dashboard)
 - ✅ Observability page (full-page database viewer)
 - ✅ Theme system (dark/light with CSS variables)
 - ✅ Dependency management (auto-detect & resolve)
-- ✅ Enhanced validation (12+ gates)
+- ✅ Enhanced validation (3-layer: AST + Architecture + Dependencies)
 - ✅ SQLite observability (10 databases)
 - ✅ Database schema registry (LLM-assisted)
 - ✅ Quality scoring & recommendations
@@ -606,8 +757,12 @@ self.services.has_capability(capability_name)
 
 **Environment Variables**:
 - `OLLAMA_URL`: Ollama server URL (default: http://localhost:11434)
-- `MODEL`: LLM model (default: mistral:latest)
+- `CUA_API_URL`: Override backend base URL (default: http://localhost:8000)
+- `CUA_API_PORT`: Override backend port (default: 8000)
+- `CUA_MAX_FILE_WRITES`: Override max file writes per run (optional)
 - `CORS_ALLOW_ORIGINS`: Allowed origins (default: http://localhost:3000)
+- `REACT_APP_API_URL`: Frontend -> backend URL (see `ui/.env`)
+- `REACT_APP_WS_URL`: Frontend WebSocket URL (see `ui/.env`)
 
 **Config Files**:
 - `config.yaml`: System configuration
@@ -629,8 +784,7 @@ MIT License - See LICENSE file
 
 ## 🙏 Acknowledgments
 
-- **Mistral AI**: Native function calling
-- **Ollama**: Local LLM hosting
+- **Ollama**: Local LLM hosting (any compatible model)
 - **FastAPI**: Backend framework
 - **React**: Frontend framework
-- **Qwen**: Code generation model
+- **Qwen / Mistral / etc.**: Local models (configurable)

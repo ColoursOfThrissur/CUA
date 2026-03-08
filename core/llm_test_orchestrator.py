@@ -187,7 +187,7 @@ class LLMTestOrchestrator:
             success = result and (
                 (hasattr(result, 'status') and result.status.value == 'success') or
                 (hasattr(result, 'is_success') and result.is_success()) or
-                (isinstance(result, dict) and result.get('success', True))
+                (isinstance(result, dict) and result.get('success', False) and not result.get('error'))
             )
             
             # Extract output data
@@ -342,36 +342,38 @@ Respond with JSON:
         """Build prompt for LLM test generation."""
         
         params_desc = []
+        param_names = []
         for param in capability.get('parameters', []):
             req = "required" if param.get('required') else "optional"
-            params_desc.append(f"- {param['name']} ({param.get('type', 'any')}, {req}): {param.get('description', '')}")
+            param_name = param['name']
+            param_names.append(param_name)
+            params_desc.append(f"- {param_name} ({param.get('type', 'any')}, {req}): {param.get('description', '')}")
         
-        return f"""Generate realistic test cases simulating real user requests.
+        param_names_str = ', '.join(f'"{p}"' for p in param_names) if param_names else 'none'
+        
+        return f"""Generate realistic test cases for this tool capability.
 
 Tool: {tool_name}
 Capability: {capability['name']}
 Description: {capability.get('description', '')}
-Parameters:
+
+Parameters (USE THESE EXACT NAMES):
 {chr(10).join(params_desc) if params_desc else 'No parameters'}
 
-Think like a real user who wants to:
-- See latest entries ("show me last 5 logs")
-- Analyze data ("find all failures this week")
-- Get insights ("which tools are failing most?")
-- Check status ("are there any errors?")
+CRITICAL: The "inputs" field MUST use these exact parameter names: {param_names_str}
+Do NOT invent new parameter names like "form_field_1" or "field_name".
 
-Create 3-5 diverse test cases with realistic user goals.
-Use actual data values, varied queries, different time ranges.
+Create 3-5 diverse test cases with realistic values.
 
 Return ONLY a JSON array:
 [
   {{
     "test_name": "descriptive_name",
-    "description": "what user wants to achieve",
-    "inputs": {{"param": "realistic_value"}},
+    "description": "what this test validates",
+    "inputs": {{{' // USE EXACT PARAM NAMES: ' + param_names_str if param_names else ''}}},
     "expected_success": true,
     "validation": {{"check_type": "any"}},
-    "rationale": "why user would do this"
+    "rationale": "why this test matters"
   }}
 ]
 

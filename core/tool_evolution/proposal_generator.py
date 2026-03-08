@@ -1,9 +1,9 @@
 """Proposal generator for tool evolution - matches spec generator pattern."""
 import json
-import logging
 from typing import Dict, Any, Optional
+from core.sqlite_logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("proposal_generator")
 
 
 class EvolutionProposalGenerator:
@@ -79,12 +79,14 @@ IMPORTANT RULES:
 
 Generate improvement proposal as JSON:
 {{
+  "action_type": "fix_bug" | "add_capability" | "improve_logic" | "refactor",
   "description": "What specific issue to fix or feature to add (ONE improvement only)",
   "changes": ["Change 1", "Change 2"],
   "expected_improvement": "Expected outcome",
   "confidence": 0.0-1.0,
   "risk_level": 0.0-1.0,
   "justification": "Why this change is necessary",
+  "network_only": true | false,  // Set true if tool ONLY works with network/browser (no local operations)
   "required_services": ["service_name"],
   "required_libraries": ["library_name"],
   "new_service_specs": {{
@@ -94,6 +96,12 @@ Generate improvement proposal as JSON:
     }}
   }}
 }}
+
+ACTION_TYPE RULES:
+- "fix_bug": Fix broken code (undefined methods, wrong service calls, missing imports) - MODIFY existing handlers
+- "add_capability": Add NEW operation to tool (new handler method + register in capabilities) - CREATE new handler
+- "improve_logic": Enhance existing handler logic (better error handling, validation) - MODIFY existing handlers
+- "refactor": Restructure code for clarity/performance - MODIFY existing handlers
 
 CRITICAL: Pick ONLY ONE improvement from SUGGESTED_IMPROVEMENTS (the highest priority one).
 Other improvements will be implemented in subsequent evolutions after this one is approved.
@@ -123,6 +131,20 @@ Return ONLY valid JSON."""
             if not self._validate_proposal(proposal):
                 logger.warning("Invalid proposal structure")
                 return None
+            
+            # Set default action_type if missing (for backward compatibility)
+            if 'action_type' not in proposal:
+                # Infer from description
+                desc_lower = proposal.get('description', '').lower()
+                if 'add' in desc_lower and ('capability' in desc_lower or 'feature' in desc_lower or 'operation' in desc_lower):
+                    proposal['action_type'] = 'add_capability'
+                elif 'fix' in desc_lower or 'bug' in desc_lower or 'broken' in desc_lower:
+                    proposal['action_type'] = 'fix_bug'
+                elif 'refactor' in desc_lower or 'restructure' in desc_lower:
+                    proposal['action_type'] = 'refactor'
+                else:
+                    proposal['action_type'] = 'improve_logic'
+                logger.info(f"Inferred action_type: {proposal['action_type']}")
             
             # Calculate confidence if not provided
             if 'confidence' not in proposal or proposal['confidence'] < 0.5:
@@ -193,6 +215,12 @@ ARCHITECTURE PATTERNS:
         """Validate proposal has required fields."""
         required = ['description', 'changes', 'expected_improvement', 'justification']
         has_required = all(field in proposal for field in required)
+        
+        # Validate action_type if present
+        if 'action_type' in proposal:
+            valid_actions = ['fix_bug', 'add_capability', 'improve_logic', 'refactor']
+            if proposal.get('action_type') not in valid_actions:
+                return False
         
         # Validate new_service_specs structure if present
         if 'new_service_specs' in proposal:

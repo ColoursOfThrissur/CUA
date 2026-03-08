@@ -6,7 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if 'core.permission_gate' in sys.modules:
     del sys.modules['core.permission_gate']
 
-from fastapi import FastAPI, WebSocket, Request
+from fastapi import FastAPI, WebSocket, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
@@ -72,6 +72,10 @@ try:
     from api.metrics_api import router as metrics_router
     from api.auto_evolution_api import router as auto_evolution_router
     from api.agent_api import router as agent_router
+    from api.trace_ws import router as trace_router
+    from api.circuit_breaker_api import router as circuit_breaker_router
+    from api.session_api import router as session_router
+    from api.services_api import router as services_router, set_services_dependencies
     ROUTERS_AVAILABLE = True
 except ImportError as e:
     print(f"Routers not available: {e}")
@@ -113,8 +117,16 @@ if ROUTERS_AVAILABLE:
     app.include_router(metrics_router)
     app.include_router(auto_evolution_router)
     app.include_router(agent_router)
+    app.include_router(trace_router)
+    app.include_router(circuit_breaker_router)
+    app.include_router(session_router)
+    app.include_router(services_router)
 
 cors_origins, cors_allow_credentials = _get_cors_settings()
+
+# Add input size limit middleware
+from core.input_validation import InputSizeLimitMiddleware
+app.add_middleware(InputSizeLimitMiddleware, max_body_size=10 * 1024 * 1024)  # 10MB
 
 # Add correlation context middleware
 from core.correlation_context import CorrelationContext, CorrelationContextManager
@@ -206,6 +218,14 @@ if SYSTEM_AVAILABLE:
             print(f"[DEBUG] DatabaseQueryTool loaded successfully")
         except Exception as e:
             print(f"Warning: Could not load DatabaseQueryTool: {e}")
+        
+        try:
+            from tools.experimental.BrowserAutomationTool import BrowserAutomationTool
+            browser_automation_tool = BrowserAutomationTool(orchestrator=tool_orchestrator)
+            registry.register_tool(browser_automation_tool)
+            print(f"[DEBUG] BrowserAutomationTool loaded successfully")
+        except Exception as e:
+            print(f"Warning: Could not load BrowserAutomationTool: {e}")
         executor = SecureExecutor(registry)
         parser = PlanParser()
         permission_gate = PermissionGate()
@@ -243,7 +263,7 @@ if SYSTEM_AVAILABLE:
         from core.autonomous_agent import AutonomousAgent
         
         task_planner = TaskPlanner(llm_client, registry)
-        execution_engine = ExecutionEngine(registry)
+        execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator)
         memory_system = MemorySystem()
         autonomous_agent = AutonomousAgent(
             task_planner=task_planner,
@@ -307,6 +327,13 @@ if SYSTEM_AVAILABLE:
             # Set agent dependencies
             from api.agent_api import set_agent_dependencies
             set_agent_dependencies(autonomous_agent, memory_system, execution_engine)
+            
+            # Set services dependencies
+            from core.pending_services_manager import PendingServicesManager
+            from core.service_injector import ServiceInjector
+            pending_services_manager = PendingServicesManager()
+            service_injector = ServiceInjector()
+            set_services_dependencies(pending_services_manager, service_injector)
         
         print("CUA system initialized successfully")
     except Exception as e:
@@ -454,6 +481,14 @@ def _decision_tool_summary(registry) -> str:
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
+    from core.input_validation import validate_text_input
+    
+    # Validate input size
+    try:
+        validate_text_input(request.message, max_length=50000, field_name="message")
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    
     session_id = request.session_id or str(uuid4())
     
     if session_id not in sessions:

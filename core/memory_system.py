@@ -1,6 +1,7 @@
 """Memory System - Manages conversation context and learned patterns."""
 import json
 import logging
+import sqlite3
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
@@ -39,29 +40,37 @@ class ConversationContext:
 
 
 class MemorySystem:
-    """Manages short-term and long-term memory."""
+    """Manages short-term and long-term memory with SQLite persistence."""
     
-    def __init__(self, storage_dir: str = "data/memory"):
-        self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_path: str = "data/conversations.db"):
+        self.db_path = db_path
+        self._init_db()
         
         # In-memory cache for active sessions
         self.active_sessions: Dict[str, ConversationContext] = {}
-        
-        # Learned patterns storage
-        self.patterns_file = self.storage_dir / "learned_patterns.json"
-        self.patterns = self._load_patterns()
     
     def create_session(self, session_id: str, user_preferences: Optional[Dict] = None) -> ConversationContext:
         """Create new conversation session."""
+        now = datetime.now().isoformat()
         context = ConversationContext(
             session_id=session_id,
             messages=[],
-            user_preferences=user_preferences or {}
+            user_preferences=user_preferences or {},
+            created_at=now,
+            updated_at=now
         )
         
         self.active_sessions[session_id] = context
-        self._save_session(context)
+        
+        # Save to SQLite
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO sessions (session_id, user_preferences, active_goal, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, json.dumps(user_preferences or {}), None, now, now)
+        )
+        conn.commit()
+        conn.close()
         
         logger.info(f"Created session: {session_id}")
         return context
@@ -72,26 +81,59 @@ class MemorySystem:
         if session_id in self.active_sessions:
             return self.active_sessions[session_id]
         
-        # Load from disk
-        session_file = self.storage_dir / f"session_{session_id}.json"
-        if session_file.exists():
-            try:
-                data = json.loads(session_file.read_text())
-                context = ConversationContext(
-                    session_id=data["session_id"],
-                    messages=[ConversationMessage(**msg) for msg in data["messages"]],
-                    user_preferences=data["user_preferences"],
-                    active_goal=data.get("active_goal"),
-                    execution_history=data.get("execution_history", []),
-                    created_at=data["created_at"],
-                    updated_at=data["updated_at"]
-                )
-                self.active_sessions[session_id] = context
-                return context
-            except Exception as e:
-                logger.error(f"Failed to load session {session_id}: {e}")
+        # Load from SQLite
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        return None
+        # Get session metadata
+        cursor.execute(
+            "SELECT user_preferences, active_goal, created_at, updated_at FROM sessions WHERE session_id = ?",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+        
+        user_prefs, active_goal, created_at, updated_at = row
+        
+        # Get messages
+        cursor.execute(
+            "SELECT role, content, timestamp, metadata FROM conversations WHERE session_id = ? ORDER BY timestamp",
+            (session_id,)
+        )
+        messages = [
+            ConversationMessage(
+                role=r[0],
+                content=r[1],
+                timestamp=r[2],
+                metadata=json.loads(r[3]) if r[3] else None
+            )
+            for r in cursor.fetchall()
+        ]
+        
+        # Get execution history
+        cursor.execute(
+            "SELECT execution_id FROM execution_history WHERE session_id = ? ORDER BY timestamp",
+            (session_id,)
+        )
+        execution_history = [r[0] for r in cursor.fetchall()]
+        
+        conn.close()
+        
+        context = ConversationContext(
+            session_id=session_id,
+            messages=messages,
+            user_preferences=json.loads(user_prefs) if user_prefs else {},
+            active_goal=active_goal,
+            execution_history=execution_history,
+            created_at=created_at,
+            updated_at=updated_at
+        )
+        
+        self.active_sessions[session_id] = context
+        return context
     
     def add_message(
         self,
@@ -105,17 +147,30 @@ class MemorySystem:
         if not context:
             context = self.create_session(session_id)
         
+        now = datetime.now().isoformat()
         message = ConversationMessage(
             role=role,
             content=content,
-            timestamp=datetime.now().isoformat(),
+            timestamp=now,
             metadata=metadata
         )
         
         context.messages.append(message)
-        context.updated_at = datetime.now().isoformat()
+        context.updated_at = now
         
-        self._save_session(context)
+        # Save to SQLite
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO conversations (session_id, timestamp, role, content, metadata) VALUES (?, ?, ?, ?, ?)",
+            (session_id, now, role, content, json.dumps(metadata) if metadata else None)
+        )
+        cursor.execute(
+            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+            (now, session_id)
+        )
+        conn.commit()
+        conn.close()
     
     def get_recent_messages(
         self,
@@ -158,81 +213,151 @@ class MemorySystem:
         """Set active goal for session."""
         context = self.get_session(session_id)
         if context:
+            now = datetime.now().isoformat()
             context.active_goal = goal
-            context.updated_at = datetime.now().isoformat()
-            self._save_session(context)
+            context.updated_at = now
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET active_goal = ?, updated_at = ? WHERE session_id = ?",
+                (goal, now, session_id)
+            )
+            conn.commit()
+            conn.close()
     
     def add_execution(self, session_id: str, execution_id: str):
         """Link execution to session."""
         context = self.get_session(session_id)
         if context:
+            now = datetime.now().isoformat()
             context.execution_history.append(execution_id)
-            context.updated_at = datetime.now().isoformat()
-            self._save_session(context)
+            context.updated_at = now
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO execution_history (session_id, execution_id, timestamp) VALUES (?, ?, ?)",
+                (session_id, execution_id, now)
+            )
+            cursor.execute(
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                (now, session_id)
+            )
+            conn.commit()
+            conn.close()
     
     def update_preference(self, session_id: str, key: str, value: Any):
         """Update user preference."""
         context = self.get_session(session_id)
         if context:
+            now = datetime.now().isoformat()
             context.user_preferences[key] = value
-            context.updated_at = datetime.now().isoformat()
-            self._save_session(context)
+            context.updated_at = now
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET user_preferences = ?, updated_at = ? WHERE session_id = ?",
+                (json.dumps(context.user_preferences), now, session_id)
+            )
+            conn.commit()
+            conn.close()
     
     def learn_pattern(self, pattern_type: str, pattern_data: Dict[str, Any]):
         """Store learned pattern for future use."""
-        if pattern_type not in self.patterns:
-            self.patterns[pattern_type] = []
+        now = datetime.now().isoformat()
         
-        pattern_data["learned_at"] = datetime.now().isoformat()
-        self.patterns[pattern_type].append(pattern_data)
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO learned_patterns (pattern_type, pattern_data, learned_at) VALUES (?, ?, ?)",
+            (pattern_type, json.dumps(pattern_data), now)
+        )
+        conn.commit()
         
-        # Keep only recent patterns (last 100 per type)
-        self.patterns[pattern_type] = self.patterns[pattern_type][-100:]
+        # Keep only recent 100 patterns per type
+        cursor.execute(
+            """DELETE FROM learned_patterns WHERE id NOT IN (
+                SELECT id FROM learned_patterns WHERE pattern_type = ? ORDER BY learned_at DESC LIMIT 100
+            ) AND pattern_type = ?""",
+            (pattern_type, pattern_type)
+        )
+        conn.commit()
+        conn.close()
         
-        self._save_patterns()
         logger.info(f"Learned new pattern: {pattern_type}")
     
     def get_patterns(self, pattern_type: str, limit: int = 10) -> List[Dict]:
         """Get learned patterns of specific type."""
-        return self.patterns.get(pattern_type, [])[-limit:]
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT pattern_data FROM learned_patterns WHERE pattern_type = ? ORDER BY learned_at DESC LIMIT ?",
+            (pattern_type, limit)
+        )
+        patterns = [json.loads(r[0]) for r in cursor.fetchall()]
+        conn.close()
+        return patterns
     
     def clear_session(self, session_id: str):
-        """Clear session from memory and disk."""
+        """Clear session from memory and database."""
         if session_id in self.active_sessions:
             del self.active_sessions[session_id]
         
-        session_file = self.storage_dir / f"session_{session_id}.json"
-        if session_file.exists():
-            session_file.unlink()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+        cursor.execute("DELETE FROM execution_history WHERE session_id = ?", (session_id,))
+        conn.commit()
+        conn.close()
         
         logger.info(f"Cleared session: {session_id}")
     
-    def _save_session(self, context: ConversationContext):
-        """Save session to disk."""
-        session_file = self.storage_dir / f"session_{context.session_id}.json"
+    def _init_db(self):
+        """Initialize SQLite database with required tables."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        data = {
-            "session_id": context.session_id,
-            "messages": [asdict(msg) for msg in context.messages],
-            "user_preferences": context.user_preferences,
-            "active_goal": context.active_goal,
-            "execution_history": context.execution_history,
-            "created_at": context.created_at,
-            "updated_at": context.updated_at
-        }
+        # Sessions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                user_preferences TEXT,
+                active_goal TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         
-        session_file.write_text(json.dumps(data, indent=2))
-    
-    def _load_patterns(self) -> Dict[str, List[Dict]]:
-        """Load learned patterns from disk."""
-        if self.patterns_file.exists():
-            try:
-                return json.loads(self.patterns_file.read_text())
-            except Exception as e:
-                logger.error(f"Failed to load patterns: {e}")
+        # Execution history table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS execution_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                execution_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+            )
+        """)
         
-        return {}
-    
-    def _save_patterns(self):
-        """Save learned patterns to disk."""
-        self.patterns_file.write_text(json.dumps(self.patterns, indent=2))
+        # Learned patterns table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learned_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_type TEXT NOT NULL,
+                pattern_data TEXT NOT NULL,
+                learned_at TEXT NOT NULL
+            )
+        """)
+        
+        # Create indexes for performance
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_execution_session ON execution_history(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patterns_type ON learned_patterns(pattern_type, learned_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id, timestamp)")
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info("Memory system database initialized")

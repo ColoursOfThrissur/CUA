@@ -100,9 +100,13 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
             </select>
           </div>
           <div className="settings-divider"></div>
-          <button className="settings-menu-item" onClick={() => setShowSettings(false)}>
+          <button className="settings-menu-item" onClick={() => { setShowSettings(false); onOpenObservability(); }}>
             <Database size={16} />
             Observability
+          </button>
+          <button className="settings-menu-item" onClick={() => { setShowSettings(false); window.dispatchEvent(new CustomEvent('openOverlay', { detail: 'sessions' })); }}>
+            <MessageSquare size={16} />
+            Sessions
           </button>
         </div>
       )}

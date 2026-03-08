@@ -11,6 +11,7 @@ from core.storage_broker import get_storage_broker
 from core.tool_services import ToolServices
 from core.validation_service import ValidationService
 from core.tool_execution_logger import get_execution_logger
+from core.circuit_breaker import get_circuit_breaker, CircuitBreakerError
 
 
 @dataclass
@@ -35,6 +36,7 @@ class ToolOrchestrator:
         self._llm_client = llm_client
         self._registry = registry
         self._execution_logger = get_execution_logger()
+        self._circuit_breaker = get_circuit_breaker()
     
     def get_services(self, tool_name: str) -> ToolServices:
         """Get service facade for a tool (cached per tool name)."""
@@ -103,7 +105,36 @@ class ToolOrchestrator:
             resolution.resolved_parameters.update(validation.sanitized)
 
         try:
-            raw_result = self._execute_tool_compat(tool, operation, resolution.resolved_parameters)
+            # Wrap execution with circuit breaker
+            raw_result = self._circuit_breaker.call(
+                tool_name,
+                self._execute_tool_compat,
+                tool, operation, resolution.resolved_parameters
+            )
+        except CircuitBreakerError as e:
+            # Circuit is open - tool is quarantined
+            execution_time_ms = (time.time() - start_time) * 1000
+            self._execution_logger.log_execution(
+                tool_name=tool_name,
+                operation=operation,
+                success=False,
+                error=f"Circuit breaker OPEN: {str(e)}",
+                execution_time_ms=execution_time_ms,
+                parameters=resolution.resolved_parameters,
+                output_data=None
+            )
+            return OrchestratedToolResult(
+                success=False,
+                data=None,
+                error=f"Tool quarantined due to repeated failures. {str(e)}",
+                raw_result=None,
+                tool_name=tool_name,
+                operation=operation,
+                resolved_parameters=resolution.resolved_parameters,
+                missing_required=[],
+                artifacts=[],
+                meta={"auto_filled": resolution.auto_filled, "circuit_breaker": "open"},
+            )
         except Exception as e:
             # Log failed execution
             execution_time_ms = (time.time() - start_time) * 1000

@@ -1,0 +1,224 @@
+.session-management {
+  display: flex;
+  height: 100%;
+  gap: 20px;
+}
+
+.session-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-header {
+  padding: 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.session-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.session-item {
+  position: relative;
+  padding: 15px;
+  margin-bottom: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.session-item:hover {
+  border-color: var(--accent-color);
+  transform: translateX(4px);
+}
+
+.session-item.selected {
+  border-color: var(--accent-color);
+  background: var(--accent-bg);
+}
+
+.session-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.session-id {
+  font-family: monospace;
+  font-size: 14px;
+}
+
+.session-item-stats {
+  display: flex;
+  gap: 15px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.session-item-stats span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-goal {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--accent-bg);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--accent-color);
+}
+
+.session-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.session-delete:hover {
+  background: var(--danger-bg);
+  color: var(--danger-color);
+}
+
+.session-details {
+  flex: 1.5;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-color);
+  padding-left: 20px;
+}
+
+.session-details-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-details-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.session-details-header button {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0 8px;
+}
+
+.session-info {
+  padding: 15px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.info-row {
+  display: flex;
+  padding: 8px 0;
+}
+
+.info-label {
+  flex: 0 0 120px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.info-value {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.session-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding-top: 15px;
+}
+
+.session-messages h4 {
+  margin: 0 0 15px 0;
+  color: var(--text-primary);
+}
+
+.messages-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.message {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.message-user {
+  background: var(--accent-bg);
+  border-color: var(--accent-color);
+}
+
+.message-assistant {
+  background: var(--card-bg);
+}
+
+.message-system {
+  background: var(--warning-bg);
+  border-color: var(--warning-color);
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.message-role {
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--text-primary);
+}
+
+.message-time {
+  color: var(--text-secondary);
+}
+
+.message-content {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.session-loading,
+.session-empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-secondary);
+}
