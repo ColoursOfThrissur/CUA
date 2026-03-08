@@ -149,6 +149,80 @@ class LLMTestOrchestrator:
             test_results=test_results,
             performance_metrics=perf_metrics
         )
+
+    def run_test_suite(self, tool_name: str) -> Dict[str, Any]:
+        """
+        Run an LLM-generated test suite across all capabilities for a tool.
+
+        Returns a dict compatible with callers like AutoEvolutionOrchestrator:
+        {
+            "tool_name": str,
+            "overall_score": int (0-100),
+            "pass_rate": float (0-1),
+            "capabilities_tested": int,
+            "suites": [...],
+        }
+        """
+        if not self.registry:
+            return {
+                "tool_name": tool_name,
+                "overall_score": 0,
+                "pass_rate": 0.0,
+                "capabilities_tested": 0,
+                "suites": [],
+                "error": "No registry available for test execution",
+            }
+
+        tool = self.registry.get_tool_by_name(tool_name)
+        if not tool:
+            return {
+                "tool_name": tool_name,
+                "overall_score": 0,
+                "pass_rate": 0.0,
+                "capabilities_tested": 0,
+                "suites": [],
+                "error": f"Tool '{tool_name}' not found",
+            }
+
+        capabilities = tool.get_capabilities() if hasattr(tool, "get_capabilities") else {}
+        suites: List[Dict[str, Any]] = []
+        total_tests = 0
+        total_passed = 0
+        quality_scores: List[int] = []
+
+        for cap_name, cap in capabilities.items():
+            test_cases = self.generate_test_cases(tool_name, {
+                "name": cap_name,
+                "description": getattr(cap, "description", ""),
+                "parameters": [p.__dict__ for p in getattr(cap, "parameters", [])],
+                "returns": getattr(cap, "returns", ""),
+                "safety_level": getattr(getattr(cap, "safety_level", None), "value", ""),
+            })
+            suite_result = self.execute_test_suite(tool_name, cap_name, test_cases)
+            suites.append({
+                "capability": cap_name,
+                "total_tests": suite_result.total_tests,
+                "passed_tests": suite_result.passed_tests,
+                "failed_tests": suite_result.failed_tests,
+                "overall_quality_score": suite_result.overall_quality_score,
+            })
+            total_tests += suite_result.total_tests
+            total_passed += suite_result.passed_tests
+            quality_scores.append(suite_result.overall_quality_score)
+
+        pass_rate = (total_passed / total_tests) if total_tests else 0.0
+        avg_quality = int(sum(quality_scores) / len(quality_scores)) if quality_scores else 0
+
+        # Conservative overall score: mix pass rate and quality score.
+        overall_score = int(min(100, (pass_rate * 70) + (avg_quality * 0.30)))
+
+        return {
+            "tool_name": tool_name,
+            "overall_score": overall_score,
+            "pass_rate": pass_rate,
+            "capabilities_tested": len(capabilities),
+            "suites": suites,
+        }
     
     def _execute_single_test(self, tool_name: str, capability_name: str, 
                             test_case: TestCase) -> TestResult:

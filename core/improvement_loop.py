@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class SelfImprovementLoop:
     """Enhanced with Hybrid Improvement Engine"""
     
-    def __init__(self, llm_client, orchestrator, max_iterations=10, libraries_manager=None):
+    def __init__(self, llm_client, orchestrator, max_iterations=10, libraries_manager=None, registry=None):
         # Initialize components
         self.llm_client = llm_client
         self.update_orchestrator = orchestrator
@@ -54,7 +54,7 @@ class SelfImprovementLoop:
             self.plan_history,
             self.analytics,
             max_iterations,
-            registry=None  # TODO: Pass actual registry when available
+            registry=registry
         )
         
         # Expose controller properties for compatibility

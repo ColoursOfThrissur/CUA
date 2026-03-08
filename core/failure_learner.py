@@ -1,11 +1,15 @@
 """
 Failure Learner - Track failed patches and learn from mistakes
 """
-import sqlite3
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
+
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("failure_learner")
 
 class FailureLearner:
     """Learn from failed patches to improve future risk assessment"""
@@ -17,7 +21,10 @@ class FailureLearner:
     
     def _init_db(self):
         """Initialize failure patterns database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("Failure patterns DB unavailable; failure learning disabled for now")
+            return
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -44,13 +51,15 @@ class FailureLearner:
         ''')
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def log_failure(self, file_path: str, change_type: str, failure_reason: str,
                    error_message: str = "", methods_affected: List[str] = None,
                    lines_changed: int = 0, metadata: Dict = None, is_environment_failure: bool = False):
         """Log a failed patch"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -70,7 +79,7 @@ class FailureLearner:
         ))
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
         
         # Only update risk weights for logic failures, not environment failures
         if not is_environment_failure:
@@ -78,7 +87,9 @@ class FailureLearner:
     
     def _update_risk_weights(self, file_path: str, change_type: str, failure_reason: str):
         """Update risk weights based on failure patterns"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         cursor = conn.cursor()
         
         # Create pattern key
@@ -113,11 +124,13 @@ class FailureLearner:
                 ''', (pattern, 0.2, 1, datetime.now().isoformat()))
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def get_risk_weight(self, file_path: str, change_type: str) -> float:
         """Get risk weight for a file/change type combination with temporal decay"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return 0.0
         cursor = conn.cursor()
         
         patterns = [
@@ -148,14 +161,16 @@ class FailureLearner:
                 # Cap at 0.8 to prevent permanent blacklisting
                 weights.append(min(0.8, decayed_weight))
         
-        conn.close()
+        safe_close(conn)
         
         # Return max weight if any patterns match
         return max(weights) if weights else 0.0
     
     def get_failure_history(self, file_path: str, limit: int = 10) -> List[Dict]:
         """Get failure history for a file"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -178,12 +193,14 @@ class FailureLearner:
                 'lines_changed': row[5]
             })
         
-        conn.close()
+        safe_close(conn)
         return failures
     
     def get_high_risk_patterns(self, threshold: float = 0.5) -> List[Dict]:
         """Get patterns with high failure rates"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -202,12 +219,14 @@ class FailureLearner:
                 'last_updated': row[3]
             })
         
-        conn.close()
+        safe_close(conn)
         return patterns
     
     def reset_pattern(self, pattern: str):
         """Reset risk weight for a pattern (after successful fix)"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -217,7 +236,7 @@ class FailureLearner:
         ''', (datetime.now().isoformat(), pattern))
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def check_consecutive_successes(self, file_path: str, change_type: str) -> int:
         """Check consecutive successes for a file/type - used for weight reset"""
@@ -227,7 +246,9 @@ class FailureLearner:
     
     def get_statistics(self) -> Dict:
         """Get overall failure statistics"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return {'total_failures': 0, 'by_change_type': {}, 'top_failure_reasons': {}}
         cursor = conn.cursor()
         
         cursor.execute('SELECT COUNT(*) FROM failures')
@@ -249,7 +270,7 @@ class FailureLearner:
         ''')
         top_reasons = dict(cursor.fetchall())
         
-        conn.close()
+        safe_close(conn)
         
         return {
             'total_failures': total_failures,

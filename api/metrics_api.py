@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Query
 from typing import Optional
 from core.metrics_aggregator import get_metrics_aggregator
+from core.sqlite_utils import safe_connect, safe_close
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -60,9 +61,11 @@ async def get_metrics_summary():
     top_tools = []
     
     if metrics_db.exists():
-        with sqlite3.connect(metrics_db) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
+        conn = safe_connect(metrics_db)
+        if conn:
+            try:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
                 SELECT tool_name, SUM(total_executions) as total
                 FROM tool_metrics_hourly
                 WHERE hour_timestamp >= ?
@@ -71,7 +74,9 @@ async def get_metrics_summary():
                 LIMIT 10
             """, (int(time.time() // 3600) * 3600 - 86400,))  # Last 24 hours
             
-            top_tools = [dict(row) for row in cursor.fetchall()]
+                top_tools = [dict(row) for row in cursor.fetchall()]
+            finally:
+                safe_close(conn)
     
     return {
         "latest_system_metrics": latest_system,

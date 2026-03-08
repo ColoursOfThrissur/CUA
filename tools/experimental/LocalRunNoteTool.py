@@ -22,7 +22,7 @@ class LocalRunNoteTool(BaseTool):
             name='create',
             description='Create Operation',
             parameters=[
-            Parameter(name='note_id', type=ParameterType.STRING, description='Parameter note_id', required=True),
+            Parameter(name='note_id', type=ParameterType.STRING, description='Parameter note_id', required=False, default=''),
             Parameter(name='text', type=ParameterType.STRING, description='Parameter text', required=True),
             Parameter(name='tags', type=ParameterType.LIST, description='Parameter tags', required=False),
             Parameter(name='status', type=ParameterType.STRING, description='Parameter status', required=False, default='active')
@@ -86,15 +86,15 @@ class LocalRunNoteTool(BaseTool):
         )
 
     def _handle_create(self, **kwargs):
-            note_id = kwargs.get('note_id')
+            note_id = kwargs.get('note_id') or ""
             text = kwargs.get('text')
             tags = kwargs.get('tags', [])
             status = kwargs.get('status', 'active')
 
-            if not note_id or not text:
-                raise ValueError("Missing required parameters: note_id and text")
+            if not text:
+                raise ValueError("Missing required parameter: text")
 
-            if note_id == "":
+            if not note_id:
                 try:
                     note_id = self.services.ids.generate()
                 except Exception as e:

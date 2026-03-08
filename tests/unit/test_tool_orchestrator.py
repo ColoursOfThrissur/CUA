@@ -142,8 +142,7 @@ def test_tool_orchestrator_supports_legacy_execute_capability():
 def test_tool_orchestrator_preserves_internal_type_errors_for_dict_signature():
     orchestrator = ToolOrchestrator()
     tool = InternalTypeErrorTool()
-    try:
-        orchestrator.execute_tool_step(tool, "InternalTypeErrorTool", "create", {"contact_id": "x"})
-        assert False, "Expected TypeError"
-    except TypeError as e:
-        assert "isinstance() arg 2 must be a type" in str(e)
+    result = orchestrator.execute_tool_step(tool, "InternalTypeErrorTool", "create", {"contact_id": "x"})
+    assert result.success is False
+    assert "isinstance() arg 2 must be a type" in (result.error or "")
+    assert result.meta.get("exception") == "TypeError"

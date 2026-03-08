@@ -87,6 +87,62 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
                   )}
                   {msg.content}
                 </div>
+                {msg.role === 'assistant' && msg.execution_result?.status === 'awaiting_approval' && msg.execution_result?.plan && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '12px',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '10px',
+                    background: 'rgba(255,255,255,0.04)'
+                  }}>
+                    <div style={{ fontWeight: 700, marginBottom: '6px' }}>Plan approval required</div>
+                    {Array.isArray(msg.execution_result.plan.steps) && (
+                      <div style={{ fontSize: '13px', opacity: 0.9, marginBottom: '10px' }}>
+                        {msg.execution_result.plan.steps.slice(0, 8).map((s) => (
+                          <div key={s.step_id} style={{ marginBottom: '4px' }}>
+                            <span style={{ opacity: 0.8 }}>{s.step_id}:</span> {s.description}{' '}
+                            <span style={{ opacity: 0.8 }}>({s.tool_name}.{s.operation})</span>
+                          </div>
+                        ))}
+                        {msg.execution_result.plan.steps.length > 8 && (
+                          <div style={{ opacity: 0.7 }}>…and {msg.execution_result.plan.steps.length - 8} more steps</div>
+                        )}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      <button
+                        disabled={isProcessing}
+                        onClick={() => onSendMessage('go ahead')}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: 'none',
+                          background: '#22c55e',
+                          color: '#fff',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Approve & Run
+                      </button>
+                      <button
+                        disabled={isProcessing}
+                        onClick={() => onSendMessage('cancel')}
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid rgba(255,255,255,0.2)',
+                          background: 'transparent',
+                          color: 'inherit',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {msg.components && <OutputRenderer components={msg.components} />}
                 {msg.timestamp && (
                   <div className="message-time">{msg.timestamp}</div>

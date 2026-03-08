@@ -4,6 +4,8 @@ from typing import Optional
 import sqlite3
 from pathlib import Path
 
+from core.sqlite_utils import safe_connect, safe_close
+
 router = APIRouter()
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -24,7 +26,10 @@ def query_db(db_name: str, limit: int = 100, offset: int = 0):
     if not db_path.exists():
         return []
     
-    with sqlite3.connect(str(db_path)) as conn:
+    conn = safe_connect(str(db_path))
+    if not conn:
+        return []
+    try:
         conn.row_factory = sqlite3.Row
         
         # Get table name (assume first table)
@@ -42,6 +47,8 @@ def query_db(db_name: str, limit: int = 100, offset: int = 0):
             (limit, offset)
         )
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        safe_close(conn)
 
 
 @router.get("/observability/logs")

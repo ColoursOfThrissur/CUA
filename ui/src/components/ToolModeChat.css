@@ -34,6 +34,90 @@
   max-width: 700px;
 }
 
+.tool-suggest-row {
+  display: flex;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 700px;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.tool-suggest-btn,
+.tool-apply-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  font-weight: 600;
+}
+
+.tool-suggest-btn:hover:not(:disabled),
+.tool-apply-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.tool-suggest-btn:disabled,
+.tool-apply-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tool-suggestion-card {
+  width: 100%;
+  max-width: 700px;
+  padding: 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  margin-bottom: 1rem;
+}
+
+.tool-suggestion-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.tool-suggestion-title .name {
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.tool-suggestion-title .meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.tool-suggestion-sub {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.tool-suggestion-desc {
+  margin-top: 0.75rem;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.tool-suggestion-why {
+  margin-top: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
 .tool-name-input {
   font-size: 0.9rem;
   padding: 0.75rem 1.25rem;

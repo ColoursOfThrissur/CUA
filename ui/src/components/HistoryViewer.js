@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 import './HistoryViewer.css';
 
 function HistoryViewer({ onViewDiff }) {
@@ -11,7 +12,7 @@ function HistoryViewer({ onViewDiff }) {
 
   const fetchHistory = async () => {
     try {
-      const response = await fetch('http://localhost:8000/improvement/history');
+      const response = await fetch(`${API_URL}/improvement/history`);
       const data = await response.json();
       setHistory(data.history || []);
     } catch (error) {
@@ -21,7 +22,7 @@ function HistoryViewer({ onViewDiff }) {
 
   const handleViewDetails = async (planId) => {
     try {
-      const response = await fetch(`http://localhost:8000/improvement/history/${planId}`);
+      const response = await fetch(`${API_URL}/improvement/history/${planId}`);
       const data = await response.json();
       setSelectedPlan(data);
     } catch (error) {
@@ -35,7 +36,7 @@ function HistoryViewer({ onViewDiff }) {
     }
 
     try {
-      const response = await fetch(`http://localhost:8000/improvement/rollback/${planId}`, {
+      const response = await fetch(`${API_URL}/improvement/rollback/${planId}`, {
         method: 'POST'
       });
 

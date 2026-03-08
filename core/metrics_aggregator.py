@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Dict, List, Any
 import statistics
 
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("metrics_aggregator")
+
 class MetricsAggregator:
     """Aggregates raw execution data into hourly metrics."""
     
@@ -19,7 +24,11 @@ class MetricsAggregator:
     
     def _init_db(self):
         """Initialize metrics database schema."""
-        with sqlite3.connect(self.metrics_db) as conn:
+        conn = safe_connect(self.metrics_db)
+        if not conn:
+            logger.warning("Metrics DB unavailable; metrics disabled for now")
+            return
+        try:
             # Tool metrics by hour
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tool_metrics_hourly (
@@ -75,13 +84,18 @@ class MetricsAggregator:
             """)
             
             conn.commit()
+        finally:
+            safe_close(conn)
     
     def aggregate_tool_metrics(self, hours_back: int = 1):
         """Aggregate tool execution data into hourly metrics."""
         current_hour = int(time.time() // 3600) * 3600
         start_hour = current_hour - (hours_back * 3600)
         
-        with sqlite3.connect(self.executions_db) as exec_conn:
+        exec_conn = safe_connect(self.executions_db)
+        if not exec_conn:
+            return
+        try:
             exec_conn.row_factory = sqlite3.Row
             
             # Get all tools with executions in time range
@@ -92,7 +106,10 @@ class MetricsAggregator:
             
             tools = [row['tool_name'] for row in cursor.fetchall()]
             
-            with sqlite3.connect(self.metrics_db) as metrics_conn:
+            metrics_conn = safe_connect(self.metrics_db)
+            if not metrics_conn:
+                return
+            try:
                 for tool_name in tools:
                     # Get executions for this tool in the hour
                     cursor = exec_conn.execute("""
@@ -134,13 +151,20 @@ class MetricsAggregator:
                           avg_duration, p50, p95, p99, error_rate, avg_output))
                 
                 metrics_conn.commit()
+            finally:
+                safe_close(metrics_conn)
+        finally:
+            safe_close(exec_conn)
     
     def aggregate_system_metrics(self, hours_back: int = 1):
         """Aggregate system-wide metrics."""
         current_hour = int(time.time() // 3600) * 3600
         start_hour = current_hour - (hours_back * 3600)
         
-        with sqlite3.connect(self.executions_db) as exec_conn:
+        exec_conn = safe_connect(self.executions_db)
+        if not exec_conn:
+            return
+        try:
             # Get system-wide stats
             cursor = exec_conn.execute("""
                 SELECT 
@@ -162,22 +186,29 @@ class MetricsAggregator:
             success_rate = 0
             
             if evolution_db.exists():
-                with sqlite3.connect(evolution_db) as evo_conn:
-                    cursor = evo_conn.execute("""
-                        SELECT 
-                            COUNT(*) as total,
-                            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
-                        FROM evolution_runs
-                        WHERE timestamp >= ? AND timestamp < ?
-                    """, (datetime.fromtimestamp(start_hour).isoformat(),
-                          datetime.fromtimestamp(start_hour + 3600).isoformat()))
-                    
-                    row = cursor.fetchone()
-                    if row and row[0]:
-                        total_evolutions = row[0]
-                        success_rate = (row[1] / row[0] * 100) if row[0] > 0 else 0
+                evo_conn = safe_connect(evolution_db)
+                if evo_conn:
+                    try:
+                        cursor = evo_conn.execute("""
+                            SELECT 
+                                COUNT(*) as total,
+                                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
+                            FROM evolution_runs
+                            WHERE timestamp >= ? AND timestamp < ?
+                        """, (datetime.fromtimestamp(start_hour).isoformat(),
+                              datetime.fromtimestamp(start_hour + 3600).isoformat()))
+                        
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            total_evolutions = row[0]
+                            success_rate = (row[1] / row[0] * 100) if row[0] > 0 else 0
+                    finally:
+                        safe_close(evo_conn)
             
-            with sqlite3.connect(self.metrics_db) as metrics_conn:
+            metrics_conn = safe_connect(self.metrics_db)
+            if not metrics_conn:
+                return
+            try:
                 metrics_conn.execute("""
                     INSERT OR REPLACE INTO system_metrics_hourly
                     (hour_timestamp, total_tool_calls, total_evolutions, evolution_success_rate,
@@ -185,12 +216,19 @@ class MetricsAggregator:
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (start_hour, total_calls, total_evolutions, success_rate, avg_time, unique_tools))
                 metrics_conn.commit()
+            finally:
+                safe_close(metrics_conn)
+        finally:
+            safe_close(exec_conn)
     
     def get_tool_metrics(self, tool_name: str, hours: int = 24) -> List[Dict[str, Any]]:
         """Get tool metrics for last N hours."""
         cutoff = int(time.time() // 3600) * 3600 - (hours * 3600)
         
-        with sqlite3.connect(self.metrics_db) as conn:
+        conn = safe_connect(self.metrics_db)
+        if not conn:
+            return []
+        try:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT * FROM tool_metrics_hourly
@@ -199,12 +237,17 @@ class MetricsAggregator:
             """, (tool_name, cutoff))
             
             return [dict(row) for row in cursor.fetchall()]
+        finally:
+            safe_close(conn)
     
     def get_system_metrics(self, hours: int = 24) -> List[Dict[str, Any]]:
         """Get system metrics for last N hours."""
         cutoff = int(time.time() // 3600) * 3600 - (hours * 3600)
         
-        with sqlite3.connect(self.metrics_db) as conn:
+        conn = safe_connect(self.metrics_db)
+        if not conn:
+            return []
+        try:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT * FROM system_metrics_hourly
@@ -213,6 +256,8 @@ class MetricsAggregator:
             """, (cutoff,))
             
             return [dict(row) for row in cursor.fetchall()]
+        finally:
+            safe_close(conn)
     
     def run_aggregation(self):
         """Run full aggregation for last hour."""

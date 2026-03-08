@@ -247,7 +247,13 @@ if SYSTEM_AVAILABLE:
         
         # Initialize self-improvement loop
         orchestrator = UpdateOrchestrator(repo_path=".")
-        improvement_loop = SelfImprovementLoop(llm_client, orchestrator, max_iterations=config.improvement.max_iterations, libraries_manager=libraries_manager)
+        improvement_loop = SelfImprovementLoop(
+            llm_client,
+            orchestrator,
+            max_iterations=config.improvement.max_iterations,
+            libraries_manager=libraries_manager,
+            registry=registry,
+        )
         
         # Subscribe to event bus
         from core.event_bus import get_event_bus
@@ -450,6 +456,27 @@ def _execute_dynamic_capability(registry, llm_client, message: str):
 
     return registry.execute_capability(capability, **arguments)
 
+def _record_capability_gap(task: str, error: str = "") -> None:
+    """Best-effort: detect and persist capability gaps for self-directed growth."""
+    try:
+        from core.capability_mapper import CapabilityMapper
+        from core.gap_detector import GapDetector
+        from core.gap_tracker import GapTracker
+
+        mapper = CapabilityMapper()
+        mapper.build_capability_graph()
+
+        detector = GapDetector(mapper)
+        gap = detector.analyze_failed_task(task, error or "")
+        if not gap or gap.confidence < 0.75:
+            return
+
+        tracker = GapTracker()
+        tracker.record_gap(gap)
+    except Exception:
+        # Never let gap tracking break chat.
+        return
+
 def _needs_runtime_refresh(message: str) -> bool:
     text = (message or "")
     lower = text.lower()
@@ -482,6 +509,7 @@ def _decision_tool_summary(registry) -> str:
 @app.post("/chat")
 async def chat(request: ChatRequest):
     from core.input_validation import validate_text_input
+    from dataclasses import asdict
     
     # Validate input size
     try:
@@ -513,6 +541,54 @@ async def chat(request: ChatRequest):
     
     try:
         if SYSTEM_AVAILABLE and registry and llm_client:
+            # If the previous assistant turn paused for an autonomous-agent plan approval,
+            # allow the user to approve/reject that plan directly in chat.
+            pending_plan = sessions[session_id].get("pending_agent_plan")
+            if pending_plan is not None:
+                msg_norm = (request.message or "").strip().lower()
+                approve_words = {"go ahead", "approve", "approved", "yes", "ok", "okay", "continue", "proceed", "run it", "do it"}
+                reject_words = {"no", "reject", "cancel", "stop", "abort"}
+
+                if msg_norm in approve_words:
+                    sessions[session_id].pop("pending_agent_plan", None)
+                    sessions[session_id].pop("pending_agent_plan_iteration", None)
+
+                    execution_id = f"{session_id}_approved_{int(time.time())}"
+                    try:
+                        state = execution_engine.execute_plan(pending_plan, execution_id) if execution_engine else None
+                        if state and getattr(state, "error", None):
+                            response_text = f"Plan approved, but execution failed: {state.error}"
+                            execution_result = {"success": False, "mode": "autonomous_agent", "status": "execution_failed", "execution_id": execution_id, "error": state.error}
+                        else:
+                            response_text = "✓ Plan approved and executed."
+                            execution_result = {"success": True, "mode": "autonomous_agent", "status": "executed", "execution_id": execution_id}
+                    except Exception as e:
+                        response_text = f"Plan approved, but execution failed: {str(e)}"
+                        execution_result = {"success": False, "mode": "autonomous_agent", "status": "execution_failed", "error": str(e)}
+
+                    sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
+                    if conversation_memory:
+                        conversation_memory.save_message(session_id, "assistant", response_text)
+                    return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
+
+                if msg_norm in reject_words:
+                    sessions[session_id].pop("pending_agent_plan", None)
+                    sessions[session_id].pop("pending_agent_plan_iteration", None)
+                    response_text = "Cancelled. I won’t execute that plan."
+                    execution_result = {"success": False, "mode": "autonomous_agent", "status": "rejected"}
+                    sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
+                    if conversation_memory:
+                        conversation_memory.save_message(session_id, "assistant", response_text)
+                    return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
+
+                plan_dict = asdict(pending_plan) if hasattr(pending_plan, "__dataclass_fields__") else pending_plan
+                response_text = "Plan requires user approval. Reply 'go ahead' to approve or 'cancel' to reject."
+                execution_result = {"success": False, "mode": "autonomous_agent", "status": "awaiting_approval", "plan": plan_dict}
+                sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
+                if conversation_memory:
+                    conversation_memory.save_message(session_id, "assistant", response_text)
+                return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
+
             # Keep runtime registry aligned when user references dynamic tools.
             if _needs_runtime_refresh(request.message) and not _has_referenced_tools_loaded(registry, request.message):
                 try:
@@ -548,6 +624,30 @@ Respond with ONLY 'A' or 'B'."""
                         require_approval=False
                     )
                     result = autonomous_agent.achieve_goal(goal, session_id)
+
+                    # If the agent pauses for plan approval, surface the plan details to the UI and
+                    # store it in session state so a later "go ahead" can execute the SAME plan.
+                    if result.get("status") == "awaiting_approval" and result.get("plan") is not None:
+                        plan_obj = result.get("plan")
+                        sessions[session_id]["pending_agent_plan"] = plan_obj
+                        sessions[session_id]["pending_agent_plan_iteration"] = result.get("iteration")
+                        plan_dict = asdict(plan_obj) if hasattr(plan_obj, "__dataclass_fields__") else plan_obj
+                        response_text = result.get("message", "Plan requires user approval")
+
+                        sessions[session_id]["messages"].append({
+                            "role": "assistant",
+                            "content": response_text,
+                            "timestamp": time.time()
+                        })
+                        if conversation_memory:
+                            conversation_memory.save_message(session_id, "assistant", response_text)
+
+                        return ChatResponse(
+                            response=response_text,
+                            session_id=session_id,
+                            success=True,
+                            execution_result={"success": False, "mode": "autonomous_agent", "status": "awaiting_approval", "plan": plan_dict}
+                        )
                     
                     if result.get('success'):
                         response_text = f"✓ {result.get('message', 'Task completed')}"
@@ -567,7 +667,7 @@ Respond with ONLY 'A' or 'B'."""
                         response=response_text,
                         session_id=session_id,
                         success=True,
-                        execution_result={"success": True, "mode": "autonomous_agent"}
+                        execution_result={"success": bool(result.get('success')), "mode": "autonomous_agent"}
                     )
                 except Exception as e:
                     print(f"[DEBUG] Autonomous agent failed: {e}, falling back to tool calling")
@@ -730,6 +830,17 @@ Respond naturally as if you're explaining the problem to a user. Be concise (1-2
             
             if conversation_memory:
                 conversation_memory.save_message(session_id, "assistant", response_text)
+
+        # Feed self-directed evolution signals (capability gaps) from failures or tool-less requests.
+        try:
+            if isinstance(execution_result, dict):
+                if execution_result.get("success") is False:
+                    err_text = "; ".join(execution_result.get("errors", [])) if execution_result.get("errors") else execution_result.get("error", "")
+                    _record_capability_gap(request.message, err_text)
+                elif execution_result.get("mode") == "conversation":
+                    _record_capability_gap(request.message, "")
+        except Exception:
+            pass
         
         return ChatResponse(
             response=response_text,

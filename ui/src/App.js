@@ -422,7 +422,8 @@ function AppContent() {
           role: 'assistant',
           content: data.response,
           timestamp: new Date().toLocaleTimeString(),
-          components: data.execution_result?.components || null
+          components: data.execution_result?.components || null,
+          execution_result: data.execution_result || null
         };
         setMessages(prev => [...prev, assistantMsg]);
       }
@@ -589,6 +590,7 @@ function AppContent() {
             onSendMessage={handleSendMessage}
             isProcessing={isProcessing}
             onFloatingAction={handleFloatingAction}
+            onModeChange={setActiveMode}
             loopStatus={{
               running: globalState.running,
               iteration: globalState.iteration,

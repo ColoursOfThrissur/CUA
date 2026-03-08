@@ -1,12 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, Loader2, AlertTriangle } from 'lucide-react';
+import { Activity, Code2, Target, Zap, Loader2, AlertTriangle } from 'lucide-react';
 import { API_URL } from '../config';
 import { useToast } from './Toast';
+import AutoEvolutionPanel from './AutoEvolutionPanel';
+import CapabilityGapsPanel from './CapabilityGapsPanel';
+import PendingServicesPanel from './PendingServicesPanel';
 import './EvolutionMode.css';
 
 function EvolutionMode() {
+  const [tab, setTab] = useState('manual');
   const [tools, setTools] = useState([]);
-  const [selectedTool, setSelectedTool] = useState('');
+  const [selectedTool, setSelectedTool] = useState(() => {
+    try {
+      return localStorage.getItem('prefillEvolutionTool') || '';
+    } catch (e) {
+      return '';
+    }
+  });
   const [customPrompt, setCustomPrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [conversationLog, setConversationLog] = useState([]);
@@ -23,6 +33,11 @@ function EvolutionMode() {
     if (selectedTool) {
       fetchToolInfo(selectedTool);
       fetchLLMAnalysis(selectedTool);
+      try {
+        localStorage.removeItem('prefillEvolutionTool');
+      } catch (e) {
+        // ignore
+      }
     } else {
       setToolInfo(null);
       setLlmAnalysis(null);
@@ -106,7 +121,42 @@ function EvolutionMode() {
 
   return (
     <div className="evolution-mode">
+      <div className="evolution-tabs">
+        <button className={`evolution-tab ${tab === 'manual' ? 'active' : ''}`} onClick={() => setTab('manual')}>
+          <Zap size={16} /> Manual Evolution
+        </button>
+        <button className={`evolution-tab ${tab === 'auto' ? 'active' : ''}`} onClick={() => setTab('auto')}>
+          <Activity size={16} /> Auto-Evolution
+        </button>
+        <button className={`evolution-tab ${tab === 'gaps' ? 'active' : ''}`} onClick={() => setTab('gaps')}>
+          <Target size={16} /> Gaps
+        </button>
+        <button className={`evolution-tab ${tab === 'services' ? 'active' : ''}`} onClick={() => setTab('services')}>
+          <Code2 size={16} /> Services
+        </button>
+      </div>
+
       <div className="evolution-content">
+        {tab === 'auto' && (
+          <div className="evolution-tab-panel">
+            <AutoEvolutionPanel embedded onClose={() => {}} />
+          </div>
+        )}
+
+        {tab === 'gaps' && (
+          <div className="evolution-tab-panel">
+            <CapabilityGapsPanel />
+          </div>
+        )}
+
+        {tab === 'services' && (
+          <div className="evolution-tab-panel">
+            <PendingServicesPanel />
+          </div>
+        )}
+
+        {tab !== 'manual' ? null : (
+        <>
         <div className="evolution-header">
           <Zap size={32} />
           <h2>Tool Evolution</h2>
@@ -219,33 +269,37 @@ function EvolutionMode() {
             <p>No tools need improvement</p>
           </div>
         )}
+        </>
+        )}
       </div>
 
-      <div className="evolution-input-area">
-        <textarea
-          value={customPrompt}
-          onChange={(e) => setCustomPrompt(e.target.value)}
-          placeholder="Custom instructions (optional): e.g., improve error handling, add retry logic..."
-          disabled={loading}
-          rows={2}
-          className="prompt-textarea"
-        />
-        <button
-          onClick={handleEvolve}
-          disabled={loading || !selectedTool}
-          className="evolve-btn"
-        >
-          {loading ? (
-            <>
-              <Loader2 size={18} className="spin" /> Evolving...
-            </>
-          ) : (
-            <>
-              <Zap size={18} /> Start Evolution
-            </>
-          )}
-        </button>
-      </div>
+      {tab === 'manual' && (
+        <div className="evolution-input-area">
+          <textarea
+            value={customPrompt}
+            onChange={(e) => setCustomPrompt(e.target.value)}
+            placeholder="Custom instructions (optional): e.g., improve error handling, add retry logic..."
+            disabled={loading}
+            rows={2}
+            className="prompt-textarea"
+          />
+          <button
+            onClick={handleEvolve}
+            disabled={loading || !selectedTool}
+            className="evolve-btn"
+          >
+            {loading ? (
+              <>
+                <Loader2 size={18} className="spin" /> Evolving...
+              </>
+            ) : (
+              <>
+                <Zap size={18} /> Start Evolution
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

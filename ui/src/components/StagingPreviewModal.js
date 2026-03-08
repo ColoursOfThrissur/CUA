@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 import './StagingPreviewModal.css';
 
 function StagingPreviewModal({ parentId, onClose }) {
@@ -11,7 +12,7 @@ function StagingPreviewModal({ parentId, onClose }) {
 
   const fetchStaging = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/tasks/${parentId}/staging`);
+      const response = await fetch(`${API_URL}/tasks/${parentId}/staging`);
       const data = await response.json();
       setStaging(data);
     } catch (error) {

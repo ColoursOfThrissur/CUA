@@ -2,6 +2,8 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List
 
+from core.sqlite_utils import safe_connect, safe_close
+
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
@@ -10,12 +12,13 @@ async def list_sessions() -> Dict:
     """List all active sessions"""
     from core.memory_system import MemorySystem
     from pathlib import Path
-    import sqlite3
     
     memory = MemorySystem()
     
     try:
-        conn = sqlite3.connect(memory.db_path)
+        conn = safe_connect(memory.db_path)
+        if not conn:
+            return {"sessions": []}
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -37,7 +40,7 @@ async def list_sessions() -> Dict:
                 "message_count": row[4]
             })
         
-        conn.close()
+        safe_close(conn)
         
         return {"sessions": sessions}
     except Exception as e:
@@ -92,16 +95,17 @@ async def delete_session(session_id: str) -> Dict:
 async def clear_messages(session_id: str) -> Dict:
     """Clear messages from a session but keep session"""
     from core.memory_system import MemorySystem
-    import sqlite3
     
     memory = MemorySystem()
     
     try:
-        conn = sqlite3.connect(memory.db_path)
+        conn = safe_connect(memory.db_path)
+        if not conn:
+            raise HTTPException(503, "Session DB unavailable (locked/readonly)")
         cursor = conn.cursor()
         cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
         conn.commit()
-        conn.close()
+        safe_close(conn)
         
         # Clear from cache
         if session_id in memory.active_sessions:

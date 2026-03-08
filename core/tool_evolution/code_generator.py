@@ -4,6 +4,7 @@ import re
 import textwrap
 from typing import Dict, Any, Optional, List
 from core.sqlite_logging import get_logger
+from core.enhanced_code_validator import EnhancedCodeValidator
 
 logger = get_logger("code_generator")
 
@@ -32,28 +33,79 @@ class EvolutionCodeGenerator:
         return self._improve_existing_handlers(current_code, proposal, sandbox_error)
     
     def _build_service_context(self) -> str:
-        """Build service context from dependency checker (like spec_generator)."""
-        from core.dependency_checker import DependencyChecker
-        
-        service_specs = {
-            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id)',
-            'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
-            'http': 'get(url), post(url, data), put(url, data), delete(url)',
-            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
-            'json': 'parse(text), stringify(data), query(data, path)',
-            'shell': 'execute(command, args=[])',
-            'logging': 'info(msg), warning(msg), error(msg), debug(msg)',
-            'time': 'now_utc(), now_local(), now_utc_iso(), now_local_iso()',
-            'ids': 'generate(prefix=""), uuid()',
-            'browser': 'open_browser(), navigate(url), get_page_text(), find_element(by, value), take_screenshot(filename), close()'
+        """Build grounded service context from EnhancedCodeValidator's registry."""
+        registry = EnhancedCodeValidator().service_registry
+
+        nested = {
+            "storage": "save(id, data), get(id), list(limit=10), find(query=None, limit=10), count(query=None), update(id, updates), delete(id), exists(id)",
+            "llm": "generate(prompt, temperature=0.3, max_tokens=500)",
+            "http": "get(url), post(url, data), put(url, data), delete(url), request(method, url, data=None, headers=None)",
+            "fs": "read(path), write(path, content), list(path), exists(path), delete(path), mkdir(path)",
+            "json": "parse(text), stringify(data, indent=None), query(data, path)",
+            "shell": "execute(command)",
+            "logging": "info(message), warning(message), error(message), debug(message)",
+            "time": "now_utc(), now_local(), now_utc_iso(), now_local_iso()",
+            "ids": "generate(prefix=\"\"), uuid()",
+            "browser": "open_browser(), navigate(url), find_element(by, value), get_page_text(), take_screenshot(filename), close(), is_available()",
         }
-        
-        services_list = []
-        for name, methods in service_specs.items():
-            if name in DependencyChecker.AVAILABLE_SERVICES:
-                services_list.append(f"- self.services.{name}: {methods}")
-        
-        return "\n".join(services_list)
+        direct = {
+            "call_tool": "call_tool(tool_name, operation, **parameters)",
+            "list_tools": "list_tools()",
+            "has_capability": "has_capability(capability_name)",
+            "detect_language": "detect_language(text)",
+            "extract_key_points": "extract_key_points(text, style=\"bullet\", language=\"en\")",
+            "sentiment_analysis": "sentiment_analysis(text, language=\"en\")",
+            "generate_json_output": "generate_json_output(**kwargs)",
+        }
+
+        lines: List[str] = []
+        for name in nested:
+            if name in registry:
+                lines.append(f"- self.services.{name}: {nested[name]}")
+        for name in direct:
+            if name in registry:
+                lines.append(f"- self.services.{direct[name]}")
+
+        lines.append("IMPORTANT: Do not call any self.services.* API not listed above.")
+        return "\n".join(lines)
+
+    def _invalid_service_calls(self, code: str) -> List[str]:
+        """Detect self.services calls that violate the service registry allowlist."""
+        registry = EnhancedCodeValidator().service_registry
+        nested_allow = {k: set(v or []) for k, v in registry.items() if isinstance(v, list)}
+        direct_allow = {k for k, v in registry.items() if isinstance(v, list) and len(v or []) == 0}
+
+        invalid: List[str] = []
+
+        # Nested calls: self.services.<svc>.<method>(...)
+        for svc, method in re.findall(r"self\\.services\\.(\\w+)\\.(\\w+)\\(", code):
+            if svc not in nested_allow:
+                invalid.append(f"Unknown service self.services.{svc}")
+                continue
+            allowed = nested_allow.get(svc, set())
+            if allowed and method not in allowed:
+                invalid.append(f"Unknown method self.services.{svc}.{method}")
+
+        # Direct calls: self.services.<method>(...)
+        for name in re.findall(r"self\\.services\\.(\\w+)\\(", code):
+            # Avoid double-counting nested (regex doesn't match nested anyway, but be defensive).
+            if name in nested_allow and (nested_allow.get(name) and name not in direct_allow):
+                continue
+            if name not in direct_allow:
+                # Also allow nested-service names if the model writes self.services.storage(...) (invalid).
+                if name in nested_allow and name not in direct_allow:
+                    invalid.append(f"Invalid call self.services.{name}(...) (service requires method like .save/.get)")
+                else:
+                    invalid.append(f"Unknown ToolServices method self.services.{name}")
+
+        # De-dup while preserving order
+        seen = set()
+        out = []
+        for item in invalid:
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+        return out
     
     def _improve_existing_handlers(
         self,
@@ -188,22 +240,37 @@ def _handle_{operation_name}(self, **kwargs) -> dict:
     
     # Use services with error handling
     try:
-        result = self.services.some_service.method(param1, param2)
-        return {{'success': True, 'result': result}}
+        approval_id = self.services.ids.generate("example")
+        self.services.storage.save(approval_id, {{'param1': param1, 'param2': param2}})
+        return {{'success': True, 'id': approval_id}}
     except Exception as e:
         self.services.logging.error(f"Operation failed: {{e}}")
         return {{'success': False, 'error': str(e)}}
 
 Return ONLY the method definition (no explanations)."""
         
-        try:
-            response = self.llm._call_llm(prompt, temperature=0.2, max_tokens=600, expect_json=False)
-            handler = self._extract_python_code(response)
-            if handler and f"def _handle_{operation_name}(" in handler:
+        expected_name = f"_handle_{operation_name}"
+        feedback = ""
+
+        for attempt in range(2):
+            attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
+            try:
+                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=650, expect_json=False)
+                handler = self._extract_python_code(response)
+                if not handler or f"def {expected_name}(" not in handler:
+                    feedback = "Returned code did not include the required handler method definition with the exact name."
+                    continue
+
+                invalid = self._invalid_service_calls(handler)
+                if invalid:
+                    feedback = "Invalid self.services calls detected:\n- " + "\n- ".join(invalid)
+                    continue
+
                 return handler
-        except Exception as e:
-            logger.error(f"Failed to generate new handler: {e}")
-        
+            except Exception as e:
+                logger.warning(f"Failed to generate new handler (attempt {attempt + 1}): {e}")
+                feedback = str(e)
+
         return None
     
     def _extract_operation_name(self, proposal: Dict[str, Any]) -> str:
@@ -436,13 +503,6 @@ CHANGES TO MAKE:
 
 AVAILABLE SERVICES (use self.services.X):
 {service_context}
-
-ADDITIONAL SERVICE HELPERS:
-- self.services.detect_language(text) - Detect language
-- self.services.extract_key_points(text, style, language) - Extract key points
-- self.services.sentiment_analysis(text, language) - Analyze sentiment
-- self.services.generate_json_output(**kwargs) - Generate JSON
-- self.services.call_tool(tool_name, operation, **params) - Call another tool
 {error_context}
 CRITICAL REQUIREMENTS:
 - Keep method name: {handler_name}
@@ -463,16 +523,25 @@ CRITICAL REQUIREMENTS:
 
 Return ONLY the improved method definition."""
         
+        feedback = ""
         for attempt in range(3):
             try:
-                response = self.llm._call_llm(prompt, temperature=0.2, max_tokens=800, expect_json=False)
+                attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
+                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=800, expect_json=False)
                 improved = self._extract_method_from_response(response, handler_name)
                 
                 if improved and self._validate_handler(improved, handler_name):
+                    invalid = self._invalid_service_calls(improved)
+                    if invalid:
+                        feedback = "Invalid self.services calls detected:\n- " + "\n- ".join(invalid)
+                        continue
                     return improved
+
+                feedback = "Returned code did not contain the exact method definition (name/signature)."
                 
             except Exception as e:
                 logger.warning(f"Handler improvement attempt {attempt + 1} failed: {e}")
+                feedback = str(e)
         
         return None
     

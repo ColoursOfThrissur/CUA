@@ -16,7 +16,8 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
     min_health_threshold: 50,
     auto_approve_threshold: 90,
     learning_enabled: true,
-    enable_enhancements: true
+    enable_enhancements: true,
+    max_new_tools_per_scan: 1
   });
   const [configLoading, setConfigLoading] = useState(false);
   const toast = useToast();
@@ -41,7 +42,7 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/status');
+      const res = await fetch(`${API_URL}/auto-evolution/status`);
       const data = await res.json();
       if (data.config) setConfig(data.config);
     } catch (err) {
@@ -52,7 +53,7 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
   const handleUpdateConfig = async () => {
     setConfigLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/config', {
+      const res = await fetch(`${API_URL}/auto-evolution/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -187,6 +188,11 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
               <label>Enable Enhancements</label>
               <input type="checkbox" checked={config.enable_enhancements !== false} 
                 onChange={e => setConfig({...config, enable_enhancements: e.target.checked})} />
+            </div>
+            <div className="config-item">
+              <label>Max New Tools / Scan</label>
+              <input type="number" value={config.max_new_tools_per_scan ?? 1}
+                onChange={e => setConfig({...config, max_new_tools_per_scan: parseInt(e.target.value)})} />
             </div>
           </div>
           <button onClick={handleUpdateConfig} disabled={configLoading} className="btn-update-config">

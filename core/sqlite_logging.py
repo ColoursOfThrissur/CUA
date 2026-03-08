@@ -23,38 +23,44 @@ class SQLiteLogger:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True)
         self.service_name = service_name
+        self.enabled = True
         self._init_db()
     
     def _init_db(self):
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='logs'")
-            table_exists = cursor.fetchone() is not None
-            
-            if table_exists:
-                cursor = conn.execute("PRAGMA table_info(logs)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'correlation_id' not in columns:
-                    conn.execute("ALTER TABLE logs ADD COLUMN correlation_id TEXT")
-            else:
-                conn.execute("""
-                    CREATE TABLE logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
-                        correlation_id TEXT,
-                        service TEXT NOT NULL,
-                        level TEXT NOT NULL,
-                        message TEXT NOT NULL,
-                        context TEXT,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-            
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON logs(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_service ON logs(service)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_level ON logs(level)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_correlation_id ON logs(correlation_id)")
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='logs'")
+                table_exists = cursor.fetchone() is not None
+                
+                if table_exists:
+                    cursor = conn.execute("PRAGMA table_info(logs)")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    if 'correlation_id' not in columns:
+                        conn.execute("ALTER TABLE logs ADD COLUMN correlation_id TEXT")
+                else:
+                    conn.execute("""
+                        CREATE TABLE logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            timestamp TEXT NOT NULL,
+                            correlation_id TEXT,
+                            service TEXT NOT NULL,
+                            level TEXT NOT NULL,
+                            message TEXT NOT NULL,
+                            context TEXT,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON logs(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_service ON logs(service)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_level ON logs(level)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_correlation_id ON logs(correlation_id)")
+                conn.commit()
+        except sqlite3.OperationalError as e:
+            # Never block the app if the log DB is locked/readonly.
+            self.enabled = False
+            print(f"[WARNING] {self.service_name}: SQLite logging disabled: {e}")
     
     def _log(self, level: LogLevel, message: str, **context):
         """Write log entry to database."""
@@ -62,12 +68,20 @@ class SQLiteLogger:
         correlation_id = CorrelationContext.get_id()
         context_json = json.dumps(context) if context else None
         
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO logs (timestamp, correlation_id, service, level, message, context) VALUES (?, ?, ?, ?, ?, ?)",
-                (timestamp, correlation_id, self.service_name, level.value, message, context_json)
-            )
-            conn.commit()
+        if self.enabled:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        "INSERT INTO logs (timestamp, correlation_id, service, level, message, context) VALUES (?, ?, ?, ?, ?, ?)",
+                        (timestamp, correlation_id, self.service_name, level.value, message, context_json)
+                    )
+                    conn.commit()
+            except sqlite3.OperationalError as e:
+                # Degrade gracefully (common on Windows when DB files are locked).
+                if "readonly" in str(e).lower() or "read-only" in str(e).lower() or "locked" in str(e).lower():
+                    self.enabled = False
+                else:
+                    self.enabled = False
         
         # Also print to console for immediate feedback
         corr_str = f" [{correlation_id[:8]}]" if correlation_id else ""

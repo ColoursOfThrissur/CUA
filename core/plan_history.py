@@ -1,11 +1,15 @@
 """
 Plan History - Track and rollback executed plans
 """
-import sqlite3
 import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
+
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("plan_history")
 
 class PlanHistory:
     def __init__(self, db_path: str = None):
@@ -17,7 +21,10 @@ class PlanHistory:
     
     def _init_db(self):
         """Initialize database schema"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("Plan history DB unavailable; history disabled for now")
+            return
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -43,12 +50,14 @@ class PlanHistory:
         """)
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def save_plan(self, plan_id: str, iteration: int, proposal: Dict, 
                   risk_level: str, test_result: Dict, apply_result: Dict):
         """Save executed plan to history with transaction"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         try:
             cursor = conn.cursor()
             
@@ -76,11 +85,13 @@ class PlanHistory:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            safe_close(conn)
     
     def get_history(self, limit: int = 50) -> List[Dict]:
         """Get plan execution history"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -92,7 +103,7 @@ class PlanHistory:
         """, (limit,))
         
         rows = cursor.fetchall()
-        conn.close()
+        safe_close(conn)
         
         return [{
             "plan_id": row[0],
@@ -106,7 +117,9 @@ class PlanHistory:
     
     def get_plan(self, plan_id: str) -> Optional[Dict]:
         """Get full plan details"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return None
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -114,7 +127,7 @@ class PlanHistory:
         """, (plan_id,))
         
         row = cursor.fetchone()
-        conn.close()
+        safe_close(conn)
         
         if not row:
             return None

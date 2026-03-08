@@ -108,28 +108,35 @@ class ToolExecutionLogger:
         # Calculate risk score (0-1, higher = riskier)
         risk_score = self._calculate_risk_score(success, error, execution_time_ms, output_size)
         
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                INSERT INTO executions 
-                (correlation_id, parent_execution_id, tool_name, operation, success, error, error_stack_trace, 
-                 execution_time_ms, parameters, output_data, output_size, risk_score, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (correlation_id, parent_execution_id, tool_name, operation, int(success), error, 
-                  error_stack_trace, execution_time_ms, params_json, output_json, output_size, risk_score, time.time()))
-            
-            execution_id = cursor.lastrowid
-            
-            # Store execution context if provided
-            if service_calls or llm_calls_count > 0:
-                service_calls_json = json.dumps(service_calls) if service_calls else None
-                conn.execute("""
-                    INSERT INTO execution_context
-                    (execution_id, correlation_id, service_calls, llm_calls_count, llm_tokens_used)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (execution_id, correlation_id, service_calls_json, llm_calls_count, llm_tokens_used))
-            
-            conn.commit()
-            return execution_id
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    INSERT INTO executions 
+                    (correlation_id, parent_execution_id, tool_name, operation, success, error, error_stack_trace, 
+                     execution_time_ms, parameters, output_data, output_size, risk_score, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (correlation_id, parent_execution_id, tool_name, operation, int(success), error, 
+                      error_stack_trace, execution_time_ms, params_json, output_json, output_size, risk_score, time.time()))
+                
+                execution_id = cursor.lastrowid
+                
+                # Store execution context if provided
+                if service_calls or llm_calls_count > 0:
+                    service_calls_json = json.dumps(service_calls) if service_calls else None
+                    conn.execute("""
+                        INSERT INTO execution_context
+                        (execution_id, correlation_id, service_calls, llm_calls_count, llm_tokens_used)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (execution_id, correlation_id, service_calls_json, llm_calls_count, llm_tokens_used))
+                
+                conn.commit()
+                return execution_id
+        except sqlite3.OperationalError as e:
+            # In some environments (Windows + running server), sqlite files can be locked/readonly.
+            # Logging must never break tool execution.
+            if "readonly" in str(e).lower() or "read-only" in str(e).lower():
+                return -1
+            raise
     
     def _calculate_risk_score(self, success: bool, error: Optional[str], exec_time_ms: float, output_size: int) -> float:
         """Calculate risk score for execution (0-1, higher = riskier)."""

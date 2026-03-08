@@ -1,0 +1,120 @@
+.capability-gaps-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+}
+
+.cgp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cgp-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-primary);
+}
+
+.cgp-title h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.cgp-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.cgp-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cgp-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.cgp-metric {
+  padding: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.cgp-metric .label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.cgp-metric .value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cgp-section h4 {
+  margin: 0.25rem 0 0.5rem 0;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.cgp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.cgp-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cgp-item.actionable {
+  border-color: color-mix(in srgb, var(--mode-color) 60%, var(--glass-border));
+  background: color-mix(in srgb, var(--mode-color) 10%, rgba(255, 255, 255, 0.03));
+}
+
+.cgp-item .cap {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cgp-item .meta {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.cgp-empty {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--text-muted);
+  padding: 0.75rem;
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--radius-md);
+}
+

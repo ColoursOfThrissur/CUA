@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 
+from core.sqlite_utils import safe_connect, safe_close
+
 router = APIRouter()
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -40,7 +42,9 @@ async def get_table_data(
         return {"error": "Database not found", "rows": [], "total": 0}
     
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = safe_connect(str(db_path))
+        if not conn:
+            return {"error": "Database unavailable (locked/readonly)", "rows": [], "total": 0}
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -76,7 +80,7 @@ async def get_table_data(
         
         cursor.execute(query, params)
         rows = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        safe_close(conn)
         
         return {"rows": rows, "total": total, "columns": columns}
     except Exception as e:
@@ -90,13 +94,15 @@ async def get_row_detail(db_name: str, table_name: str, row_id: int):
         return {"error": "Database not found"}
     
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = safe_connect(str(db_path))
+        if not conn:
+            return {"error": "Database unavailable (locked/readonly)"}
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         cursor.execute(f"SELECT * FROM {table_name} WHERE id = ?", [row_id])
         row = cursor.fetchone()
-        conn.close()
+        safe_close(conn)
         
         if not row:
             return {"error": "Row not found"}
@@ -113,12 +119,14 @@ async def get_filter_values(db_name: str, table_name: str, column: str):
         return {"values": []}
     
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = safe_connect(str(db_path))
+        if not conn:
+            return {"error": "Database unavailable (locked/readonly)", "values": []}
         cursor = conn.cursor()
         
         cursor.execute(f"SELECT DISTINCT {column} FROM {table_name} WHERE {column} IS NOT NULL ORDER BY {column}")
         values = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        safe_close(conn)
         
         return {"values": values[:100]}  # Limit to 100 unique values
     except Exception as e:

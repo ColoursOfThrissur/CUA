@@ -131,6 +131,15 @@ class ToolAnalyzer:
     
     def _find_tool_file(self, tool_name: str) -> Optional[Path]:
         """Find tool file."""
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            resolved = ToolRegistryManager().resolve_source_file(tool_name)
+            if resolved and resolved.exists():
+                logger.info(f"Found tool file via registry: {resolved}")
+                return resolved
+        except Exception:
+            pass
+
         import re
         snake_case = re.sub(r'(?<!^)(?=[A-Z])', '_', tool_name).lower()
         

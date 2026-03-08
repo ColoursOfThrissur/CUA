@@ -64,23 +64,25 @@ class ToolCreationOrchestrator:
             print(f"[FLOW DEBUG] Spec generation returned: {tool_spec is not None}")
         except Exception as e:
             print(f"[FLOW DEBUG] Exception in spec generation: {e}")
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name="unknown",
                 user_prompt=gap_description,
                 status="failed",
                 step="spec_generation",
-                error_message=f"Exception during spec generation: {str(e)}"
+                error_message=f"Exception during spec generation: {str(e)}",
             )
             logger.error(f"Spec generation exception: {e}", exc_info=True)
             return False, f"Failed to generate tool spec: {str(e)}"
         
         if not tool_spec:
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name="unknown",
                 user_prompt=gap_description,
                 status="failed",
                 step="spec_generation",
-                error_message="LLM returned None/empty spec"
+                error_message="LLM returned None/empty spec",
             )
             return False, "Failed to generate tool spec"
         
@@ -88,6 +90,50 @@ class ToolCreationOrchestrator:
         self.last_spec = tool_spec
         
         tool_name = tool_spec.get('name', 'unknown')
+
+        # Guardrail: if the tool already exists in the registry, prefer evolution over creating duplicates.
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+
+            def _norm(name: str) -> str:
+                return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+            registry = ToolRegistryManager().get_registry() or {}
+            existing_tools = (registry.get("tools") or {}) if isinstance(registry, dict) else {}
+            collision = None
+            for existing_name, data in existing_tools.items():
+                if _norm(existing_name) == _norm(tool_name):
+                    src = str((data or {}).get("source_file") or "")
+                    collision = {"tool_name": existing_name, "source_file": src}
+                    break
+
+            if collision and collision["tool_name"] != tool_name:
+                tool_spec["name"] = collision["tool_name"]
+                tool_name = collision["tool_name"]
+
+            if collision and collision.get("source_file"):
+                src_path = Path(collision["source_file"])
+                if not src_path.exists():
+                    src_path = Path(collision["source_file"].replace("\\", "/"))
+                if src_path.exists():
+                    creation_logger.update_creation(
+                        creation_id,
+                        tool_name=tool_name,
+                        status="failed",
+                        step="name_collision",
+                        error_message=f"Tool already exists: {collision['tool_name']} ({str(src_path).replace('\\', '/')})",
+                    )
+                    creation_logger.log_artifact(creation_id, "name_collision", "spec_generation", collision)
+                    return False, f"Tool '{tool_name}' already exists. Use tool evolution instead of creating a duplicate."
+        except Exception:
+            pass
+
+        creation_logger.update_creation(
+            creation_id,
+            tool_name=tool_name,
+            status="started",
+            step="spec_generation",
+        )
         # Remove non-serializable objects before logging
         spec_for_logging = {k: v for k, v in tool_spec.items() if k != 'node'}
         creation_logger.log_artifact(creation_id, "spec", "spec_generation", spec_for_logging)
@@ -104,12 +150,12 @@ class ToolCreationOrchestrator:
         # Check confidence score
         confidence = tool_spec.get('confidence', 1.0)
         if confidence < 0.5:
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="confidence_check",
-                error_message=f"Low confidence spec ({confidence:.2f})"
+                error_message=f"Low confidence spec ({confidence:.2f})",
             )
             return False, f"Low confidence spec ({confidence:.2f}) - gap description too vague"
         
@@ -130,25 +176,29 @@ class ToolCreationOrchestrator:
         try:
             filled_code = generator.generate(None, tool_spec)  # No template needed
         except Exception as e:
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="code_generation",
-                error_message=f"Exception during code generation: {str(e)}"
+                error_message=f"Exception during code generation: {str(e)}",
             )
             logger.error(f"Code generation exception: {e}", exc_info=True)
             return False, f"Failed to generate tool logic: {str(e)}"
         
         if not filled_code:
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="code_generation",
-                error_message="Generator returned None/empty code"
+                error_message="Generator returned None/empty code",
             )
             return False, "Failed to generate tool logic"
+
+        generation_meta = tool_spec.get("_generation_meta") if isinstance(tool_spec, dict) else None
+        if isinstance(generation_meta, dict):
+            creation_logger.log_artifact(creation_id, "generation_meta", "code_generation", generation_meta)
         
         creation_logger.log_artifact(creation_id, "code", "code_generation", filled_code)
         
@@ -157,13 +207,43 @@ class ToolCreationOrchestrator:
         validator = ToolValidator()
         is_valid, validation_error = validator.validate(filled_code, tool_spec)
         if not is_valid:
-            creation_logger.log_creation(
+            # If validation failed due to missing services, generate them into the pending-services queue.
+            try:
+                missing_services = validator.enhanced_validator.get_missing_services()
+            except Exception:
+                missing_services = []
+
+            if missing_services:
+                try:
+                    from core.service_generation_integration import ServiceGenerationIntegration
+                    svc_integration = ServiceGenerationIntegration()
+                    svc_result = svc_integration.validate_and_generate_services(
+                        filled_code,
+                        class_name=None,
+                        context=gap_description,
+                        requested_by="tool_creation",
+                    )
+                    creation_logger.log_artifact(creation_id, "pending_services", "validation", svc_result)
+                    if svc_result.get("pending_approval"):
+                        creation_logger.update_creation(
+                            creation_id,
+                            tool_name=tool_name,
+                            status="blocked",
+                            step="services_pending",
+                            error_message=svc_result.get("error"),
+                            code_size=len(filled_code),
+                        )
+                        return False, f"Missing services detected; generated pending service proposals for approval. {svc_result.get('error')}"
+                except Exception as e:
+                    creation_logger.log_artifact(creation_id, "service_generation_error", "validation", {"error": str(e)})
+
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="validation",
                 error_message=f"Validation failed: {validation_error}",
-                code_size=len(filled_code)
+                code_size=len(filled_code),
             )
             return False, f"Generated tool code invalid: {validation_error}"
         
@@ -193,35 +273,52 @@ class ToolCreationOrchestrator:
                     logger.info(f"Installed {lib}: {msg}")
                 else:
                     logger.warning(f"Failed to install {lib}: {msg}")
-                    creation_logger.log_creation(
+                    creation_logger.update_creation(
+                        creation_id,
                         tool_name=tool_name,
-                        user_prompt=gap_description,
                         status="failed",
                         step="dependency_resolution",
-                        error_message=f"Failed to install required library: {lib} - {msg}"
+                        error_message=f"Failed to install required library: {lib} - {msg}",
                     )
                     return False, f"Missing required library: {lib}. Installation failed: {msg}"
             
-            # Log warning for missing services (don't block creation)
-            if dep_report.missing_services:
-                logger.warning(f"Tool uses undefined services: {dep_report.missing_services}")
-                creation_logger.log_artifact(creation_id, "service_warning", "dependency_check", {
-                    "message": "Tool uses undefined service methods",
-                    "services": dep_report.missing_services,
-                    "note": "These service calls may fail at runtime"
-                })
+            # Services: generate pending proposals and block until approved.
+            if dep_report.missing_services or dep_report.pending_services:
+                try:
+                    from core.service_generation_integration import ServiceGenerationIntegration
+                    svc_integration = ServiceGenerationIntegration()
+                    svc_result = svc_integration.validate_and_generate_services(
+                        filled_code,
+                        class_name=None,
+                        context=gap_description,
+                        requested_by="tool_creation",
+                    )
+                    creation_logger.log_artifact(creation_id, "pending_services", "dependency_check", svc_result)
+                    if svc_result.get("pending_approval"):
+                        creation_logger.update_creation(
+                            creation_id,
+                            tool_name=tool_name,
+                            status="blocked",
+                            step="services_pending",
+                            error_message=svc_result.get("error"),
+                            code_size=len(filled_code),
+                        )
+                        return False, f"Tool requires new/updated services; generated pending service proposals for approval. {svc_result.get('error')}"
+                except Exception as e:
+                    creation_logger.log_artifact(creation_id, "service_generation_error", "dependency_check", {"error": str(e)})
+                    return False, f"Tool requires missing services but service generation failed: {e}"
         
         # Step 6: Create in experimental namespace
         success, msg = self.expansion_mode.create_experimental_tool(
             tool_spec['name'], filled_code, tool_spec  # Pass spec for test generation
         )
         if not success:
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="file_creation",
-                error_message=msg
+                error_message=msg,
             )
             return False, msg
         
@@ -272,26 +369,72 @@ class ToolCreationOrchestrator:
         
         if not sandbox_passed:
             self._cleanup_artifacts(tool_spec["name"])
-            creation_logger.log_creation(
+            creation_logger.update_creation(
+                creation_id,
                 tool_name=tool_name,
-                user_prompt=gap_description,
                 status="failed",
                 step="sandbox",
-                error_message=f"Sandbox validation failed after {max_retries} attempts"
+                error_message=f"Sandbox validation failed after {max_retries} attempts",
             )
             return False, f"Sandbox validation failed after {max_retries} attempts"
         
         # Step 8: Register as experimental
         logger.info(f"Tool registered as experimental: {tool_spec['name']}")
-        creation_logger.log_creation(
+
+        # If stage 2 didn't produce validated code, we still create a safe scaffold (stub) but flag it.
+        generation_meta = tool_spec.get("_generation_meta") if isinstance(tool_spec, dict) else None
+        is_stub = bool(
+            isinstance(generation_meta, dict)
+            and generation_meta.get("stage1_valid")
+            and generation_meta.get("stage2_attempted")
+            and not generation_meta.get("stage2_valid")
+        )
+
+        final_status = "success_stub" if is_stub else "success"
+        final_step = "completed_stub" if is_stub else "completed"
+        final_error = None
+        if is_stub:
+            final_error = generation_meta.get("stage2_error") or "Created scaffold only; stage 2 implementation not validated"
+            creation_logger.log_artifact(
+                creation_id,
+                "needs_evolution",
+                "completed",
+                {"reason": final_error, "note": "Tool created as scaffold; queue evolution to fill in handlers."},
+            )
+
+            # Auto-queue evolution for the newly created stub tool (still requires explicit user approval later).
+            try:
+                from core.evolution_queue import get_evolution_queue, QueuedEvolution
+                queue = get_evolution_queue()
+                queue.add(
+                    QueuedEvolution(
+                        # Use the actual tool module/class name as registered in the repo.
+                        # Avoid str.capitalize() here (it lowercases the rest and breaks CamelCase).
+                        tool_name=str(tool_spec.get("name") or tool_name),
+                        urgency_score=90.0,
+                        impact_score=70.0,
+                        feasibility_score=75.0,
+                        timing_score=90.0,
+                        reason=f"Stub tool created; needs evolution. {final_error}",
+                        metadata={"kind": "evolve_tool", "source": "tool_creation", "creation_id": creation_id},
+                    )
+                )
+                creation_logger.log_artifact(creation_id, "auto_queued_evolution", "completed", {"tool": tool_name})
+            except Exception as e:
+                creation_logger.log_artifact(creation_id, "auto_queue_error", "completed", {"error": str(e)})
+
+        creation_logger.update_creation(
+            creation_id,
             tool_name=tool_name,
-            user_prompt=gap_description,
-            status="success",
-            step="completed",
+            status=final_status,
+            step=final_step,
+            error_message=final_error,
             code_size=len(filled_code),
-            capabilities_count=len(tool_spec.get('inputs', []))
+            capabilities_count=len(tool_spec.get('inputs', [])),
         )
         
+        if is_stub:
+            return True, f"Experimental tool created: {tool_spec['name']} (scaffold only; queued for evolution)"
         return True, f"Experimental tool created: {tool_spec['name']}"
     
     def _cleanup_artifacts(self, tool_name: str):
@@ -338,11 +481,13 @@ class ToolCreationOrchestrator:
         
         parts.append("\nREGENERATE the complete corrected code.")
         return '\n'.join(parts)
-        """Select generator based on model capabilities config"""
+
+    def _select_generator(self, llm_client):
+        """Select generator based on model capabilities config."""
         from pathlib import Path
         import json
         from core.tool_creation.code_generator import QwenCodeGenerator, DefaultCodeGenerator
-        
+
         config_path = Path("config/model_capabilities.json")
         if config_path.exists():
             try:
@@ -353,17 +498,16 @@ class ToolCreationOrchestrator:
                 capabilities = self._get_default_capabilities()
         else:
             capabilities = self._get_default_capabilities()
-        
+
         model = str(getattr(llm_client, "model", "")).lower()
-        
+
         # Match model pattern
         for pattern, config in capabilities.items():
             if pattern in model:
-                if config["strategy"] == "multistage":
+                if config.get("strategy") == "multistage":
                     return QwenCodeGenerator(llm_client, self)
-                else:
-                    return DefaultCodeGenerator(llm_client, self)
-        
+                return DefaultCodeGenerator(llm_client, self)
+
         # Default fallback
         return DefaultCodeGenerator(llm_client, self)
     

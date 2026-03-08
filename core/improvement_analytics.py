@@ -1,10 +1,14 @@
 """
 Improvement Analytics - Track success/failure metrics
 """
-import sqlite3
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime, timedelta
+
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("improvement_analytics")
 
 class ImprovementAnalytics:
     def __init__(self, db_path: str = None):
@@ -16,7 +20,10 @@ class ImprovementAnalytics:
     
     def _init_db(self):
         """Initialize analytics database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("Analytics DB unavailable; analytics disabled for now")
+            return
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -52,13 +59,15 @@ class ImprovementAnalytics:
         """)
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def record_attempt(self, iteration: int, proposal_desc: str, risk_level: str,
                       test_passed: bool, apply_success: bool, duration: float,
                       error_type: str = None):
         """Record improvement attempt with transaction"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         try:
             cursor = conn.cursor()
             
@@ -82,11 +91,21 @@ class ImprovementAnalytics:
         except Exception:
             conn.rollback()
         finally:
-            conn.close()
+            safe_close(conn)
     
     def get_stats(self, days: int = 30) -> Dict:
         """Get analytics statistics"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return {
+                "total_attempts": 0,
+                "successful_attempts": 0,
+                "success_rate": 0,
+                "avg_duration_seconds": 0.0,
+                "risk_distribution": {},
+                "common_errors": [],
+                "daily_trend": [],
+            }
         cursor = conn.cursor()
         
         cutoff = (datetime.now() - timedelta(days=days)).timestamp()
@@ -146,7 +165,7 @@ class ImprovementAnalytics:
             for row in cursor.fetchall()
         ]
         
-        conn.close()
+        safe_close(conn)
         
         return {
             "total_attempts": total,
@@ -160,7 +179,9 @@ class ImprovementAnalytics:
 
     def record_terminal_state(self, iteration: int, file_path: str, status: str, generated: bool, sandbox_passed: bool, applied: bool):
         """Persist normalized terminal state for each attempt."""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -180,4 +201,4 @@ class ImprovementAnalytics:
         except Exception:
             conn.rollback()
         finally:
-            conn.close()
+            safe_close(conn)

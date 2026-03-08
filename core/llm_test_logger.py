@@ -5,6 +5,10 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from core.correlation_context import CorrelationContext
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("llm_test_logger")
 
 class LLMTestLogger:
     """Logs LLM test executions and results."""
@@ -16,7 +20,11 @@ class LLMTestLogger:
     
     def _init_db(self):
         """Initialize database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("LLM tests DB unavailable; LLM test logging disabled for now")
+            return
+        try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS llm_tests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,12 +81,17 @@ class LLMTestLogger:
             """)
             
             conn.commit()
+        finally:
+            safe_close(conn)
     
     def log_test_result(self, tool_name: str, capability_name: str, test_result: Any):
         """Log a single test result."""
         correlation_id = CorrelationContext.get_id()
         
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
+        try:
             conn.execute("""
                 INSERT INTO llm_tests
                 (correlation_id, tool_name, capability_name, test_name, passed, execution_time_ms,
@@ -99,12 +112,17 @@ class LLMTestLogger:
                 time.time()
             ))
             conn.commit()
+        finally:
+            safe_close(conn)
     
     def log_test_suite(self, suite_result: Any):
         """Log entire test suite results."""
         correlation_id = CorrelationContext.get_id()
         
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
+        try:
             conn.execute("""
                 INSERT INTO test_suites
                 (correlation_id, tool_name, capability_name, total_tests, passed_tests,
@@ -126,11 +144,16 @@ class LLMTestLogger:
             # Log individual test results
             for test_result in suite_result.test_results:
                 self.log_test_result(suite_result.tool_name, suite_result.capability_name, test_result)
+        finally:
+            safe_close(conn)
     
     def update_baseline(self, tool_name: str, capability_name: str, test_name: str,
                        output: Any, performance: float, quality_score: int):
         """Update or create baseline for a test."""
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
+        try:
             conn.execute("""
                 INSERT OR REPLACE INTO test_baselines
                 (tool_name, capability_name, test_name, baseline_output, baseline_performance,
@@ -145,10 +168,15 @@ class LLMTestLogger:
                 quality_score
             ))
             conn.commit()
+        finally:
+            safe_close(conn)
     
     def get_baseline(self, tool_name: str, capability_name: str, test_name: str) -> Optional[Dict]:
         """Get baseline for a test."""
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return None
+        try:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
                 SELECT * FROM test_baselines
@@ -157,6 +185,8 @@ class LLMTestLogger:
             
             row = cursor.fetchone()
             return dict(row) if row else None
+        finally:
+            safe_close(conn)
 
 _logger = None
 

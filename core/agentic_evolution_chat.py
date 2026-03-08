@@ -295,6 +295,14 @@ Tool successfully evolved!"""
     
     def _find_tool_file(self, tool_name: str) -> Optional[Path]:
         """Find tool file."""
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            resolved = ToolRegistryManager().resolve_source_file(tool_name)
+            if resolved and resolved.exists():
+                return resolved
+        except Exception:
+            pass
+
         candidates = [
             Path(f"tools/{tool_name}.py"),
             Path(f"tools/{tool_name.lower()}.py"),

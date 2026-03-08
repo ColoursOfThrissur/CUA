@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 import './AnalyticsDashboard.css';
 
 function AnalyticsDashboard() {
@@ -13,7 +14,7 @@ function AnalyticsDashboard() {
 
   const fetchAnalytics = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/improvement/analytics?days=${days}`);
+      const response = await fetch(`${API_URL}/improvement/analytics?days=${days}`);
       const data = await response.json();
       setAnalytics(data);
     } catch (error) {

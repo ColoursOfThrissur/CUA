@@ -24,7 +24,15 @@ class EnhancedCodeValidator:
             'time': ['now_utc', 'now_local', 'now_utc_iso', 'now_local_iso'],
             'ids': ['generate', 'uuid'],
             'logging': ['info', 'warning', 'error', 'debug'],
-            'browser': ['open_browser', 'navigate', 'find_element', 'get_page_text', 'take_screenshot', 'close', 'is_available']
+            'browser': ['open_browser', 'navigate', 'find_element', 'get_page_text', 'take_screenshot', 'close', 'is_available'],
+            # Direct methods on ToolServices (self.services.<method>(...))
+            'call_tool': [],
+            'list_tools': [],
+            'has_capability': [],
+            'detect_language': [],
+            'extract_key_points': [],
+            'sentiment_analysis': [],
+            'generate_json_output': [],
         }
         self.missing_services = []  # Track missing services for generation
         # BaseTool inherited methods and attributes

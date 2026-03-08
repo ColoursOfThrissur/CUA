@@ -74,6 +74,7 @@ Self-improvement
 - `POST /improvement/import`
 - `GET /improvement/history/{plan_id}`
 - `POST /improvement/rollback/{plan_id}`
+- `GET /improvement/tools/suggest` - Suggest next tool to create OR an existing tool to evolve (registry-aware)
 - `POST /improvement/tools/create`
 
 Pending tools + pending libraries
@@ -101,6 +102,14 @@ Tool evolution + auto-evolution
 - `POST /auto-evolution/config`
 - `GET /auto-evolution/queue`
 - `POST /auto-evolution/trigger-scan`
+
+Capability gaps + services (self-feature growth)
+- `GET /improvement/evolution/capability-gaps` - View detected capability gaps (GapTracker summary)
+- `POST /improvement/evolution/detect-gap` - Manually record a capability gap (task + optional error)
+- `GET /api/services/pending` - Pending service proposals generated from missing `self.services.X`
+- `GET /api/services/{service_id}` - Pending service details (includes generated code)
+- `POST /api/services/{service_id}/approve` - Approve + inject generated service code
+- `POST /api/services/{service_id}/reject` - Reject service proposal
 
 Quality + metrics
 - `GET /quality/summary`
@@ -163,6 +172,7 @@ Experimental tools (available in `tools/experimental/`; some are loaded by defau
 - `ContextSummarizerTool`
 - `DatabaseQueryTool`
 - `LocalRunNoteTool`
+- `UserApprovalGateTool` (human-in-loop approval requests + policy checks)
 - additional experimental tools exist and can be activated/loaded via the tool sync + approval flows
 
 ## 🏗️ Architecture Overview
@@ -594,6 +604,9 @@ Still Missing? → Block with error
 - Evolution workflow
 - Pending approvals with dependency warnings
 - Auto-cleanup on approval/rejection
+- Capability gaps dashboard (what features the system is missing)
+- Pending services approvals (approve/reject injected `core/tool_services.py` changes)
+- Embedded auto-evolution panel (queue + scan + config)
 
 ### 4. Tools Management
 - Comprehensive tool dashboard
@@ -777,6 +790,25 @@ self.services.has_capability(capability_name)
 3. Update `AVAILABLE_SERVICES` in `core/dependency_checker.py`
 4. Update `DATABASE_SCHEMAS` in `core/database_schema_registry.py`
 5. System auto-detects and validates
+
+**Auto-evolution config keys** (via `POST /auto-evolution/config`):
+- `enable_enhancements`: Whether to queue "HEALTHY but improvable" enhancements
+- `max_new_tools_per_scan`: Limit how many new tools can be queued from capability gaps per scan
+
+## 🧪 Testing
+
+In some restricted Windows environments, `pytest` can fail when it tries to create temp folders or caches (permission denied). This repo disables `tmpdir` and `cacheprovider` in `pytest.ini` and provides a local `tmp_path` fixture in `tests/conftest.py`.
+
+```bash
+pytest -q
+```
+
+## 🧱 Reliability Notes
+
+- **SQLite is best-effort**: observability/memory/history DBs are treated as optional; if a DB is locked/readonly, the system logs a warning and continues operating.
+- **Creation is registry-aware**: if a requested tool name already exists, the API returns an "already exists" response and points you to evolve the existing tool instead of creating duplicates.
+- **Service calls are validated**: generated/evolved code must only call allowed `self.services.*` APIs (unknown service methods are blocked by validation).
+- **Scaffold-first fallback**: if full generation fails validation, CUA may create a safe scaffold and queue the tool for evolution rather than writing unvalidated code.
 
 ## 📄 License
 

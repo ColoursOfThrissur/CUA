@@ -110,6 +110,44 @@ Respond with only valid JSON."""
         registry = self.get_registry()
         return registry.get("tools", {}).get(tool_name)
 
+    def resolve_source_file(self, tool_name: str) -> Optional[Path]:
+        """Resolve a tool's source file using the registry (best-effort)."""
+        def _norm(name: str) -> str:
+            return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+        registry = self.get_registry() or {}
+        tools = (registry.get("tools") or {}) if isinstance(registry, dict) else {}
+        if not tools:
+            return None
+
+        entry = tools.get(tool_name)
+        if not entry:
+            wanted = _norm(tool_name)
+            for existing_name, data in tools.items():
+                if _norm(existing_name) == wanted:
+                    entry = data
+                    break
+
+        source_file = str((entry or {}).get("source_file") or "").strip()
+        if not source_file:
+            return None
+
+        path = Path(source_file)
+        if path.exists():
+            return path
+
+        # Normalize separators for Windows/JSON mismatches.
+        normalized = Path(source_file.replace("\\", "/"))
+        if normalized.exists():
+            return normalized
+
+        # Try relative to repo root when registry stored a relative path.
+        relative = Path.cwd() / source_file
+        if relative.exists():
+            return relative
+
+        return None
+
     def update_tool(self, tool_data: Dict) -> bool:
         """Upsert a single tool entry and persist registry."""
         if not tool_data:

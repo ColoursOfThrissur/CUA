@@ -1,11 +1,15 @@
 """
 Improvement Memory System - Tracks past improvement attempts and outcomes
 """
-import sqlite3
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
+
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("improvement_memory")
 
 class ImprovementMemory:
     def __init__(self, db_path: str = "data/improvement_memory.db"):
@@ -15,7 +19,10 @@ class ImprovementMemory:
     
     def _init_db(self):
         """Initialize database schema"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("Improvement memory DB unavailable; memory disabled for now")
+            return
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -42,13 +49,15 @@ class ImprovementMemory:
         """)
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def store_attempt(self, file_path: str, change_type: str, description: str,
                      patch: str, outcome: str, error_message: str = None,
                      test_results: dict = None, metrics: dict = None):
         """Store an improvement attempt"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -69,11 +78,13 @@ class ImprovementMemory:
         ))
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
     
     def get_similar_attempts(self, file_path: str, limit: int = 5) -> List[Dict]:
         """Get similar past attempts for a file"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -94,12 +105,14 @@ class ImprovementMemory:
                 'error_message': row[4]
             })
         
-        conn.close()
+        safe_close(conn)
         return results
     
     def get_failed_attempts(self, days: int = 7) -> List[Dict]:
         """Get recent failed attempts"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -119,12 +132,14 @@ class ImprovementMemory:
                 'error_message': row[3]
             })
         
-        conn.close()
+        safe_close(conn)
         return results
     
     def get_success_rate(self, file_path: str = None) -> float:
         """Calculate success rate for a file or overall"""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return 0.0
         cursor = conn.cursor()
         
         if file_path:
@@ -142,5 +157,5 @@ class ImprovementMemory:
             """)
         
         result = cursor.fetchone()[0] or 0.0
-        conn.close()
+        safe_close(conn)
         return result

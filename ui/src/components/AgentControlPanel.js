@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Square, Repeat, Zap, Wrench } from 'lucide-react';
+import { API_URL } from '../config';
 import TaskManagerPanel from './TaskManagerPanel';
 import SelfImprovementLog from './SelfImprovementLog';
 import CollapsibleSection from './CollapsibleSection';
@@ -33,7 +34,7 @@ function AgentControlPanel({
   const toggleEvolution = async () => {
     const endpoint = evolutionMode ? '/improvement/evolution/disable' : '/improvement/evolution/enable';
     try {
-      await fetch(`http://localhost:8000${endpoint}`, { method: 'POST' });
+      await fetch(`${API_URL}${endpoint}`, { method: 'POST' });
       setEvolutionMode(!evolutionMode);
     } catch (err) {
       console.error('Failed to toggle evolution mode:', err);

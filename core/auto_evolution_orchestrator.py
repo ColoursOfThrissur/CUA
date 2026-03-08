@@ -33,7 +33,8 @@ class AutoEvolutionOrchestrator:
             "min_health_threshold": 50,
             "auto_approve_threshold": 90,  # Auto-approve if test score >= 90
             "learning_enabled": True,
-            "enable_enhancements": True  # Queue tools with improvement suggestions
+            "enable_enhancements": True,  # Queue tools with improvement suggestions
+            "max_new_tools_per_scan": 1,  # Limit self-feature growth per scan
         }
         
     async def start(self):
@@ -105,6 +106,53 @@ class AutoEvolutionOrchestrator:
         self.logger.info("Starting LLM-based tool health scan")
         
         try:
+            # 0) Queue evolutions based on real usage signals (tool execution logs)
+            try:
+                weak_reports = self.quality_analyzer.get_weak_tools(days=7, min_usage=3)
+                for report in weak_reports[:10]:
+                    evolution = QueuedEvolution(
+                        tool_name=report.tool_name,
+                        urgency_score=90.0 if report.has_recent_errors else 70.0,
+                        impact_score=self._calculate_impact({"usage_count": report.usage_frequency}),
+                        feasibility_score=70.0,
+                        timing_score=80.0,
+                        reason=f"Low health score ({report.health_score:.1f}) - {', '.join(report.issues[:2])}",
+                        metadata={"kind": "evolve_tool", "source": "quality_analyzer"},
+                    )
+                    self.queue.add(evolution)
+            except Exception as e:
+                self.logger.warning(f"Usage-based queueing skipped: {e}")
+
+            # 1) Queue new tool creation from persistent capability gaps (self-feature growth)
+            try:
+                from core.gap_tracker import GapTracker
+                tracker = GapTracker()
+                actionable = tracker.get_actionable_gaps()
+                max_new_tools = int(self.config.get("max_new_tools_per_scan", 1))
+                created = 0
+                for gap in actionable:
+                    if created >= max_new_tools:
+                        break
+                    if gap.capability and not self.queue.is_queued(f"CREATE::{gap.capability}"):
+                        evolution = QueuedEvolution(
+                            tool_name=f"CREATE::{gap.capability}",
+                            urgency_score=60.0,
+                            impact_score=50.0,
+                            feasibility_score=65.0,
+                            timing_score=70.0,
+                            reason=f"Persistent capability gap: {gap.capability} ({gap.occurrence_count}x, conf {gap.confidence_avg:.2f})",
+                            metadata={
+                                "kind": "create_tool",
+                                "gap_capability": gap.capability,
+                                "gap_description": f"Add capability: {gap.capability}. Reasons: {', '.join(gap.reasons[:3])}",
+                                "suggested_library": gap.suggested_library,
+                            },
+                        )
+                        self.queue.add(evolution)
+                        created += 1
+            except Exception as e:
+                self.logger.warning(f"Gap-based tool creation queueing skipped: {e}")
+
             from pathlib import Path
             tools_dir = Path("tools/experimental")
             if not tools_dir.exists():
@@ -206,6 +254,7 @@ class AutoEvolutionOrchestrator:
                     timing_score=timing,
                     reason=reason,
                     metadata={
+                        "kind": "evolve_tool",
                         "category": category, 
                         "llm_scan": True, 
                         "issues_count": len(issues),
@@ -233,12 +282,43 @@ class AutoEvolutionOrchestrator:
             # Mark as in progress
             self.queue.mark_in_progress(evolution.tool_name)
             
-            # Run evolution flow
-            result = await asyncio.to_thread(
-                self.evolution_flow.evolve_tool,
-                evolution.tool_name,
-                evolution.reason
-            )
+            kind = (evolution.metadata or {}).get("kind", "evolve_tool")
+
+            if kind == "create_tool":
+                if not hasattr(self, "tool_creation_flow") or self.tool_creation_flow is None:
+                    from core.capability_graph import CapabilityGraph
+                    from core.expansion_mode import ExpansionMode
+                    from core.tool_creation.flow import ToolCreationOrchestrator
+                    self.tool_creation_flow = ToolCreationOrchestrator(CapabilityGraph(), ExpansionMode(enabled=True))
+
+                gap_description = (evolution.metadata or {}).get("gap_description") or evolution.reason
+                preferred_name = None
+                gap_capability = (evolution.metadata or {}).get("gap_capability")
+                if gap_capability:
+                    preferred_name = "".join([p.capitalize() for p in str(gap_capability).split("_")]) + "Tool"
+
+                result = await asyncio.to_thread(
+                    self.tool_creation_flow.create_tool,
+                    gap_description,
+                    self.llm_client,
+                    preferred_name,
+                )
+                if isinstance(result, tuple):
+                    success, message = result
+                    result = {"success": success, "message": message}
+                tool_name_for_tests = None
+                try:
+                    tool_name_for_tests = (self.tool_creation_flow.last_spec or {}).get("name")
+                except Exception:
+                    tool_name_for_tests = None
+            else:
+                # Run evolution flow
+                result = await asyncio.to_thread(
+                    self.evolution_flow.evolve_tool,
+                    evolution.tool_name,
+                    evolution.reason
+                )
+                tool_name_for_tests = evolution.tool_name
             
             # evolve_tool returns (success, message) tuple
             if isinstance(result, tuple):
@@ -249,11 +329,12 @@ class AutoEvolutionOrchestrator:
                 self.queue.mark_failed(evolution.tool_name, result.get("message", "Unknown error"))
                 return
                 
-            # Run LLM tests
-            test_result = self.test_orchestrator.run_test_suite(evolution.tool_name)
+            # Run LLM tests (best-effort)
+            test_target = tool_name_for_tests or evolution.tool_name
+            test_result = self.test_orchestrator.run_test_suite(test_target)
             test_score = test_result.get("overall_score", 0)
             
-            self.logger.info(f"Evolution test score: {test_score} (tool: {evolution.tool_name}, pass_rate: {test_result.get('pass_rate', 0)})")
+            self.logger.info(f"Evolution test score: {test_score} (tool: {test_target}, pass_rate: {test_result.get('pass_rate', 0)})")
             
             # Auto-approve if score is high enough
             if test_score >= self.config["auto_approve_threshold"]:

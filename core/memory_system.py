@@ -1,11 +1,11 @@
 """Memory System - Manages conversation context and learned patterns."""
 import json
 import logging
-import sqlite3
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
+
+from core.sqlite_utils import safe_connect, safe_close
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,15 @@ class MemorySystem:
         self.active_sessions[session_id] = context
         
         # Save to SQLite
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO sessions (session_id, user_preferences, active_goal, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (session_id, json.dumps(user_preferences or {}), None, now, now)
-        )
-        conn.commit()
-        conn.close()
+        conn = safe_connect(self.db_path)
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO sessions (session_id, user_preferences, active_goal, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, json.dumps(user_preferences or {}), None, now, now)
+            )
+            conn.commit()
+            safe_close(conn)
         
         logger.info(f"Created session: {session_id}")
         return context
@@ -82,7 +83,9 @@ class MemorySystem:
             return self.active_sessions[session_id]
         
         # Load from SQLite
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return None
         cursor = conn.cursor()
         
         # Get session metadata
@@ -93,7 +96,7 @@ class MemorySystem:
         row = cursor.fetchone()
         
         if not row:
-            conn.close()
+            safe_close(conn)
             return None
         
         user_prefs, active_goal, created_at, updated_at = row
@@ -120,7 +123,7 @@ class MemorySystem:
         )
         execution_history = [r[0] for r in cursor.fetchall()]
         
-        conn.close()
+        safe_close(conn)
         
         context = ConversationContext(
             session_id=session_id,
@@ -159,18 +162,19 @@ class MemorySystem:
         context.updated_at = now
         
         # Save to SQLite
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO conversations (session_id, timestamp, role, content, metadata) VALUES (?, ?, ?, ?, ?)",
-            (session_id, now, role, content, json.dumps(metadata) if metadata else None)
-        )
-        cursor.execute(
-            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-            (now, session_id)
-        )
-        conn.commit()
-        conn.close()
+        conn = safe_connect(self.db_path)
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO conversations (session_id, timestamp, role, content, metadata) VALUES (?, ?, ?, ?, ?)",
+                (session_id, now, role, content, json.dumps(metadata) if metadata else None)
+            )
+            cursor.execute(
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                (now, session_id)
+            )
+            conn.commit()
+            safe_close(conn)
     
     def get_recent_messages(
         self,
@@ -217,14 +221,15 @@ class MemorySystem:
             context.active_goal = goal
             context.updated_at = now
             
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE sessions SET active_goal = ?, updated_at = ? WHERE session_id = ?",
-                (goal, now, session_id)
-            )
-            conn.commit()
-            conn.close()
+            conn = safe_connect(self.db_path)
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE sessions SET active_goal = ?, updated_at = ? WHERE session_id = ?",
+                    (goal, now, session_id)
+                )
+                conn.commit()
+                safe_close(conn)
     
     def add_execution(self, session_id: str, execution_id: str):
         """Link execution to session."""
@@ -234,18 +239,19 @@ class MemorySystem:
             context.execution_history.append(execution_id)
             context.updated_at = now
             
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO execution_history (session_id, execution_id, timestamp) VALUES (?, ?, ?)",
-                (session_id, execution_id, now)
-            )
-            cursor.execute(
-                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-                (now, session_id)
-            )
-            conn.commit()
-            conn.close()
+            conn = safe_connect(self.db_path)
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO execution_history (session_id, execution_id, timestamp) VALUES (?, ?, ?)",
+                    (session_id, execution_id, now)
+                )
+                cursor.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                    (now, session_id)
+                )
+                conn.commit()
+                safe_close(conn)
     
     def update_preference(self, session_id: str, key: str, value: Any):
         """Update user preference."""
@@ -255,49 +261,53 @@ class MemorySystem:
             context.user_preferences[key] = value
             context.updated_at = now
             
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE sessions SET user_preferences = ?, updated_at = ? WHERE session_id = ?",
-                (json.dumps(context.user_preferences), now, session_id)
-            )
-            conn.commit()
-            conn.close()
+            conn = safe_connect(self.db_path)
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE sessions SET user_preferences = ?, updated_at = ? WHERE session_id = ?",
+                    (json.dumps(context.user_preferences), now, session_id)
+                )
+                conn.commit()
+                safe_close(conn)
     
     def learn_pattern(self, pattern_type: str, pattern_data: Dict[str, Any]):
         """Store learned pattern for future use."""
         now = datetime.now().isoformat()
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO learned_patterns (pattern_type, pattern_data, learned_at) VALUES (?, ?, ?)",
-            (pattern_type, json.dumps(pattern_data), now)
-        )
-        conn.commit()
-        
-        # Keep only recent 100 patterns per type
-        cursor.execute(
-            """DELETE FROM learned_patterns WHERE id NOT IN (
-                SELECT id FROM learned_patterns WHERE pattern_type = ? ORDER BY learned_at DESC LIMIT 100
-            ) AND pattern_type = ?""",
-            (pattern_type, pattern_type)
-        )
-        conn.commit()
-        conn.close()
+        conn = safe_connect(self.db_path)
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO learned_patterns (pattern_type, pattern_data, learned_at) VALUES (?, ?, ?)",
+                (pattern_type, json.dumps(pattern_data), now)
+            )
+            conn.commit()
+
+            # Keep only recent 100 patterns per type
+            cursor.execute(
+                """DELETE FROM learned_patterns WHERE id NOT IN (
+                    SELECT id FROM learned_patterns WHERE pattern_type = ? ORDER BY learned_at DESC LIMIT 100
+                ) AND pattern_type = ?""",
+                (pattern_type, pattern_type)
+            )
+            conn.commit()
+            safe_close(conn)
         
         logger.info(f"Learned new pattern: {pattern_type}")
     
     def get_patterns(self, pattern_type: str, limit: int = 10) -> List[Dict]:
         """Get learned patterns of specific type."""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
         cursor = conn.cursor()
         cursor.execute(
             "SELECT pattern_data FROM learned_patterns WHERE pattern_type = ? ORDER BY learned_at DESC LIMIT ?",
             (pattern_type, limit)
         )
         patterns = [json.loads(r[0]) for r in cursor.fetchall()]
-        conn.close()
+        safe_close(conn)
         return patterns
     
     def clear_session(self, session_id: str):
@@ -305,19 +315,23 @@ class MemorySystem:
         if session_id in self.active_sessions:
             del self.active_sessions[session_id]
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
-        cursor.execute("DELETE FROM execution_history WHERE session_id = ?", (session_id,))
-        conn.commit()
-        conn.close()
+        conn = safe_connect(self.db_path)
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM execution_history WHERE session_id = ?", (session_id,))
+            conn.commit()
+            safe_close(conn)
         
         logger.info(f"Cleared session: {session_id}")
     
     def _init_db(self):
         """Initialize SQLite database with required tables."""
-        conn = sqlite3.connect(self.db_path)
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("MemorySystem DB unavailable; persistence disabled for now")
+            return
         cursor = conn.cursor()
         
         # Sessions table
@@ -358,6 +372,6 @@ class MemorySystem:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id, timestamp)")
         
         conn.commit()
-        conn.close()
+        safe_close(conn)
         
         logger.info("Memory system database initialized")

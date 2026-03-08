@@ -3,6 +3,8 @@ from fastapi import APIRouter
 import sqlite3
 from pathlib import Path
 
+from core.sqlite_utils import safe_connect, safe_close
+
 router = APIRouter()
 
 
@@ -15,9 +17,14 @@ async def cleanup_stale_data():
         return {"removed": 0, "message": "No database found"}
     
     # Get all tool names from database
-    with sqlite3.connect(db_path) as conn:
+    conn = safe_connect(db_path)
+    if not conn:
+        return {"removed": 0, "message": "Database unavailable (locked/readonly)"}
+    try:
         cursor = conn.execute("SELECT DISTINCT tool_name FROM executions")
         tool_names = [row[0] for row in cursor.fetchall()]
+    finally:
+        safe_close(conn)
     
     # Check which tools don't have files
     removed_count = 0
@@ -32,9 +39,13 @@ async def cleanup_stale_data():
         
         if not any(p.exists() for p in candidates):
             # Remove from database
-            with sqlite3.connect(db_path) as conn:
-                conn.execute("DELETE FROM executions WHERE tool_name = ?", (tool_name,))
-                conn.commit()
+            conn = safe_connect(db_path)
+            if conn:
+                try:
+                    conn.execute("DELETE FROM executions WHERE tool_name = ?", (tool_name,))
+                    conn.commit()
+                finally:
+                    safe_close(conn)
             removed_count += 1
             removed_tools.append(tool_name)
     

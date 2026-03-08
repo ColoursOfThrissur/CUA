@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Filter, X, Eye, ChevronLeft, ChevronRight, RefreshCw, Copy, ArrowLeft } from 'lucide-react';
+import { API_URL } from '../config';
 import './ObservabilityPage.css';
 
 const ObservabilityPage = ({ onBack }) => {
@@ -30,7 +31,7 @@ const ObservabilityPage = ({ onBack }) => {
 
   const fetchTables = async () => {
     try {
-      const res = await fetch('http://localhost:8000/observability/tables');
+      const res = await fetch(`${API_URL}/observability/tables`);
       const json = await res.json();
       setTables(json.tables || []);
       if (json.tables && json.tables.length > 0) {
@@ -56,7 +57,7 @@ const ObservabilityPage = ({ onBack }) => {
       }
 
       const res = await fetch(
-        `http://localhost:8000/observability/data/${selectedTable.db}/${selectedTable.table}?${params}`
+        `${API_URL}/observability/data/${selectedTable.db}/${selectedTable.table}?${params}`
       );
       const json = await res.json();
       setData(json.rows || []);
@@ -73,7 +74,7 @@ const ObservabilityPage = ({ onBack }) => {
     if (!selectedTable || !column) return;
     try {
       const res = await fetch(
-        `http://localhost:8000/observability/filters/${selectedTable.db}/${selectedTable.table}/${column}`
+        `${API_URL}/observability/filters/${selectedTable.db}/${selectedTable.table}/${column}`
       );
       const json = await res.json();
       setFilterOptions(json.values || []);

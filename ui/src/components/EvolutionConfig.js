@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Settings } from 'lucide-react';
+import { API_URL } from '../config';
 import { useToast } from './Toast';
 import './EvolutionConfig.css';
 
@@ -12,7 +13,8 @@ function EvolutionConfig() {
     min_health_threshold: 50,
     auto_approve_threshold: 90,
     learning_enabled: true,
-    enable_enhancements: true
+    enable_enhancements: true,
+    max_new_tools_per_scan: 1
   });
   const [loading, setLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
@@ -23,7 +25,7 @@ function EvolutionConfig() {
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/status');
+      const res = await fetch(`${API_URL}/auto-evolution/status`);
       const data = await res.json();
       if (data.config) setConfig(data.config);
     } catch (err) {
@@ -34,7 +36,7 @@ function EvolutionConfig() {
   const handleUpdate = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/config', {
+      const res = await fetch(`${API_URL}/auto-evolution/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -105,6 +107,12 @@ function EvolutionConfig() {
               <label>Enable Enhancements</label>
               <input type="checkbox" checked={config.enable_enhancements !== false} 
                 onChange={e => setConfig({...config, enable_enhancements: e.target.checked})} />
+            </div>
+
+            <div className="config-item">
+              <label>Max New Tools / Scan</label>
+              <input type="number" value={config.max_new_tools_per_scan ?? 1}
+                onChange={e => setConfig({...config, max_new_tools_per_scan: parseInt(e.target.value)})} />
             </div>
           </div>
 

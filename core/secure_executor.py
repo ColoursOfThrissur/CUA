@@ -24,7 +24,8 @@ class SecureExecutor:
         self.validator = PlanValidator()
         self.permission_gate = PermissionGate()
         self.security_violations = []
-        self.tool_orchestrator = ToolOrchestrator()
+        # Ensure tools get ToolServices with a working registry for inter-tool calls.
+        self.tool_orchestrator = ToolOrchestrator(registry=self.registry)
     
     def execute_plan_secure(self, plan) -> SecureExecutionResult:
         """Execute plan with full security validation."""

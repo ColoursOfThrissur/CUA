@@ -148,6 +148,34 @@ class ToolEvolutionOrchestrator:
                             'missing_libraries': dep_report.missing_libraries,
                             'missing_services': dep_report.missing_services
                         }
+
+                        # If evolution introduces missing services, generate pending service proposals and stop.
+                        if dep_report.missing_services or dep_report.pending_services:
+                            try:
+                                from core.service_generation_integration import ServiceGenerationIntegration
+                                svc_integration = ServiceGenerationIntegration()
+                                svc_result = svc_integration.validate_and_generate_services(
+                                    improved_code,
+                                    class_name=None,
+                                    context=(user_prompt or f"Evolution for {tool_name}"),
+                                    requested_by="tool_evolution",
+                                )
+                                evo_logger.log_artifact(evolution_id, "pending_services", f"attempt_{attempt+1}", svc_result)
+                                if svc_result.get("pending_approval"):
+                                    evo_logger.log_run(
+                                        tool_name,
+                                        user_prompt,
+                                        "blocked",
+                                        "services_pending",
+                                        svc_result.get("error"),
+                                        confidence,
+                                        health_before,
+                                    )
+                                    return False, f"Missing services detected; generated pending service proposals for approval. {svc_result.get('error')}"
+                            except Exception as e:
+                                evo_logger.log_artifact(evolution_id, "service_generation_error", f"attempt_{attempt+1}", {"error": str(e)})
+                                evo_logger.log_run(tool_name, user_prompt, "failed", "services", str(e), confidence, health_before)
+                                return False, f"Missing services detected but service generation failed: {e}"
                     
                     # Validate
                     from core.tool_evolution.validator import EvolutionValidator
@@ -336,6 +364,14 @@ class ToolEvolutionOrchestrator:
     def _find_tool_file(self, tool_name: str) -> Optional[Path]:
         """Find tool file path."""
         from pathlib import Path
+
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            resolved = ToolRegistryManager().resolve_source_file(tool_name)
+            if resolved and resolved.exists():
+                return resolved
+        except Exception:
+            pass
         
         # Check experimental directory
         exp_path = Path("tools/experimental") / f"{tool_name}.py"

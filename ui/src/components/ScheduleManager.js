@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_URL } from '../config';
 import './ScheduleManager.css';
 
 function ScheduleManager() {
@@ -17,7 +18,7 @@ function ScheduleManager() {
 
   const fetchSchedules = async () => {
     try {
-      const response = await fetch('http://localhost:8000/schedule/list');
+      const response = await fetch(`${API_URL}/schedule/list`);
       const data = await response.json();
       setSchedules(data.schedules || []);
     } catch (error) {
@@ -32,7 +33,7 @@ function ScheduleManager() {
     }
 
     try {
-      const response = await fetch('http://localhost:8000/schedule/create', {
+      const response = await fetch(`${API_URL}/schedule/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newSchedule)
@@ -52,7 +53,7 @@ function ScheduleManager() {
     if (!window.confirm(`Delete schedule "${scheduleId}"?`)) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/schedule/${scheduleId}`, {
+      const response = await fetch(`${API_URL}/schedule/${scheduleId}`, {
         method: 'DELETE'
       });
 
@@ -66,7 +67,7 @@ function ScheduleManager() {
 
   const handleToggle = async (scheduleId, enabled) => {
     try {
-      const response = await fetch(`http://localhost:8000/schedule/${scheduleId}/enable?enabled=${!enabled}`, {
+      const response = await fetch(`${API_URL}/schedule/${scheduleId}/enable?enabled=${!enabled}`, {
         method: 'POST'
       });
 

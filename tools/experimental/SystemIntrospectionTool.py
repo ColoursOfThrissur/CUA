@@ -83,19 +83,23 @@ class SystemIntrospectionTool(BaseTool):
                 return {'tools': [], 'error': 'Orchestrator not available'}
 
             try:
-                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-                if not tool_registry:
-                    return {'tools': [], 'error': 'Tool registry not found'}
+                registry = getattr(self.orchestrator, '_registry', None) or getattr(self.services, 'registry', None)
+                if not registry or not hasattr(registry, 'tools'):
+                    return {'tools': [], 'error': 'Tool registry not available'}
 
                 tools = []
-                for tool_name, tool_instance in tool_registry.items():
-                    if not include_experimental and 'experimental' in tool_name.lower():
+                for tool_instance in getattr(registry, 'tools', []):
+                    tool_name = tool_instance.__class__.__name__
+                    module_name = getattr(tool_instance, "__module__", "")
+                    is_experimental = module_name.startswith("tools.experimental")
+
+                    if not include_experimental and is_experimental:
                         continue
 
                     tools.append({
                         'name': tool_name,
                         'description': getattr(tool_instance, 'description', 'No description'),
-                        'is_experimental': 'experimental' in tool_name.lower()
+                        'is_experimental': is_experimental
                     })
 
                 return {
@@ -118,11 +122,13 @@ class SystemIntrospectionTool(BaseTool):
                 return {'error': 'Orchestrator not available'}
 
             try:
-                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-                if not tool_registry or tool_name not in tool_registry:
-                    return {'error': f'Tool {tool_name} not found'}
+                registry = getattr(self.orchestrator, '_registry', None) or getattr(self.services, 'registry', None)
+                if not registry or not hasattr(registry, 'get_tool_by_name'):
+                    return {'error': 'Tool registry not available'}
 
-                tool_instance = tool_registry[tool_name]
+                tool_instance = registry.get_tool_by_name(tool_name)
+                if not tool_instance:
+                    return {'error': f'Tool {tool_name} not found'}
                 capabilities = []
 
                 # Get capabilities
@@ -161,12 +167,13 @@ class SystemIntrospectionTool(BaseTool):
                 return {'capabilities': [], 'error': 'Orchestrator not available'}
 
             try:
-                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-                if not tool_registry:
-                    return {'capabilities': [], 'error': 'Tool registry not found'}
+                registry = getattr(self.orchestrator, '_registry', None) or getattr(self.services, 'registry', None)
+                if not registry or not hasattr(registry, 'tools'):
+                    return {'capabilities': [], 'error': 'Tool registry not available'}
 
                 all_capabilities = []
-                for tool_name, tool_instance in tool_registry.items():
+                for tool_instance in getattr(registry, 'tools', []):
+                    tool_name = tool_instance.__class__.__name__
                     if hasattr(tool_instance, 'capabilities'):
                         for cap_name, cap_obj in tool_instance.capabilities.items():
                             all_capabilities.append({
@@ -188,15 +195,16 @@ class SystemIntrospectionTool(BaseTool):
                 return {'error': 'Orchestrator not available'}
 
             try:
-                tool_registry = getattr(self.orchestrator, 'tool_registry', None)
-                if not tool_registry:
-                    return {'error': 'Tool registry not found'}
+                registry = getattr(self.orchestrator, '_registry', None) or getattr(self.services, 'registry', None)
+                if not registry or not hasattr(registry, 'tools'):
+                    return {'error': 'Tool registry not available'}
 
-                total_tools = len(tool_registry)
-                experimental_tools = sum(1 for name in tool_registry.keys() if 'experimental' in name.lower())
+                tools = list(getattr(registry, 'tools', []))
+                total_tools = len(tools)
+                experimental_tools = sum(1 for t in tools if getattr(t, "__module__", "").startswith("tools.experimental"))
                 total_capabilities = 0
 
-                for tool_instance in tool_registry.values():
+                for tool_instance in tools:
                     if hasattr(tool_instance, 'capabilities'):
                         total_capabilities += len(tool_instance.capabilities)
 

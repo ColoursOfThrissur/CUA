@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Square, Settings, RefreshCw, Activity } from 'lucide-react';
+import { API_URL } from '../config';
 import { useToast } from './Toast';
 import './AutoEvolutionPanel.css';
 
-const AutoEvolutionPanel = ({ onClose }) => {
+const AutoEvolutionPanel = ({ onClose, embedded = false }) => {
   const toast = useToast();
   const [status, setStatus] = useState(null);
   const [queue, setQueue] = useState([]);
@@ -15,7 +16,9 @@ const AutoEvolutionPanel = ({ onClose }) => {
     max_concurrent: 2,
     min_health_threshold: 50,
     auto_approve_threshold: 90,
-    learning_enabled: true
+    learning_enabled: true,
+    enable_enhancements: true,
+    max_new_tools_per_scan: 1
   });
   const [loading, setLoading] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
@@ -28,7 +31,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
 
   const fetchStatus = async () => {
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/status');
+      const res = await fetch(`${API_URL}/auto-evolution/status`);
       const data = await res.json();
       setStatus(data);
       setScanning(data.scanning || false);
@@ -37,7 +40,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
       
       // Always fetch queue to show items even when not running
       try {
-        const queueRes = await fetch('http://localhost:8000/auto-evolution/queue');
+        const queueRes = await fetch(`${API_URL}/auto-evolution/queue`);
         const queueData = await queueRes.json();
         setQueue(queueData.queue || []);
       } catch (err) {
@@ -51,7 +54,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
   const handleStart = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/start', { method: 'POST' });
+      const res = await fetch(`${API_URL}/auto-evolution/start`, { method: 'POST' });
       if (res.ok) {
         toast.success('Auto-evolution started');
         await fetchStatus();
@@ -68,7 +71,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
   const handleStop = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/stop', { method: 'POST' });
+      const res = await fetch(`${API_URL}/auto-evolution/stop`, { method: 'POST' });
       if (res.ok) {
         toast.success('Auto-evolution stopped');
         await fetchStatus();
@@ -84,7 +87,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
   const handleConfigUpdate = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/config', {
+      const res = await fetch(`${API_URL}/auto-evolution/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -104,7 +107,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
   const handleTriggerScan = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/auto-evolution/trigger-scan', { method: 'POST' });
+      const res = await fetch(`${API_URL}/auto-evolution/trigger-scan`, { method: 'POST' });
       if (res.ok) {
         toast.success('Tool scan completed - check queue');
         await fetchStatus();
@@ -122,7 +125,7 @@ const AutoEvolutionPanel = ({ onClose }) => {
     <div className="auto-evolution-panel">
       <div className="panel-header">
         <h2><Activity size={24} /> Auto-Evolution</h2>
-        <button onClick={onClose} className="close-btn">×</button>
+        {!embedded && <button onClick={onClose} className="close-btn">×</button>}
       </div>
 
       <div className="panel-content">
@@ -217,6 +220,15 @@ const AutoEvolutionPanel = ({ onClose }) => {
               <label>Enable Enhancements</label>
               <input type="checkbox" checked={config.enable_enhancements !== false} 
                 onChange={e => setConfig({...config, enable_enhancements: e.target.checked})} />
+            </div>
+
+            <div className="config-item">
+              <label>Max New Tools / Scan</label>
+              <input
+                type="number"
+                value={config.max_new_tools_per_scan ?? 1}
+                onChange={e => setConfig({...config, max_new_tools_per_scan: parseInt(e.target.value)})}
+              />
             </div>
           </div>
 

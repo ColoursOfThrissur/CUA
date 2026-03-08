@@ -35,6 +35,19 @@ class CreateToolRequest(BaseModel):
     description: str
     tool_name: Optional[str] = None
 
+
+class ToolSuggestionResponse(BaseModel):
+    action: str = "create_tool"  # create_tool | evolve_tool
+    tool_name: str
+    description: str
+    rationale: str
+    source: str  # gap_tracker | llm_fallback
+    confidence: float = 0.7
+    suggested_library: Optional[str] = None
+    capability_gap: Optional[str] = None
+    target_tool: Optional[str] = None
+    registry_snapshot_tools: Optional[int] = None
+
 @router.post("/start")
 async def start_loop(request: StartLoopRequest):
     if not loop_instance:
@@ -464,6 +477,33 @@ async def create_tool_from_description(
     effective_tool_name = payload.tool_name if payload and payload.tool_name else tool_name
     if not effective_description:
         raise HTTPException(status_code=422, detail="description is required")
+
+    # Guardrail: if the user explicitly requests a tool name that already exists,
+    # do not create a duplicate. Prefer tool evolution.
+    if effective_tool_name:
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+
+            def _norm(name: str) -> str:
+                return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+            registry = ToolRegistryManager().get_registry() or {}
+            tools = (registry.get("tools") or {}) if isinstance(registry, dict) else {}
+            existing_name = None
+            for name in tools.keys():
+                if _norm(name) == _norm(effective_tool_name):
+                    existing_name = name
+                    break
+            if existing_name:
+                return {
+                    "success": False,
+                    "status": "already_exists",
+                    "action": "evolve_tool",
+                    "target_tool": existing_name,
+                    "message": f"Tool '{existing_name}' already exists; use evolution instead of creating a duplicate.",
+                }
+        except Exception:
+            pass
     
     from core.tool_creation.flow import ToolCreationOrchestrator
     from core.capability_graph import CapabilityGraph
@@ -537,3 +577,224 @@ async def create_tool_from_description(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tool creation failed: {str(e)}")
+
+
+@router.get("/tools/suggest", response_model=ToolSuggestionResponse)
+async def suggest_next_tool():
+    """
+    Suggest the next most important tool for CUA to create (self-directed growth),
+    using persistent capability gaps when available, otherwise an LLM-based fallback.
+
+    This endpoint only proposes; actual creation still requires the user to call /tools/create
+    and then approve the generated tool in the pending tools workflow.
+    """
+    if not loop_instance:
+        raise HTTPException(status_code=503, detail="Loop not initialized")
+
+    # Capability-aware: prefer evolving/fixing existing incomplete tools before proposing new ones.
+    from pathlib import Path
+
+    def _norm(name: str) -> str:
+        return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+    registry_snapshot = {}
+    try:
+        from core.tool_registry_manager import ToolRegistryManager
+        registry_snapshot = ToolRegistryManager().get_registry() or {}
+    except Exception:
+        registry_snapshot = {}
+
+    registry_tools = (registry_snapshot or {}).get("tools", {}) or {}
+    registry_tool_names = set(registry_tools.keys())
+    registry_tool_norms = {_norm(n): n for n in registry_tool_names}
+
+    incomplete_candidates = []
+    for tool_name, tool_entry in registry_tools.items():
+        source_file = str((tool_entry or {}).get("source_file") or "")
+        if not source_file:
+            continue
+
+        path = Path(source_file)
+        if not path.exists():
+            path = Path(source_file.replace("\\", "/"))
+        if not path.exists():
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        score = 0
+        if "keep sandbox-safe default" in text:
+            score += 1
+        if "\"status\": \"stub\"" in text or "\"status\":\"stub\"" in text or "'status': 'stub'" in text:
+            score += 1
+        if "return {\"operation\":" in text and "\"received\"" in text:
+            score += 1
+        if "(BaseTool)" in text and "from tools.tool_interface import BaseTool" not in text:
+            score += 1
+
+        if score:
+            incomplete_candidates.append(
+                {"tool_name": tool_name, "score": score, "source_file": str(path).replace("\\", "/")}
+            )
+
+    incomplete_candidates.sort(key=lambda x: x["score"], reverse=True)
+    if incomplete_candidates:
+        top = incomplete_candidates[0]
+        tool = top["tool_name"]
+        return ToolSuggestionResponse(
+            action="evolve_tool",
+            target_tool=tool,
+            tool_name=tool,
+            description=(
+                f"Improve the existing tool '{tool}' (currently incomplete/stub). "
+                "Fill in handler logic, fix imports/contract issues, and persist results via self.services.storage."
+            ),
+            rationale=(
+                f"'{tool}' already exists in the registry but looks incomplete (stub markers detected in {top['source_file']}). "
+                "Evolving/fixing it is higher leverage than creating a duplicate tool."
+            ),
+            source="registry_scan",
+            confidence=0.85,
+            registry_snapshot_tools=len(registry_tool_names),
+        )
+
+    # Prefer actionable persistent gaps.
+    from core.gap_tracker import GapTracker
+    tracker = GapTracker()
+    actionable = tracker.get_actionable_gaps()
+
+    def _camel(name: str) -> str:
+        parts = [p for p in (name or "").replace("-", "_").split("_") if p]
+        return "".join((p[:1].upper() + p[1:]) for p in parts)
+
+    if actionable:
+        # Rank by (occurrences * confidence)
+        actionable.sort(key=lambda g: (g.occurrence_count * (g.confidence_avg or 0.0)), reverse=True)
+        top = actionable[0]
+        gap_name = top.capability
+        suggested_tool_name = f"{_camel(gap_name)}Tool"
+        base_description = (
+            f"Add a new tool that provides the missing capability '{gap_name}'. "
+            f"It should be safe-by-default and use ToolServices for storage/logging/time/ids. "
+            f"Observed reasons: {', '.join((top.reasons or [])[:3])}."
+        )
+
+        # Let the LLM refine tool name + description into a better creation prompt.
+        try:
+            prompt = f"""You are helping an autonomous agent system (CUA) decide what tool to create next.
+
+We detected a persistent capability gap:
+- capability: {gap_name}
+- occurrences: {top.occurrence_count}
+- average_confidence: {top.confidence_avg}
+- suggested_library: {top.suggested_library}
+- reasons: {top.reasons[:5] if top.reasons else []}
+
+Write a tool creation prompt (1-2 paragraphs) that can be sent to the tool creation engine.
+Constraints:
+- Tool should be a "thin tool" using self.services.* (storage/logging/http/fs/json/shell/time/ids/call_tool etc.).
+- Prefer existing services; if a new service is required, name it explicitly as self.services.<name>.<method>.
+- Include clear capabilities (operations) and required parameters.
+- Keep it safe and deterministic (input validation, no uncontrolled filesystem/network).
+Return JSON only:
+{{"tool_name": "...", "description": "...", "rationale": "...", "confidence": 0.0}}
+"""
+            raw = loop_instance.llm_client._call_llm(prompt, temperature=0.2, max_tokens=700, expect_json=True)
+            parsed = loop_instance.llm_client._extract_json(raw) if raw else None
+            if isinstance(parsed, dict) and parsed.get("description"):
+                return ToolSuggestionResponse(
+                    action="create_tool",
+                    tool_name=str(parsed.get("tool_name") or suggested_tool_name),
+                    description=str(parsed.get("description") or base_description),
+                    rationale=str(parsed.get("rationale") or f"Persistent capability gap: {gap_name}"),
+                    source="gap_tracker",
+                    confidence=float(parsed.get("confidence") or 0.75),
+                    suggested_library=top.suggested_library,
+                    capability_gap=gap_name,
+                    registry_snapshot_tools=len(registry_tool_names),
+                )
+        except Exception:
+            pass
+
+        return ToolSuggestionResponse(
+            action="create_tool",
+            tool_name=suggested_tool_name,
+            description=base_description,
+            rationale=f"Persistent capability gap: {gap_name} ({top.occurrence_count}x, conf {top.confidence_avg:.2f})",
+            source="gap_tracker",
+            confidence=min(0.95, float(top.confidence_avg or 0.75)),
+            suggested_library=top.suggested_library,
+            capability_gap=gap_name,
+            registry_snapshot_tools=len(registry_tool_names),
+        )
+
+    # Capability-aware LLM fallback when no actionable gaps are recorded yet.
+    try:
+        existing_caps_text = ""
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            existing_caps_text = ToolRegistryManager().get_all_capabilities_text()
+        except Exception:
+            existing_caps_text = ""
+
+        prompt = f"""You are helping CUA (a self-improving agent) decide what tool to create next.
+
+Goal: improve autonomy/automation with user approval gates.
+
+Current tool registry (names + operations):
+{existing_caps_text or "(registry unavailable)"}
+
+Pick ONE high-leverage tool that is NOT redundant with the existing registry.
+If a closely-related tool already exists, set action="evolve_tool" and target_tool to that existing tool name (do NOT propose a new tool).
+Constraints:
+- Thin tool using self.services.*
+- Must have 2-4 clear capabilities (operations)
+- Must specify parameters for each operation
+- Prefer writing to data/ or output/ via storage service
+Return JSON only:
+{{"action":"create_tool|evolve_tool","target_tool":"", "tool_name":"...","description":"...","rationale":"...","confidence":0.0}}
+"""
+        raw = loop_instance.llm_client._call_llm(prompt, temperature=0.3, max_tokens=700, expect_json=True)
+        parsed = loop_instance.llm_client._extract_json(raw) if raw else None
+        if isinstance(parsed, dict) and parsed.get("description"):
+            action = str(parsed.get("action") or "create_tool")
+            tool_name = str(parsed.get("tool_name") or "BenchmarkRunnerTool")
+            target_tool = str(parsed.get("target_tool") or "").strip() or None
+
+            # Enforce registry-awareness even if the model ignores the instructions.
+            if action == "create_tool":
+                existing = registry_tool_norms.get(_norm(tool_name))
+                if existing:
+                    action = "evolve_tool"
+                    target_tool = existing
+                    tool_name = existing
+
+            return ToolSuggestionResponse(
+                action=action if action in {"create_tool", "evolve_tool"} else "create_tool",
+                target_tool=target_tool,
+                tool_name=tool_name,
+                description=str(parsed.get("description")),
+                rationale=str(parsed.get("rationale") or "Capability-aware suggestion based on current registry snapshot."),
+                source="llm_fallback",
+                confidence=float(parsed.get("confidence") or 0.65),
+                registry_snapshot_tools=len(registry_tool_names),
+            )
+    except Exception:
+        pass
+
+    return ToolSuggestionResponse(
+        action="create_tool",
+        tool_name="BenchmarkRunnerTool",
+        description=(
+            "Create a tool that runs a small internal benchmark suite for CUA (a list of tasks/prompts), "
+            "records results (pass/fail, latency, tools used) using storage, and produces a summary report. "
+            "Include capabilities to add/remove benchmark cases and to run the suite."
+        ),
+        rationale="No capability gaps recorded yet; an evaluation/benchmark tool helps self-improvement become measurable.",
+        source="llm_fallback",
+        confidence=0.6,
+        registry_snapshot_tools=len(registry_tool_names),
+    )

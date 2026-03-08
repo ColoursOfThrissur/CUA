@@ -14,6 +14,7 @@ class CapabilityRegistry:
         self._capabilities: Dict[str, ToolCapability] = {}
         self._tool_by_capability: Dict[str, str] = {}
         self._performance_history: Dict[str, List[ToolResult]] = {}
+        self._orchestrator = None
     
     def register_tool(self, tool: BaseTool):
         """Register a tool and its capabilities."""
@@ -81,7 +82,6 @@ class CapabilityRegistry:
     def execute_capability(self, capability_name: str, **kwargs) -> ToolResult:
         """Execute a capability by name."""
         import time
-        import json
         
         if capability_name not in self._tool_by_capability:
             return ToolResult(
@@ -95,38 +95,32 @@ class CapabilityRegistry:
         tool = self._tools[tool_name]
         
         start_time = time.time()
-        result = tool.execute_capability(capability_name, **kwargs)
-        execution_time_ms = (time.time() - start_time) * 1000
-        
-        # Store result for performance tracking
+
+        # Use the orchestrator for compatibility across mixed tool execute signatures
+        # (some tools expect params dict; some expect kwargs; some use BaseTool.execute_capability).
+        if self._orchestrator is None:
+            from core.tool_orchestrator import ToolOrchestrator
+            self._orchestrator = ToolOrchestrator(registry=self)
+
+        orchestration = self._orchestrator.execute_tool_step(
+            tool=tool,
+            tool_name=tool_name,
+            operation=capability_name,
+            parameters=kwargs,
+            context={},
+        )
+
+        execution_time = time.time() - start_time
+        result = ToolResult(
+            tool_name=tool_name,
+            capability_name=capability_name,
+            status=ResultStatus.SUCCESS if orchestration.success else ResultStatus.FAILURE,
+            data=orchestration.data,
+            error_message=orchestration.error,
+            execution_time=execution_time,
+        )
+
         self._performance_history[capability_name].append(result)
-        
-        # Log to database
-        try:
-            import sqlite3
-            from pathlib import Path
-            db_path = Path("data/tool_executions.db")
-            db_path.parent.mkdir(exist_ok=True)
-            
-            with sqlite3.connect(db_path) as conn:
-                conn.execute("""
-                    INSERT INTO executions 
-                    (tool_name, operation, success, error, execution_time_ms, parameters, output_size, timestamp, risk_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    tool_name,
-                    capability_name,
-                    1 if result.is_success() else 0,
-                    result.error_message or "",
-                    execution_time_ms,
-                    json.dumps(kwargs),
-                    len(str(result.data)) if result.data else 0,
-                    time.time(),
-                    0.0
-                ))
-        except Exception as e:
-            print(f"[WARNING] Failed to log execution: {e}")
-        
         return result
     
     def get_capability_performance(self, capability_name: str) -> Dict:

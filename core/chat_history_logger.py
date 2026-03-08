@@ -1,7 +1,11 @@
 """Chat history logging."""
-import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from core.sqlite_logging import get_logger
+from core.sqlite_utils import safe_connect, safe_close
+
+logger = get_logger("chat_history_logger")
 
 
 class ChatHistoryLogger:
@@ -13,7 +17,11 @@ class ChatHistoryLogger:
         self._init_db()
     
     def _init_db(self):
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            logger.warning("Chat history DB unavailable; chat logging disabled for now")
+            return
+        try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,13 +36,18 @@ class ChatHistoryLogger:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_session ON chat_messages(session_id)")
             conn.commit()
+        finally:
+            safe_close(conn)
     
     def log_message(self, session_id: str, role: str, content: str, 
                    mode: str = None, success: bool = True):
         """Log chat message."""
         timestamp = datetime.now().isoformat()
         
-        with sqlite3.connect(self.db_path) as conn:
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return
+        try:
             conn.execute(
                 """INSERT INTO chat_messages 
                    (session_id, role, content, mode, success, timestamp)
@@ -42,6 +55,8 @@ class ChatHistoryLogger:
                 (session_id, role, content, mode, 1 if success else 0, timestamp)
             )
             conn.commit()
+        finally:
+            safe_close(conn)
 
 
 _logger = None
