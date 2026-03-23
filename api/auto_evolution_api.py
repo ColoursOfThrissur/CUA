@@ -17,6 +17,23 @@ router = APIRouter(prefix="/auto-evolution", tags=["auto-evolution"])
 # Global instances
 orchestrator: Optional[AutoEvolutionOrchestrator] = None
 trigger_manager: Optional[AutoEvolutionTrigger] = None
+coordinated_engine = None
+
+
+def set_coordinated_engine(engine):
+    global coordinated_engine
+    coordinated_engine = engine
+
+
+def _reload_mode_enabled() -> bool:
+    return str(os.getenv("CUA_RELOAD_MODE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coordinated_reload_block_reason() -> str:
+    return (
+        "Coordinated autonomy is disabled while the backend is running in reload mode. "
+        "Run the server without reload for unattended create/evolve cycles."
+    )
 
 class ConfigUpdate(BaseModel):
     mode: Optional[str] = None
@@ -25,6 +42,16 @@ class ConfigUpdate(BaseModel):
     min_health_threshold: Optional[int] = None
     auto_approve_threshold: Optional[int] = None
     learning_enabled: Optional[bool] = None
+
+
+class CoordinatorConfigUpdate(BaseModel):
+    interval_seconds: Optional[int] = None
+    improvement_iterations_per_cycle: Optional[int] = None
+    max_evolutions_per_cycle: Optional[int] = None
+    dry_run: Optional[bool] = None
+    min_usefulness_score: Optional[float] = None
+    max_consecutive_low_value_cycles: Optional[int] = None
+    pause_on_low_value: Optional[bool] = None
 
 @router.post("/start")
 async def start_orchestrator():
@@ -95,7 +122,12 @@ async def get_queue():
     global orchestrator
     
     if not orchestrator:
-        raise HTTPException(400, "Orchestrator not initialized")
+        return {
+            "queue": [],
+            "in_progress": [],
+            "running": False,
+            "message": "Orchestrator not initialized",
+        }
     
     # Manually add priority_score to each queue item
     queue_with_priority = []
@@ -162,3 +194,53 @@ async def get_triggers_status():
         return {"running": False, "triggers": {}}
     
     return trigger_manager.get_status()
+
+
+@router.post("/coordinated/start")
+async def start_coordinated_engine():
+    if _reload_mode_enabled():
+        raise HTTPException(409, _coordinated_reload_block_reason())
+    if not coordinated_engine:
+        raise HTTPException(400, "Coordinated engine not initialized")
+    return await coordinated_engine.start()
+
+
+@router.post("/coordinated/stop")
+async def stop_coordinated_engine():
+    if not coordinated_engine:
+        raise HTTPException(400, "Coordinated engine not initialized")
+    return await coordinated_engine.stop()
+
+
+@router.post("/coordinated/run-cycle")
+async def run_coordinated_cycle():
+    if _reload_mode_enabled():
+        raise HTTPException(409, _coordinated_reload_block_reason())
+    if not coordinated_engine:
+        raise HTTPException(400, "Coordinated engine not initialized")
+    return await coordinated_engine.run_cycle()
+
+
+@router.get("/coordinated/status")
+async def get_coordinated_status():
+    if not coordinated_engine:
+        return {
+            "running": False,
+            "message": "Coordinated engine not initialized",
+            "reload_mode": _reload_mode_enabled(),
+            "reload_blocked": _reload_mode_enabled(),
+        }
+    status = coordinated_engine.get_status()
+    status["reload_mode"] = _reload_mode_enabled()
+    status["reload_blocked"] = _reload_mode_enabled()
+    if _reload_mode_enabled():
+        status["reload_warning"] = _coordinated_reload_block_reason()
+    return status
+
+
+@router.post("/coordinated/config")
+async def update_coordinated_config(config: CoordinatorConfigUpdate):
+    if not coordinated_engine:
+        raise HTTPException(400, "Coordinated engine not initialized")
+    config_dict = {k: v for k, v in config.dict().items() if v is not None}
+    return {"success": True, "config": coordinated_engine.update_config(config_dict)}

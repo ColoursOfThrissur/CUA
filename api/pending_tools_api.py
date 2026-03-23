@@ -149,11 +149,20 @@ async def approve_tool(tool_id: str):
         except Exception:
             # Registry sync should not block activation after successful runtime registration.
             pass
+
+        skill_update_results = []
+        try:
+            from core.skills import SkillUpdater
+
+            skill_update_results = SkillUpdater().apply_update_plans(tool.get("skill_updates") or [])
+        except Exception:
+            skill_update_results = []
         
         return {
             "success": True,
             "tool_name": reg_result['tool_name'],
             "capabilities": reg_result['capabilities'],
+            "skill_updates": skill_update_results,
             "message": f"Tool '{reg_result['tool_name']}' activated successfully"
         }
 

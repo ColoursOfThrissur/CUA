@@ -3,7 +3,7 @@ Auto-Evolution Orchestrator - Main engine for automatic tool improvements
 """
 import asyncio
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from core.tool_quality_analyzer import ToolQualityAnalyzer
 from core.llm_tool_health_analyzer import LLMToolHealthAnalyzer
@@ -12,6 +12,10 @@ from core.evolution_queue import EvolutionQueue, QueuedEvolution
 from core.llm_test_orchestrator import LLMTestOrchestrator
 from core.sqlite_logging import SQLiteLogger
 from core.correlation_context import CorrelationContext
+from core.skills.execution_context import SkillExecutionContext
+from core.architecture_contract import derive_skill_contract_for_tool
+from core.skills.registry import SkillRegistry
+from api.trace_ws import broadcast_trace_sync
 
 class AutoEvolutionOrchestrator:
     def __init__(self, llm_client=None, registry=None):
@@ -36,12 +40,11 @@ class AutoEvolutionOrchestrator:
             "enable_enhancements": True,  # Queue tools with improvement suggestions
             "max_new_tools_per_scan": 1,  # Limit self-feature growth per scan
         }
-        
-    async def start(self):
-        """Start auto-evolution engine"""
+
+    async def ensure_initialized(self):
+        """Initialize dependent sub-systems without starting background loops."""
         if not self.llm_client or not self.registry:
             raise ValueError("LLM client and registry required")
-        
         if not self.test_orchestrator:
             self.test_orchestrator = LLMTestOrchestrator(self.llm_client, self.registry)
         if not self.evolution_flow:
@@ -51,6 +54,34 @@ class AutoEvolutionOrchestrator:
                 expansion_mode=ExpansionMode(enabled=True),
                 llm_client=self.llm_client
             )
+
+    async def run_cycle(self, max_items: Optional[int] = None) -> Dict:
+        """Run a single scan-and-process cycle without background loops."""
+        await self.ensure_initialized()
+        broadcast_trace_sync("auto", "Auto-evolution scan starting", "in_progress", {"stage": "scan_start"})
+        self.queue.clear_queue()
+        await self._scan_and_queue()
+        processed = 0
+        failures = 0
+        limit = max_items if max_items is not None else self.config["max_concurrent"]
+        while processed < limit:
+            evolution = self.queue.get_next()
+            if not evolution:
+                break
+            await self._process_evolution(evolution)
+            processed += 1
+            if self.queue.failed.get(evolution.tool_name):
+                failures += 1
+        return {
+            "scanned": True,
+            "processed": processed,
+            "failures": failures,
+            "remaining_queue": len(self.queue.queue),
+        }
+        
+    async def start(self):
+        """Start auto-evolution engine"""
+        await self.ensure_initialized()
         
         self.running = True
         self.logger.info(f"Auto-evolution orchestrator started (mode: {self.config['mode']})")
@@ -270,6 +301,93 @@ class AutoEvolutionOrchestrator:
         finally:
             self.scanning = False
             self.scan_progress = {"current": 0, "total": 0, "tool": ""}
+    
+    def _build_execution_context_for_auto_evolution(self, tool_name: str, evolution: QueuedEvolution) -> Optional[SkillExecutionContext]:
+        """Build SkillExecutionContext for auto-triggered tool evolutions.
+        
+        Auto-evolved tools need skill context to guide code generation and validation,
+        similar to user-triggered evolutions.
+        
+        Args:
+            tool_name: Name of the tool being evolved
+            evolution: QueuedEvolution metadata
+            
+        Returns:
+            SkillExecutionContext with skill-aware guidance, or None if unable to build
+        """
+        try:
+            # Step 1: Infer skill from tool name
+            skill_contract = derive_skill_contract_for_tool(tool_name)
+            
+            if not skill_contract:
+                self.logger.debug(f"No skill contract found for {tool_name}, using defaults")
+                # Tool not mapped to specific skill, use general context
+                return SkillExecutionContext(
+                    skill_name="general",
+                    category="general",
+                    verification_mode="output_validation",
+                    risk_level="medium",
+                    fallback_strategy="fail_fast",
+                    expected_output_types=[],
+                    max_retries=3,
+                )
+            
+            # Step 2: Load skill definition for full context
+            skill_registry = SkillRegistry()
+            skill_registry.load_all()
+            skill_name = skill_contract.get("target_skill")
+            skill_definition = skill_registry.get(skill_name) if skill_name else None
+            
+            # Step 3: Create execution context with skill guidance
+            execution_context = SkillExecutionContext(
+                skill_name=skill_name or "general",
+                category=skill_contract.get("target_category", "general"),
+                skill_definition=skill_definition,
+                verification_mode=skill_contract.get("verification_mode", "output_validation"),
+                risk_level=skill_definition.risk_level if skill_definition else "medium",
+                fallback_strategy=skill_definition.fallback_strategy if skill_definition else "fail_fast",
+                preferred_tools=skill_definition.preferred_tools if skill_definition else [],
+                expected_output_types=skill_contract.get("output_types", []),
+            )
+            
+            # Step 4: Add evolution metadata for improved reasoning
+            # Track why this evolution was triggered (quality issues, enhancements, etc.)
+            evolution_reason = evolution.reason or ""
+            evolution_metadata = evolution.metadata or {}
+            
+            # Build a helpful user_prompt style message from evolution metadata
+            context_hints = []
+            if evolution_metadata.get("category") == "WEAK":
+                context_hints.append("Tool has critical issues that need fixing")
+            elif evolution_metadata.get("category") == "NEEDS_IMPROVEMENT":
+                context_hints.append("Tool needs improvements to be more reliable")
+            elif evolution_metadata.get("is_enhancement"):
+                context_hints.append("Tool is healthy but has enhancement opportunities")
+            
+            if evolution_metadata.get("issues_count", 0) > 0:
+                context_hints.append(f"LLM identified {evolution_metadata['issues_count']} issues")
+            
+            # Add context hints to execution context via step history for tracing
+            if context_hints:
+                execution_context.add_step(
+                    tool=tool_name,
+                    operation="auto_evolution_context",
+                    status="prepared",
+                    duration=0.0,
+                    result={"reason": evolution_reason, "context": context_hints}
+                )
+            
+            self.logger.info(
+                f"Built execution context for {tool_name}: skill={skill_name}, "
+                f"category={skill_contract.get('target_category')}, "
+                f"verification_mode={execution_context.verification_mode}"
+            )
+            
+            return execution_context
+            
+        except Exception as e:
+            self.logger.error(f"Failed to build execution context for {tool_name}: {e}")
+            return None
                 
     async def _process_evolution(self, evolution: QueuedEvolution):
         """Process a single evolution"""
@@ -277,13 +395,25 @@ class AutoEvolutionOrchestrator:
         CorrelationContext.set_id(correlation_id)
         
         self.logger.info(f"Processing evolution for {evolution.tool_name} (priority: {evolution.priority_score:.1f})")
+        kind = (evolution.metadata or {}).get("kind", "evolve_tool")
+        trace_type = "creation" if kind == "create_tool" else "evolution"
+        broadcast_trace_sync(
+            trace_type,
+            f"Processing {evolution.tool_name}",
+            "in_progress",
+            {
+                "stage": "queued_item",
+                "tool_name": evolution.tool_name,
+                "kind": kind,
+                "priority_score": evolution.priority_score,
+                "reason": evolution.reason,
+            },
+        )
         
         try:
             # Mark as in progress
             self.queue.mark_in_progress(evolution.tool_name)
             
-            kind = (evolution.metadata or {}).get("kind", "evolve_tool")
-
             if kind == "create_tool":
                 if not hasattr(self, "tool_creation_flow") or self.tool_creation_flow is None:
                     from core.capability_graph import CapabilityGraph
@@ -312,11 +442,26 @@ class AutoEvolutionOrchestrator:
                 except Exception:
                     tool_name_for_tests = None
             else:
-                # Run evolution flow
+                # Run evolution flow with execution context for skill-aware guidance
+                # Build skill context for auto-triggered evolution
+                execution_context = self._build_execution_context_for_auto_evolution(
+                    evolution.tool_name,
+                    evolution
+                )
+                
+                # Determine auto_approve flag based on test score expectation
+                # High-quality enhancements can be auto-approved if tests pass
+                should_auto_approve = (
+                    (evolution.metadata or {}).get("is_enhancement") and 
+                    self.config.get("auto_approve_threshold", 90) >= 80
+                )
+                
                 result = await asyncio.to_thread(
                     self.evolution_flow.evolve_tool,
                     evolution.tool_name,
-                    evolution.reason
+                    evolution.reason,
+                    should_auto_approve,
+                    execution_context
                 )
                 tool_name_for_tests = evolution.tool_name
             
@@ -326,12 +471,24 @@ class AutoEvolutionOrchestrator:
                 result = {"success": success, "message": message}
             
             if not result.get("success"):
+                broadcast_trace_sync(
+                    trace_type,
+                    f"{evolution.tool_name} failed: {result.get('message', 'Unknown error')}",
+                    "error",
+                    {"stage": "result", "tool_name": evolution.tool_name, "kind": kind},
+                )
                 self.queue.mark_failed(evolution.tool_name, result.get("message", "Unknown error"))
                 return
                 
             # Run LLM tests (best-effort)
             test_target = tool_name_for_tests or evolution.tool_name
             test_result = self.test_orchestrator.run_test_suite(test_target)
+            broadcast_trace_sync(
+                trace_type,
+                f"{test_target} ready for review",
+                "success",
+                {"stage": "result", "tool_name": test_target, "kind": kind, "result": result},
+            )
             test_score = test_result.get("overall_score", 0)
             
             self.logger.info(f"Evolution test score: {test_score} (tool: {test_target}, pass_rate: {test_result.get('pass_rate', 0)})")

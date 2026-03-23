@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export const useTraceWebSocket = () => {
+export const useTraceWebSocket = ({ limit = 4, persist = false, ttlMs = 3000 } = {}) => {
   const [traces, setTraces] = useState([]);
 
   useEffect(() => {
@@ -19,13 +19,15 @@ export const useTraceWebSocket = () => {
       };
 
       setTraces((prev) => {
-        const newTraces = [traceWithId, ...prev].slice(0, 4);
+        const newTraces = [traceWithId, ...prev].slice(0, limit);
         return newTraces;
       });
 
-      setTimeout(() => {
-        setTraces((prev) => prev.filter((t) => t.id !== traceWithId.id));
-      }, 3000);
+      if (!persist) {
+        setTimeout(() => {
+          setTraces((prev) => prev.filter((t) => t.id !== traceWithId.id));
+        }, ttlMs);
+      }
     };
 
     websocket.onerror = (error) => {

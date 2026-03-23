@@ -66,7 +66,8 @@ class ExecutionEngine:
         self,
         plan: ExecutionPlan,
         execution_id: Optional[str] = None,
-        pause_on_failure: bool = False
+        pause_on_failure: bool = False,
+        skill_context: Optional[Any] = None
     ) -> ExecutionState:
         """
         Execute a complete plan.
@@ -108,7 +109,7 @@ class ExecutionEngine:
                 
                 # Execute step
                 state.current_step = step.step_id
-                result = self._execute_step(step, state)
+                result = self._execute_step(step, state, skill_context)
                 state.step_results[step.step_id] = result
                 
                 # Handle failure
@@ -142,12 +143,17 @@ class ExecutionEngine:
         
         return state
     
-    def _execute_step(self, step: TaskStep, state: ExecutionState) -> StepResult:
+    def _execute_step(self, step: TaskStep, state: ExecutionState, skill_context: Optional[Any] = None) -> StepResult:
         """Execute a single step with retry logic."""
         logger.info(f"Executing step: {step.step_id} - {step.description}")
         
         result = StepResult(step_id=step.step_id, status=StepStatus.RUNNING)
         start_time = time.time()
+        
+        # Use skill context max_retries if available
+        max_retries = step.max_retries if step.retry_on_failure else 1
+        if skill_context and hasattr(skill_context, 'max_retries'):
+            max_retries = skill_context.max_retries
         
         # Resolve parameters (may reference previous step outputs)
         try:
@@ -172,7 +178,7 @@ class ExecutionEngine:
         
         # Execute with retries using orchestrator if available
         last_error = None
-        for attempt in range(step.max_retries if step.retry_on_failure else 1):
+        for attempt in range(max_retries):
             try:
                 # Use orchestrator if available for consistent execution
                 if self.tool_orchestrator:
@@ -180,7 +186,8 @@ class ExecutionEngine:
                         tool=tool,
                         tool_name=step.tool_name,
                         operation=step.operation,
-                        parameters=resolved_params
+                        parameters=resolved_params,
+                        execution_context=skill_context
                     )
                     
                     if orchestrated_result.success:
@@ -206,21 +213,23 @@ class ExecutionEngine:
                     else:
                         last_error = tool_result.error_message
                 
-                if attempt < step.max_retries - 1:
+                if attempt < max_retries - 1:
                     logger.warning(f"Step {step.step_id} attempt {attempt + 1} failed, retrying...")
-                    time.sleep(1)  # Brief delay before retry
+                    backoff = skill_context.retry_backoff if skill_context and hasattr(skill_context, 'retry_backoff') else 1.0
+                    time.sleep(backoff)
                     
             except Exception as e:
                 last_error = str(e)
-                if attempt < step.max_retries - 1:
+                if attempt < max_retries - 1:
                     logger.warning(f"Step {step.step_id} attempt {attempt + 1} error: {e}, retrying...")
-                    time.sleep(1)
+                    backoff = skill_context.retry_backoff if skill_context and hasattr(skill_context, 'retry_backoff') else 1.0
+                    time.sleep(backoff)
         
         # If all retries failed
         if result.status != StepStatus.COMPLETED:
             result.status = StepStatus.FAILED
             result.error = last_error or "Unknown error"
-            logger.error(f"Step {step.step_id} failed after {step.max_retries} attempts: {result.error}")
+            logger.error(f"Step {step.step_id} failed after {max_retries} attempts: {result.error}")
         
         result.execution_time = time.time() - start_time
         

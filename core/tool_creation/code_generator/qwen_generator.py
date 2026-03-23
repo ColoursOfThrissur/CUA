@@ -277,7 +277,13 @@ class QwenCodeGenerator(BaseCodeGenerator):
         """Generate implementation for one handler"""
         op_name = handler_name.replace('_handle_', '')
         
+        # Build skill-specific guidance
+        skill_guidance = self._build_skill_guidance(tool_spec)
+        
         prompt = f"""Implement handler: {handler_name}
+
+SKILL CONTEXT:
+{skill_guidance}
 
 CURRENT CODE:
 ```python
@@ -291,8 +297,10 @@ Hard requirements:
 - Keep imports, class name, __init__, register_capabilities(), and execute() unchanged.
 - Only modify the body of {handler_name}.
 - Use ONLY self.services.* for external interactions.
+- Follow the skill domain guidelines above.
 - Return a plain dict from {handler_name} (not ToolResult).
 - DO NOT invent new service methods. Only call methods that exist in the ToolServices contract.
+- DO NOT use hardcoded URLs like example.com or api.example.com - use parameters.
 
 Contract reference:
 {contract}
@@ -391,6 +399,14 @@ Return complete updated code.
             "- DO NOT invent or assume new self.services.* methods.",
             "- If you need persistence, use storage.save/get/list/find/update/delete/exists.",
             "",
+            "IMPORTANT - Storage Service Usage:",
+            "- storage is a KEY-VALUE store, NOT a collection store",
+            "- save(id, data): saves ONE item with unique ID (use self.services.ids.uuid() for IDs)",
+            "- get(id): retrieves ONE item by ID",
+            "- list(limit=10): returns ALL items (no filtering)",
+            "- delete(id): deletes ONE item by ID",
+            "- For collections: use unique IDs like 'benchmark_case_<uuid>' and list() to get all",
+            "",
             "Allowed self.services methods:",
         ]
 
@@ -407,7 +423,7 @@ Return complete updated code.
                     "- self.services.storage: save, get, list, find, count, update, delete, exists",
                     "- self.services.llm: generate",
                     "- self.services.http: get, post, put, delete, request",
-                    "- self.services.fs: read, write, list, exists, delete, mkdir",
+                    "- self.services.fs: read, write, list",
                     "- self.services.json: parse, stringify, query",
                     "- self.services.shell: execute",
                     "- self.services.time: now_utc, now_local, now_utc_iso, now_local_iso",
@@ -425,3 +441,49 @@ Return complete updated code.
             ]
         )
         return "\n".join(lines) + "\n"
+    
+    def _build_skill_guidance(self, tool_spec: dict) -> str:
+        """Build skill-specific implementation guidance"""
+        target_skill = tool_spec.get("target_skill")
+        target_category = tool_spec.get("target_category", "general")
+        
+        guidance_map = {
+            "web": (
+                "Domain: Web Research\n"
+                "- Use self.services.http for web requests (get/post methods only)\n"
+                "- Store results via self.services.storage\n"
+                "- NO hardcoded URLs - all URLs must come from parameters\n"
+                "- Return structured data with sources/links\n"
+                "- Example: fetch URL from parameter, parse response, store result"
+            ),
+            "computer": (
+                "Domain: Computer Automation (LOCAL operations only)\n"
+                "- Use self.services.fs for file operations (read/write/list)\n"
+                "- Use self.services.shell for command execution\n"
+                "- ALL operations are LOCAL - NO external APIs or network calls\n"
+                "- NO hardcoded paths - use parameters\n"
+                "- Example: read local file, process content, write result locally"
+            ),
+            "development": (
+                "Domain: Code Workspace\n"
+                "- Use self.services.fs for code file operations\n"
+                "- Focus on local repository operations\n"
+                "- NO external API calls\n"
+                "- Example: read code files, analyze, write reports"
+            ),
+            "general": (
+                "Domain: General\n"
+                "- Use appropriate self.services.* methods\n"
+                "- Avoid external dependencies\n"
+                "- NO hardcoded values - use parameters\n"
+                "- Keep operations simple and deterministic"
+            )
+        }
+        
+        guidance = guidance_map.get(target_category, guidance_map["general"])
+        
+        return f"""Target Skill: {target_skill or 'unknown'}
+Target Category: {target_category}
+
+{guidance}
+"""

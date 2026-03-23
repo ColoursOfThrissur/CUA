@@ -11,31 +11,79 @@ class ToolCallingClient:
         self.model = model
         self.registry = registry
     
-    def call_with_tools(self, user_message: str, conversation_history: List[Dict] = None) -> Tuple[bool, Optional[List[Dict]], Optional[str]]:
+    def call_with_tools(
+        self,
+        user_message: str,
+        conversation_history: List[Dict] = None,
+        skill_context: Optional[Dict[str, Any]] = None,
+        allowed_tools: Optional[List[str]] = None,
+    ) -> Tuple[bool, Optional[List[Dict]], Optional[str]]:
         """
         Call LLM with tool definitions, let it select tools automatically
         Returns: (success, tool_calls, response_text)
         """
         
         # Build tool definitions from registry
-        tools = self._build_tool_definitions()
+        tools = self._build_tool_definitions(allowed_tools=allowed_tools)
+        
+        # Debug: Check if ContextSummarizerTool is available
+        context_summarizer_available = any(
+            "ContextSummarizerTool" in tool["function"]["name"] for tool in tools
+        )
+        print(f"[DEBUG] ContextSummarizerTool available: {context_summarizer_available}")
+        if skill_context and skill_context.get("category") == "web":
+            print(f"[DEBUG] Web research skill detected, ensuring summarization tools are available")
         
         # Build messages with system prompt
-        messages = [
-            {
-                "role": "system",
-                "content": """You are CUA, an autonomous agent with access to tools. CRITICAL RULES:
+        system_content = """You are CUA, an autonomous agent with access to tools. CRITICAL RULES:
 1. When user asks you to DO something (open, search, create, list, analyze, summarize, take screenshot), USE TOOLS
 2. ONLY respond conversationally for questions ABOUT what to do (suggestions, recommendations, opinions)
 3. "can you X" or "open X" or "search X" = ACTION = USE TOOLS
 4. "what should I X" or "can you suggest X" = QUESTION = NO TOOLS, respond conversationally
+5. For web research tasks, ALWAYS use available summarization tools after fetching content
+6. When searching, look for SPECIFIC relevant URLs in search results, not generic homepages
 
 Examples:
 - "open google and search X" -> USE BrowserAutomationTool
+- "search AGI development and give me a summary" -> USE WebAccessTool (search) + WebAccessTool (fetch specific URL) + ContextSummarizerTool
 - "take a screenshot" -> USE BrowserAutomationTool  
 - "what tool should we add?" -> NO TOOLS, respond conversationally
 - "can you suggest improvements?" -> NO TOOLS, respond conversationally
-- "summarize this text" -> USE ContextSummarizerTool"""
+- "summarize this text" -> USE ContextSummarizerTool
+
+When doing web research:
+1. First search for the topic
+2. Look at search results and pick the MOST RELEVANT specific URL (not homepage)
+3. Fetch that specific URL's content
+4. Summarize the fetched content"""
+        if skill_context:
+            system_content += (
+                f"\n\nActive skill: {skill_context.get('skill_name', 'unknown')}"
+                f"\nSkill category: {skill_context.get('category', 'unknown')}"
+                f"\nPreferred tools: {', '.join(skill_context.get('preferred_tools', [])) or 'none'}"
+                f"\nExpected outputs: {', '.join(skill_context.get('output_types', [])) or 'unspecified'}"
+                f"\nUse the active skill guidance when selecting tools."
+            )
+            if allowed_tools:
+                system_content += f"\nAllowed tools for this step: {', '.join(allowed_tools)}"
+            else:
+                # For web research, ensure summarization tools are mentioned
+                if skill_context.get("category") == "web":
+                    system_content += "\nFor web research: Use WebAccessTool for searching + fetching specific URLs + ContextSummarizerTool for summarization. Always fetch SPECIFIC article URLs, not homepages."
+            domain_catalog = skill_context.get("domain_catalog")
+            if domain_catalog:
+                system_content += (
+                    "\n\nDomain planning rules:"
+                    "\n- First decide which domain each action belongs to."
+                    "\n- A single request may require multiple domains across different steps."
+                    "\n- Prefer tools listed under the matching domain, but you may combine domains when necessary."
+                    f"\nDomain catalog: {json.dumps(domain_catalog)}"
+                )
+
+        messages = [
+            {
+                "role": "system",
+                "content": system_content
             }
         ]
         if conversation_history:
@@ -49,6 +97,15 @@ Examples:
                 "tools": tools,
                 "stream": False
             }
+            
+            # Debug: Log tool definitions being sent
+            print(f"[DEBUG] Sending {len(tools)} tool definitions to LLM")
+            if tools:
+                print(f"[DEBUG] First 3 tools: {[t['function']['name'] for t in tools[:3]]}")
+                # Log BenchmarkRunnerTool operations if present
+                benchmark_tools = [t for t in tools if 'BenchmarkRunnerTool' in t['function']['name']]
+                if benchmark_tools:
+                    print(f"[DEBUG] BenchmarkRunnerTool operations: {[t['function']['name'] for t in benchmark_tools]}")
             
             response = requests.post(
                 f"{self.ollama_url}/api/chat",
@@ -127,24 +184,36 @@ Examples:
                 # Model selected tools - return them (ignore any text content)
                 print(f"[DEBUG] Processing {len(tool_calls)} tool calls")
                 parsed_calls = []
+                allowed_set = set(allowed_tools or [])
                 for call in tool_calls:
                     func = call.get("function", {})
                     full_name = func.get("name", "")
                     print(f"[DEBUG] Tool call: {full_name}")
                     # Parse ToolName_operation_name format
+                    wrapped_operation = func.get("arguments", {}).get("operation")
+                    wrapped_parameters = func.get("arguments", {}).get("parameters")
                     if "_" in full_name:
                         parts = full_name.split("_", 1)  # Split only on first underscore
                         tool_name = parts[0]
                         operation = parts[1] if len(parts) > 1 else full_name
+                    elif wrapped_operation and isinstance(wrapped_parameters, dict):
+                        tool_name = full_name
+                        operation = wrapped_operation
                     else:
                         tool_name = full_name
                         operation = full_name
                     
-                    parsed_calls.append({
+                    parsed_call = {
                         "tool": tool_name,
                         "operation": operation,
-                        "parameters": func.get("arguments", {})
-                    })
+                        "parameters": wrapped_parameters if wrapped_operation and isinstance(wrapped_parameters, dict) else func.get("arguments", {})
+                    }
+                    if allowed_set and tool_name not in allowed_set:
+                        print(f"[DEBUG] Skipping disallowed tool call: {tool_name}")
+                        continue
+                    parsed_calls.append(parsed_call)
+                if not parsed_calls and allowed_set:
+                    return False, None, "NO_ALLOWED_TOOL_CALLS"
                 print(f"[DEBUG] Returning {len(parsed_calls)} parsed calls")
                 return True, parsed_calls, None  # Return None for content when tools are called
             
@@ -152,6 +221,14 @@ Examples:
             if content and content.strip().startswith("{"):
                 print(f"[DEBUG] WARNING: Content looks like JSON but wasn't parsed as tool call: {content[:100]}")
             
+            if self._is_clarification_response(content):
+                print("[DEBUG] Returning clarification response to UI")
+                return True, None, content
+
+            if self._is_actionable_request(user_message):
+                print("[DEBUG] Actionable request returned no tool calls")
+                return False, None, "NO_TOOL_CALLS_FOR_ACTIONABLE_REQUEST"
+
             # No tool calls - return text response
             content = message.get("content", "")
             print(f"[DEBUG] No tool calls, returning conversational response: {content[:100]}")
@@ -160,15 +237,37 @@ Examples:
         except Exception as e:
             return False, None, str(e)
     
-    def _build_tool_definitions(self) -> List[Dict]:
+    def _build_tool_definitions(self, allowed_tools: Optional[List[str]] = None) -> List[Dict]:
         """Build OpenAI-compatible tool definitions from registry"""
         tools = []
         
         if not self.registry:
             return tools
+
+        # If allowed_tools is specified, only build definitions for those tools
+        if allowed_tools:
+            print(f"[DEBUG] Building tool definitions for allowed tools only: {allowed_tools}")
+            tools_to_process = []
+            for tool in self.registry.tools:
+                if tool.__class__.__name__ in allowed_tools:
+                    tools_to_process.append(tool)
+            print(f"[DEBUG] Found {len(tools_to_process)} matching tools out of {len(self.registry.tools)} total")
+        else:
+            print(f"[DEBUG] No tool filtering - building definitions for all {len(self.registry.tools)} tools")
+            tools_to_process = self.registry.tools
+
+        # Check if WebAccessTool is available (hides raw web tools)
+        raw_web_tools_hidden = any(
+            tool.__class__.__name__ == "WebAccessTool" for tool in tools_to_process
+        )
         
-        for tool in self.registry.tools:
+        for tool in tools_to_process:
             tool_name = tool.__class__.__name__
+            
+            # Skip hidden tools when WebAccessTool is available
+            if raw_web_tools_hidden and tool_name in {"HTTPTool", "BrowserAutomationTool"}:
+                continue
+                
             capabilities = tool.get_capabilities() or {}
             
             for op_name, capability in capabilities.items():
@@ -197,6 +296,7 @@ Examples:
                     }
                 })
         
+        print(f"[DEBUG] Built {len(tools)} tool definitions")
         return tools
     
     def _map_param_type(self, param_type) -> str:
@@ -215,3 +315,54 @@ Examples:
         elif "list" in type_str or "array" in type_str:
             return "array"
         return "string"
+
+    def _is_actionable_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+
+        actionable_markers = (
+            "open",
+            "play",
+            "watch",
+            "search",
+            "find",
+            "click",
+            "navigate",
+            "go to",
+            "take a screenshot",
+            "create",
+            "move",
+            "edit",
+            "run",
+            "automate",
+        )
+        informational_markers = (
+            "what is",
+            "why is",
+            "how does",
+            "explain",
+            "suggest",
+            "recommend",
+        )
+
+        if any(marker in text for marker in informational_markers):
+            return False
+        return any(marker in text for marker in actionable_markers)
+
+    def _is_clarification_response(self, content: str) -> bool:
+        text = (content or "").strip().lower()
+        if not text:
+            return False
+
+        clarification_markers = (
+            "could you please provide more details",
+            "could you clarify",
+            "can you clarify",
+            "your request is unclear",
+            "which one do you mean",
+            "are you looking for",
+            "do you mean",
+            "please provide more details",
+        )
+        return any(marker in text for marker in clarification_markers)

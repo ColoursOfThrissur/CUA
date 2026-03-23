@@ -1,10 +1,13 @@
 """
 Self-Improvement Loop API Endpoints
 """
+import logging
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/improvement", tags=["self-improvement"])
 
@@ -34,10 +37,17 @@ class ImportPlanRequest(BaseModel):
 class CreateToolRequest(BaseModel):
     description: str
     tool_name: Optional[str] = None
+    target_skill: Optional[str] = None
+    target_category: Optional[str] = None
+    gap_type: Optional[str] = None
+    suggested_action: Optional[str] = None
+    reasons: Optional[list[str]] = None
+    example_tasks: Optional[list[str]] = None
+    example_errors: Optional[list[str]] = None
 
 
 class ToolSuggestionResponse(BaseModel):
-    action: str = "create_tool"  # create_tool | evolve_tool
+    action: str = "create_tool"  # create_tool | evolve_tool | improve_skill_routing | improve_skill_workflow
     tool_name: str
     description: str
     rationale: str
@@ -46,6 +56,12 @@ class ToolSuggestionResponse(BaseModel):
     suggested_library: Optional[str] = None
     capability_gap: Optional[str] = None
     target_tool: Optional[str] = None
+    target_skill: Optional[str] = None
+    reasons: Optional[list[str]] = None
+    example_tasks: Optional[list[str]] = None
+    example_errors: Optional[list[str]] = None
+    gap_type: Optional[str] = None
+    suggested_action: Optional[str] = None
     registry_snapshot_tools: Optional[int] = None
 
 @router.post("/start")
@@ -466,6 +482,8 @@ async def promote_tool(tool_name: str):
 async def create_tool_from_description(
     description: Optional[str] = None,
     tool_name: Optional[str] = None,
+    target_skill: Optional[str] = None,
+    target_category: Optional[str] = None,
     payload: Optional[CreateToolRequest] = Body(default=None)
 ):
     """Create new tool from user description - LLM generates code"""
@@ -475,6 +493,13 @@ async def create_tool_from_description(
     # Prioritize payload, then query params
     effective_description = payload.description if payload else description
     effective_tool_name = payload.tool_name if payload and payload.tool_name else tool_name
+    effective_target_skill = payload.target_skill if payload and payload.target_skill else target_skill
+    effective_target_category = payload.target_category if payload and payload.target_category else target_category
+    effective_gap_type = payload.gap_type if payload and payload.gap_type else None
+    effective_suggested_action = payload.suggested_action if payload and payload.suggested_action else None
+    effective_reasons = payload.reasons if payload and payload.reasons else []
+    effective_example_tasks = payload.example_tasks if payload and payload.example_tasks else []
+    effective_example_errors = payload.example_errors if payload and payload.example_errors else []
     if not effective_description:
         raise HTTPException(status_code=422, detail="description is required")
 
@@ -508,11 +533,69 @@ async def create_tool_from_description(
     from core.tool_creation.flow import ToolCreationOrchestrator
     from core.capability_graph import CapabilityGraph
     from core.expansion_mode import ExpansionMode
+    from core.skills import SkillRegistry
     
     # Initialize components
     capability_graph = CapabilityGraph()
     expansion_mode = ExpansionMode(enabled=True)
-    tool_creation = ToolCreationOrchestrator(capability_graph, expansion_mode)
+    
+    # Initialize skill registry
+    skill_registry = SkillRegistry()
+    skill_registry.load_all()
+    
+    # Auto-detect skill if not provided
+    if not effective_target_skill:
+        try:
+            from core.skills import SkillSelector
+            selector = SkillSelector()
+            selection = selector.select_skill(effective_description, skill_registry, loop_instance.llm_client)
+            
+            if selection.matched and selection.confidence >= 0.4:
+                effective_target_skill = selection.skill_name
+                effective_target_category = selection.category
+                logger.info(f"[SKILL-AWARE] Auto-detected skill: {effective_target_skill} (confidence: {selection.confidence:.2f})")
+        except Exception as e:
+            logger.warning(f"[SKILL-AWARE] Skill auto-detection failed: {e}")
+    
+    # Create orchestrator with skill awareness
+    tool_creation = ToolCreationOrchestrator(
+        capability_graph, 
+        expansion_mode,
+        skill_registry=skill_registry,
+        llm_client=loop_instance.llm_client
+    )
+    skill_context = {
+        "target_skill": effective_target_skill,
+        "target_category": effective_target_category,
+        "gap_type": effective_gap_type,
+        "suggested_action": effective_suggested_action,
+        "reasons": effective_reasons,
+        "example_tasks": effective_example_tasks,
+        "example_errors": effective_example_errors,
+    }
+    if effective_target_skill:
+        try:
+            from core.skills import SkillRegistry
+
+            skill_registry = SkillRegistry()
+            skill_registry.load_all()
+            skill = skill_registry.get(effective_target_skill)
+            if skill:
+                skill_context.update(
+                    {
+                        "output_types": list(skill.output_types),
+                        "verification_mode": skill.verification_mode,
+                        "ui_renderer": skill.ui_renderer,
+                        "preferred_tools": list(skill.preferred_tools),
+                        "required_tools": list(skill.required_tools),
+                        "input_types": list(skill.input_types),
+                        "risk_level": skill.risk_level,
+                        "fallback_strategy": skill.fallback_strategy,
+                        "skill_constraints": [],  # Can be populated from SKILL.md if needed
+                    }
+                )
+        except Exception:
+            pass
     
     # Create tool
     try:
@@ -520,6 +603,7 @@ async def create_tool_from_description(
             effective_description,
             loop_instance.llm_client,
             preferred_tool_name=effective_tool_name,
+            skill_context=skill_context,
         )
         
         if success:
@@ -556,6 +640,9 @@ async def create_tool_from_description(
                     "tool_file": tool_file.replace("\\", "/"),
                     "test_file": test_file.replace("\\", "/") if test_file else None,
                     "description": effective_description,
+                    "target_skill": effective_target_skill,
+                    "target_category": effective_target_category,
+                    "skill_updates": getattr(tool_creation, "last_skill_updates", []),
                     "risk_score": "low",
                     "is_new_tool": True,
                 })
@@ -567,6 +654,9 @@ async def create_tool_from_description(
                 "file_path": tool_file.replace("\\", "/") if tool_file else None,
                 "status": "pending_approval" if pending_id else "experimental",
                 "pending_tool_id": pending_id,
+                "target_skill": effective_target_skill,
+                "target_category": effective_target_category,
+                "skill_updates": getattr(tool_creation, "last_skill_updates", []),
                 "missing_services": tool_creation.last_spec.get('missing_services', []) if hasattr(tool_creation, 'last_spec') else [],
                 "note": "Tool created in experimental namespace and queued for approval." if pending_id else "Tool created in experimental namespace. Pending manager unavailable."
             }
@@ -580,7 +670,7 @@ async def create_tool_from_description(
 
 
 @router.get("/tools/suggest", response_model=ToolSuggestionResponse)
-async def suggest_next_tool():
+async def suggest_next_tool(skip: int = 0):
     """
     Suggest the next most important tool for CUA to create (self-directed growth),
     using persistent capability gaps when available, otherwise an LLM-based fallback.
@@ -642,7 +732,9 @@ async def suggest_next_tool():
 
     incomplete_candidates.sort(key=lambda x: x["score"], reverse=True)
     if incomplete_candidates:
-        top = incomplete_candidates[0]
+        # Apply skip offset for cycling
+        idx = skip % len(incomplete_candidates)
+        top = incomplete_candidates[idx]
         tool = top["tool_name"]
         return ToolSuggestionResponse(
             action="evolve_tool",
@@ -664,16 +756,18 @@ async def suggest_next_tool():
     # Prefer actionable persistent gaps.
     from core.gap_tracker import GapTracker
     tracker = GapTracker()
-    actionable = tracker.get_actionable_gaps()
+    actionable = tracker.get_prioritized_gaps()
 
     def _camel(name: str) -> str:
         parts = [p for p in (name or "").replace("-", "_").split("_") if p]
         return "".join((p[:1].upper() + p[1:]) for p in parts)
 
     if actionable:
-        # Rank by (occurrences * confidence)
-        actionable.sort(key=lambda g: (g.occurrence_count * (g.confidence_avg or 0.0)), reverse=True)
-        top = actionable[0]
+        # Apply skip offset for cycling through suggestions
+        total = len(incomplete_candidates) + len(actionable)
+        gap_skip = max(0, skip - len(incomplete_candidates))
+        idx = gap_skip % len(actionable)
+        top = actionable[idx]
         gap_name = top.capability
         suggested_tool_name = f"{_camel(gap_name)}Tool"
         base_description = (
@@ -681,6 +775,31 @@ async def suggest_next_tool():
             f"It should be safe-by-default and use ToolServices for storage/logging/time/ids. "
             f"Observed reasons: {', '.join((top.reasons or [])[:3])}."
         )
+
+        if top.suggested_action in {"improve_skill_routing", "improve_skill_workflow"}:
+            target_skill = top.selected_skill or top.selected_category or "unknown"
+            return ToolSuggestionResponse(
+                action=top.suggested_action,
+                tool_name=f"{_camel(target_skill)}SkillRouting",
+                description=(
+                    f"Improve routing and workflow behavior for skill/category '{target_skill}'. "
+                    f"Observed gap type: {top.gap_type}. Reasons: {', '.join((top.reasons or [])[:3])}."
+                ),
+                rationale=(
+                    f"The highest-priority actionable gap is not a missing tool. "
+                    f"It indicates weak skill matching or workflow execution for '{target_skill}'."
+                ),
+                source="gap_tracker",
+                confidence=min(0.95, float(top.confidence_avg or 0.75)),
+                capability_gap=gap_name,
+                target_skill=top.selected_skill,
+                reasons=list((top.reasons or [])[:3]),
+                example_tasks=list((top.example_tasks or [])[:3]),
+                example_errors=list((top.example_errors or [])[:3]),
+                gap_type=top.gap_type,
+                suggested_action=top.suggested_action,
+                registry_snapshot_tools=len(registry_tool_names),
+            )
 
         # Let the LLM refine tool name + description into a better creation prompt.
         try:
@@ -714,6 +833,12 @@ Return JSON only:
                     confidence=float(parsed.get("confidence") or 0.75),
                     suggested_library=top.suggested_library,
                     capability_gap=gap_name,
+                    target_skill=top.selected_skill,
+                    reasons=list((top.reasons or [])[:3]),
+                    example_tasks=list((top.example_tasks or [])[:3]),
+                    example_errors=list((top.example_errors or [])[:3]),
+                    gap_type=top.gap_type,
+                    suggested_action=top.suggested_action,
                     registry_snapshot_tools=len(registry_tool_names),
                 )
         except Exception:
@@ -728,6 +853,12 @@ Return JSON only:
             confidence=min(0.95, float(top.confidence_avg or 0.75)),
             suggested_library=top.suggested_library,
             capability_gap=gap_name,
+            target_skill=top.selected_skill,
+            reasons=list((top.reasons or [])[:3]),
+            example_tasks=list((top.example_tasks or [])[:3]),
+            example_errors=list((top.example_errors or [])[:3]),
+            gap_type=top.gap_type,
+            suggested_action=top.suggested_action,
             registry_snapshot_tools=len(registry_tool_names),
         )
 
@@ -739,23 +870,55 @@ Return JSON only:
             existing_caps_text = ToolRegistryManager().get_all_capabilities_text()
         except Exception:
             existing_caps_text = ""
+        
+        # Load skills to understand domains
+        skill_domains = {}
+        try:
+            from core.skills import SkillRegistry
+            skill_reg = SkillRegistry()
+            skill_reg.load_all()
+            for skill_name, skill in skill_reg.list_all():
+                skill_domains[skill.category] = {
+                    "skill_name": skill_name,
+                    "preferred_tools": list(skill.preferred_tools),
+                    "description": skill.description
+                }
+        except Exception:
+            pass
 
         prompt = f"""You are helping CUA (a self-improving agent) decide what tool to create next.
 
 Goal: improve autonomy/automation with user approval gates.
 
+SKILL DOMAINS (tools MUST serve an existing skill):
+{json.dumps(skill_domains, indent=2)}
+
 Current tool registry (names + operations):
 {existing_caps_text or "(registry unavailable)"}
 
-Pick ONE high-leverage tool that is NOT redundant with the existing registry.
+Pick ONE high-leverage tool that serves an existing skill domain.
+Specify which skill it serves and what domain-specific operations it provides.
+
 If a closely-related tool already exists, set action="evolve_tool" and target_tool to that existing tool name (do NOT propose a new tool).
+
 Constraints:
 - Thin tool using self.services.*
 - Must have 2-4 clear capabilities (operations)
 - Must specify parameters for each operation
 - Prefer writing to data/ or output/ via storage service
+- Must align with one of the skill domains above
+
 Return JSON only:
-{{"action":"create_tool|evolve_tool","target_tool":"", "tool_name":"...","description":"...","rationale":"...","confidence":0.0}}
+{{
+  "action": "create_tool|evolve_tool",
+  "target_tool": "",
+  "target_skill": "web_research|computer_automation|code_workspace",
+  "target_category": "web|computer|development",
+  "tool_name": "...",
+  "description": "...",
+  "rationale": "...",
+  "confidence": 0.0
+}}
 """
         raw = loop_instance.llm_client._call_llm(prompt, temperature=0.3, max_tokens=700, expect_json=True)
         parsed = loop_instance.llm_client._extract_json(raw) if raw else None
@@ -763,6 +926,8 @@ Return JSON only:
             action = str(parsed.get("action") or "create_tool")
             tool_name = str(parsed.get("tool_name") or "BenchmarkRunnerTool")
             target_tool = str(parsed.get("target_tool") or "").strip() or None
+            target_skill = str(parsed.get("target_skill") or "").strip() or None
+            target_category = str(parsed.get("target_category") or "").strip() or None
 
             # Enforce registry-awareness even if the model ignores the instructions.
             if action == "create_tool":
@@ -780,6 +945,8 @@ Return JSON only:
                 rationale=str(parsed.get("rationale") or "Capability-aware suggestion based on current registry snapshot."),
                 source="llm_fallback",
                 confidence=float(parsed.get("confidence") or 0.65),
+                target_skill=target_skill,
+                target_category=target_category,
                 registry_snapshot_tools=len(registry_tool_names),
             )
     except Exception:

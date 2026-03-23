@@ -2,14 +2,16 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   height: 100%;
-  padding: 2rem;
+  padding: 20px;
+  background: var(--bg-primary);
+  overflow-y: auto;
 }
 
 .tool-welcome {
   text-align: center;
-  margin-bottom: 3rem;
+  margin-bottom: 2rem;
+  width: 100%;
 }
 
 .tool-welcome h2 {
@@ -26,22 +28,32 @@
   font-size: 1rem;
 }
 
+.tool-suggest-row {
+  display: flex;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 700px;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.tool-suggestion-card {
+  width: 100%;
+  max-width: 700px;
+  padding: 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  margin-bottom: 1.5rem;
+}
+
 .tool-input-form {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   width: 100%;
   max-width: 700px;
-}
-
-.tool-suggest-row {
-  display: flex;
-  gap: 0.75rem;
-  width: 100%;
-  max-width: 700px;
-  margin-bottom: 0.75rem;
-  flex-wrap: wrap;
-  justify-content: center;
 }
 
 .tool-suggest-btn,
@@ -68,16 +80,6 @@
 .tool-apply-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.tool-suggestion-card {
-  width: 100%;
-  max-width: 700px;
-  padding: 1rem;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
-  margin-bottom: 1rem;
 }
 
 .tool-suggestion-title {

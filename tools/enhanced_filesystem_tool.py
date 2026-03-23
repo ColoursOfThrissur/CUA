@@ -39,6 +39,10 @@ class FilesystemTool(BaseTool):
         self.add_capability(write_capability, self._handle_write_file)
         list_capability = ToolCapability(name='list_directory', description='List files and directories in a path', parameters=[Parameter('path', ParameterType.FILE_PATH, 'Directory path to list', required=False, default='.')], returns='List of files and directories', safety_level=SafetyLevel.LOW, examples=[{'path': '.'}, {'path': 'output'}])
         self.add_capability(list_capability, self._handle_list_directory)
+        
+        # Add list_files alias for compatibility
+        list_files_capability = ToolCapability(name='list_files', description='List files in a directory (alias for list_directory)', parameters=[Parameter('path', ParameterType.FILE_PATH, 'Directory path to list files', required=False, default='.')], returns='List of files and directories', safety_level=SafetyLevel.LOW, examples=[{'path': '.'}, {'path': 'output'}])
+        self.add_capability(list_files_capability, self._handle_list_directory)
 
     def _validate_path(self, path: str) -> bool:
         abs_path = os.path.abspath(os.path.normpath(path))

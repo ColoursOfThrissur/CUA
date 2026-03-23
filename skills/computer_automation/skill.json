@@ -1,0 +1,37 @@
+{
+  "name": "computer_automation",
+  "category": "computer",
+  "description": "Local system operations, file management, shell commands, and system benchmarking.",
+  "trigger_examples": [
+    "list files in this directory",
+    "create a file locally",
+    "move these files",
+    "run a command on my machine",
+    "run benchmark suite",
+    "add benchmark case",
+    "check system performance"
+  ],
+  "preferred_tools": [
+    "FilesystemTool",
+    "ShellTool",
+    "BenchmarkRunnerTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "path",
+    "command",
+    "local_task"
+  ],
+  "output_types": [
+    "file_operation_result",
+    "directory_listing",
+    "command_output",
+    "execution_trace",
+    "summary_report"
+  ],
+  "verification_mode": "side_effect_observed",
+  "risk_level": "high",
+  "ui_renderer": "automation_result",
+  "fallback_strategy": "safe_direct_tool_routing"
+}

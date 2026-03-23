@@ -1,5 +1,5 @@
 import React from 'react';
-import { Package, List, RefreshCw } from 'lucide-react';
+import { Package, List, RefreshCw, Users } from 'lucide-react';
 import './FloatingActionBar.css';
 
 function FloatingActionBar({ mode, onAction }) {
@@ -8,6 +8,7 @@ function FloatingActionBar({ mode, onAction }) {
       case 'tools':
         return [
           { id: 'pending', label: 'Pending Tools', icon: Package },
+          { id: 'pending-skills', label: 'Pending Skills', icon: Users },
           { id: 'registry', label: 'Registry', icon: List },
           { id: 'sync', label: 'Sync', icon: RefreshCw }
         ];

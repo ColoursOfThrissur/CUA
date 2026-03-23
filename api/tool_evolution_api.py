@@ -37,7 +37,8 @@ async def evolve_tool(request: EvolveToolRequest):
     return {
         "success": success,
         "message": message,
-        "conversation_log": conversation_log
+        "conversation_log": conversation_log,
+        "skill_updates": getattr(_evolution_orchestrator, "last_skill_updates", []),
     }
 
 
@@ -235,7 +236,8 @@ async def get_evolution_conversation(tool_name: str):
         "conversation_log": evolution.get("conversation_log", []),
         "proposal": evolution.get("proposal", {}),
         "health_before": evolution.get("health_before", 0),
-        "dependencies": evolution.get("proposal", {}).get("dependencies")
+        "dependencies": evolution.get("proposal", {}).get("dependencies"),
+        "skill_updates": evolution.get("skill_updates", []),
     }
 
 

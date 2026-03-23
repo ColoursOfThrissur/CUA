@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from core.task_planner import TaskPlanner, ExecutionPlan
 from core.execution_engine import ExecutionEngine, ExecutionState, StepStatus
 from core.memory_system import MemorySystem
+from core.skills import SkillSelector, build_skill_planning_context
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +34,16 @@ class AutonomousAgent:
         task_planner: TaskPlanner,
         execution_engine: ExecutionEngine,
         memory_system: MemorySystem,
-        llm_client
+        llm_client,
+        skill_registry=None,
+        skill_selector: Optional[SkillSelector] = None,
     ):
         self.planner = task_planner
         self.executor = execution_engine
         self.memory = memory_system
         self.llm_client = llm_client
+        self.skill_registry = skill_registry
+        self.skill_selector = skill_selector or SkillSelector()
     
     def achieve_goal(
         self,
@@ -169,7 +174,32 @@ class AutonomousAgent:
         enhanced_context = context or {}
         enhanced_context["conversation_summary"] = conv_summary
         enhanced_context["iteration"] = iteration
-        
+
+        if self.skill_registry:
+            selection = self.skill_selector.select_skill(goal.goal_text, self.skill_registry, self.llm_client)
+            if selection.matched and selection.skill_name:
+                skill = self.skill_registry.get(selection.skill_name)
+                if skill:
+                    skill_context = build_skill_planning_context(skill)
+                    enhanced_context["skill_selection"] = {
+                        "matched": True,
+                        "skill_name": selection.skill_name,
+                        "category": selection.category,
+                        "confidence": selection.confidence,
+                        "reason": selection.reason,
+                    }
+                    enhanced_context["skill_context"] = {
+                        "skill_name": skill_context.skill_name,
+                        "category": skill_context.category,
+                        "instructions_summary": skill_context.instructions_summary,
+                        "preferred_tools": skill_context.preferred_tools,
+                        "required_tools": skill_context.required_tools,
+                        "verification_mode": skill_context.verification_mode,
+                        "output_types": skill_context.output_types,
+                        "ui_renderer": skill_context.ui_renderer,
+                        "skill_constraints": skill_context.skill_constraints,
+                    }
+
         # Add learned patterns
         similar_patterns = self.memory.get_patterns("successful_goals", limit=3)
         if similar_patterns:

@@ -1,4 +1,5 @@
 """Analyzer for tool evolution - uses LLM health analysis."""
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 from core.sqlite_logging import get_logger
@@ -16,8 +17,8 @@ class ToolAnalyzer:
         from core.llm_tool_health_analyzer import LLMToolHealthAnalyzer
         self.llm_analyzer = LLMToolHealthAnalyzer()
     
-    def analyze_tool(self, tool_name: str, user_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Analyze tool using LLM health analysis (primary) + runtime metrics (secondary)."""
+    def analyze_tool(self, tool_name: str, user_prompt: Optional[str] = None, execution_context: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+        """Analyze tool using LLM health analysis (primary) + runtime metrics (secondary) + execution context."""
         logger.info(f"Analyzing {tool_name}")
         
         try:
@@ -74,6 +75,31 @@ class ToolAnalyzer:
             
             logger.info(f"Analysis complete: category={category}, health={health_score:.0f}")
             
+            # Extract context-driven priorities if execution_context provided
+            context_priorities = []
+            if execution_context:
+                # Prioritize errors from execution context
+                errors = getattr(execution_context, 'errors_encountered', [])
+                if errors:
+                    context_priorities.append(f"Fix execution errors: {len(errors)} failures")
+                    for err in errors[:3]:  # Top 3 errors
+                        context_priorities.append(f"  - {err.get('error', 'Unknown error')}")
+                
+                # Prioritize verification failures
+                verification_mode = getattr(execution_context, 'verification_mode', None)
+                if verification_mode:
+                    context_priorities.append(f"Ensure output matches {verification_mode} requirements")
+                
+                # Prioritize performance if slow
+                exec_time = getattr(execution_context, 'execution_time_seconds', 0)
+                if exec_time > 5.0:
+                    context_priorities.append(f"Optimize performance (current: {exec_time:.1f}s)")
+                
+                # Prioritize retry issues
+                retry_count = getattr(execution_context, 'retry_count', 0)
+                if retry_count > 0:
+                    context_priorities.append(f"Reduce retry failures (retries: {retry_count})")
+            
             # Build analysis
             analysis = {
                 "tool_name": tool_name,
@@ -90,7 +116,10 @@ class ToolAnalyzer:
                 "recommendation": self._get_recommendation(category, runtime_report),
                 "user_prompt": user_prompt,
                 "summary": self._build_summary(category, health_score, all_issues, user_prompt),
-                "capabilities": self._extract_capabilities(current_code)
+                "capabilities": self._extract_capabilities(current_code),
+                "context_priorities": context_priorities,  # NEW: Context-driven priorities
+                # Store serializable execution context data instead of the object
+                "execution_context_data": self._serialize_execution_context(execution_context) if execution_context else None
             }
             
             return analysis
@@ -123,9 +152,32 @@ class ToolAnalyzer:
                 issues_preview = ", ".join(issues[:2])
                 return f"Code quality: {category}, Health: {health_score:.0f}/100. {issue_count} issues: {issues_preview}"
     
+    def _serialize_execution_context(self, execution_context) -> Dict[str, Any]:
+        """Serialize execution context to JSON-compatible format."""
+        if not execution_context:
+            return None
+        
+        try:
+            return {
+                "skill_name": getattr(execution_context, 'skill_name', None),
+                "verification_mode": getattr(execution_context, 'verification_mode', None),
+                "risk_level": getattr(execution_context, 'risk_level', None),
+                "execution_time_seconds": getattr(execution_context, 'execution_time_seconds', 0),
+                "retry_count": getattr(execution_context, 'retry_count', 0),
+                "errors_encountered": getattr(execution_context, 'errors_encountered', []),
+                "warnings": getattr(execution_context, 'warnings', []),
+                "selected_tool": getattr(execution_context, 'selected_tool', None),
+                "preferred_tools": getattr(execution_context, 'preferred_tools', []),
+                "fallback_tools": getattr(execution_context, 'fallback_tools', []),
+                "expected_output_types": getattr(execution_context, 'expected_output_types', []),
+                "step_history": getattr(execution_context, 'step_history', []),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to serialize execution context: {e}")
+            return {"serialization_error": str(e)}
+    
     def _extract_capabilities(self, code: str) -> list:
         """Extract capability names from code."""
-        import re
         caps = re.findall(r"name=['\"](\w+)['\"]", code)
         return caps if caps else []
     
@@ -140,7 +192,6 @@ class ToolAnalyzer:
         except Exception:
             pass
 
-        import re
         snake_case = re.sub(r'(?<!^)(?=[A-Z])', '_', tool_name).lower()
         
         candidates = [

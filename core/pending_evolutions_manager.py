@@ -52,8 +52,15 @@ class PendingEvolutionsManager:
             return False
         
         # Apply changes to actual file
-        tool_path = Path(evolution["proposal"]["analysis"]["tool_path"])
+        tool_path = Path(evolution.get("tool_path") or evolution["proposal"]["analysis"]["tool_path"])
         tool_path.write_text(evolution["improved_code"])
+
+        try:
+            from core.skills import SkillUpdater
+
+            SkillUpdater().apply_update_plans(evolution.get("skill_updates") or [])
+        except Exception:
+            pass
         
         # Update evolution log with health_after
         evolution_id = evolution.get("evolution_id")

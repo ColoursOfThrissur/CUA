@@ -19,23 +19,57 @@ class EvolutionCodeGenerator:
         self, 
         current_code: str, 
         proposal: Dict[str, Any],
-        sandbox_error: Optional[str] = None
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None
     ) -> Optional[str]:
-        """Generate improved code preserving structure."""
+        """Generate improved code preserving structure.
+        
+        Args:
+            current_code: The current tool code
+            proposal: The improvement proposal
+            sandbox_error: Error from previous sandbox failure (for retry feedback)
+            validation_error: Error from previous validation failure (for retry feedback)
+        """
         
         action_type = proposal.get('action_type', 'improve_logic')
         
         # For add_capability, create new handler + register capability
         if action_type == 'add_capability':
-            return self._add_new_capability(current_code, proposal, sandbox_error)
+            return self._add_new_capability(current_code, proposal, sandbox_error, validation_error)
         
         # For fix_bug/improve_logic/refactor, modify existing handlers
-        return self._improve_existing_handlers(current_code, proposal, sandbox_error)
+        return self._improve_existing_handlers(current_code, proposal, sandbox_error, validation_error)
+    
+    def _extract_service_signatures(self) -> Dict[str, str]:
+        """Extract actual method signatures from service classes using introspection."""
+        import inspect
+        signatures = {}
+        
+        try:
+            from core.tool_services import BrowserService, StorageService, HTTPService
+            
+            # Dynamically extract browser service methods
+            browser_methods = [
+                m for m in dir(BrowserService)
+                if not m.startswith('_') and callable(getattr(BrowserService, m, None))
+            ]
+            browser_sig = ", ".join([f"{m}(...)" for m in sorted(browser_methods)])
+            signatures["browser"] = browser_sig if browser_sig else "open_browser(), navigate(url), find_element(by, value), get_page_text(), take_screenshot(filename), close(), is_available()"
+            
+            logger.debug(f"Extracted browser methods: {browser_sig}")
+        except Exception as e:
+            logger.warning(f"Could not extract browser service signatures: {e}")
+        
+        return signatures
     
     def _build_service_context(self) -> str:
-        """Build grounded service context from EnhancedCodeValidator's registry."""
+        """Build grounded service context from actual service classes + fallback defaults."""
         registry = EnhancedCodeValidator().service_registry
-
+        
+        # Try to extract actual signatures first
+        extracted = self._extract_service_signatures()
+        
+        # Fallback defaults if extraction fails
         nested = {
             "storage": "save(id, data), get(id), list(limit=10), find(query=None, limit=10), count(query=None), update(id, updates), delete(id), exists(id)",
             "llm": "generate(prompt, temperature=0.3, max_tokens=500)",
@@ -48,6 +82,9 @@ class EvolutionCodeGenerator:
             "ids": "generate(prefix=\"\"), uuid()",
             "browser": "open_browser(), navigate(url), find_element(by, value), get_page_text(), take_screenshot(filename), close(), is_available()",
         }
+        
+        # Override with extracted signatures if available
+        nested.update(extracted)
         direct = {
             "call_tool": "call_tool(tool_name, operation, **parameters)",
             "list_tools": "list_tools()",
@@ -111,7 +148,8 @@ class EvolutionCodeGenerator:
         self,
         current_code: str,
         proposal: Dict[str, Any],
-        sandbox_error: Optional[str] = None
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None
     ) -> Optional[str]:
         """Improve existing handlers (fix_bug/improve_logic/refactor)."""
         class_name = self._extract_class_name(current_code)
@@ -131,7 +169,7 @@ class EvolutionCodeGenerator:
             logger.info(f"Improving handler: {handler_name}")
             improved_handler = self._improve_single_handler(
                 handler_code, handler_name, proposal, class_name,
-                service_context + new_services_context, sandbox_error
+                service_context + new_services_context, sandbox_error, validation_error
             )
             if improved_handler:
                 improved_code = self._replace_handler(improved_code, handler_name, improved_handler, class_name)
@@ -142,7 +180,8 @@ class EvolutionCodeGenerator:
         self,
         current_code: str,
         proposal: Dict[str, Any],
-        sandbox_error: Optional[str] = None
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None
     ) -> Optional[str]:
         """Add new capability (new handler + register in capabilities)."""
         class_name = self._extract_class_name(current_code)
@@ -153,8 +192,13 @@ class EvolutionCodeGenerator:
         service_context = self._build_service_context()
         new_services_context = self._build_new_services_context(proposal)
         
-        # Generate new handler
-        new_handler = self._generate_new_handler(proposal, service_context + new_services_context, sandbox_error)
+        # Generate new handler (pass validation error for feedback)
+        new_handler = self._generate_new_handler(
+            proposal, 
+            service_context + new_services_context, 
+            sandbox_error,
+            validation_error
+        )
         if not new_handler:
             logger.error("Cannot add capability: handler generation failed")
             return None
@@ -194,10 +238,15 @@ class EvolutionCodeGenerator:
         self,
         proposal: Dict[str, Any],
         service_context: str,
-        sandbox_error: Optional[str] = None
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None
     ) -> Optional[str]:
         """Generate new handler method for add_capability."""
-        error_context = f"\n\nPREVIOUS ATTEMPT FAILED:\n{sandbox_error}\n" if sandbox_error else ""
+        error_context = ""
+        if validation_error:
+            error_context = f"\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n{validation_error}\nFIX THESE ERRORS:\n"
+        elif sandbox_error:
+            error_context = f"\n\nPREVIOUS ATTEMPT FAILED:\n{sandbox_error}\n"
         
         # Extract operation name from proposal
         operation_name = self._extract_operation_name(proposal)
@@ -281,7 +330,6 @@ Return ONLY the method definition (no explanations)."""
             # Look for "Add a new capability named 'X'" or "Create capability 'X'"
             if "capability named" in change.lower():
                 # Extract text between quotes
-                import re
                 match = re.search(r"['\"]([^'\"]+)['\"]", change)
                 if match:
                     return match.group(1)
@@ -479,13 +527,16 @@ Return ONLY the method definition (no explanations)."""
         proposal: Dict[str, Any],
         class_name: str,
         service_context: str,
-        sandbox_error: Optional[str] = None
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None
     ) -> Optional[str]:
         """Improve a single handler method."""
         
-        # Build sandbox error context if this is a retry
+        # Build error context if this is a retry
         error_context = ""
-        if sandbox_error:
+        if validation_error:
+            error_context = f"\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n{validation_error}\n\nFIX THE VALIDATION ERRORS ABOVE.\n"
+        elif sandbox_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED WITH ERROR:\n{sandbox_error}\n\nFIX THE ERROR ABOVE.\n"
         
         prompt = f"""TASK: Improve this handler method.

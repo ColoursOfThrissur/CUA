@@ -1,6 +1,6 @@
 """Tool Evolution Flow - Same pattern as tool creation."""
 import logging
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any
 from pathlib import Path
 from core.tool_evolution_logger import get_evolution_logger
 from core.correlation_context import CorrelationContextManager
@@ -17,12 +17,14 @@ class ToolEvolutionOrchestrator:
         self.expansion_mode = expansion_mode
         self.llm_client = llm_client
         self.conversation_log = []
+        self.last_skill_updates = []
     
     def evolve_tool(
         self,
         tool_name: str,
         user_prompt: Optional[str] = None,
-        auto_approve: bool = False
+        auto_approve: bool = False,
+        execution_context: Optional[Any] = None
     ) -> Tuple[bool, str]:
         """
         Complete flow for evolving existing tool.
@@ -51,7 +53,8 @@ class ToolEvolutionOrchestrator:
             health_before = 0
             
             try:
-                analysis = analyzer.analyze_tool(tool_name, user_prompt)
+                # Pass execution context to analyzer for context-aware analysis
+                analysis = analyzer.analyze_tool(tool_name, user_prompt, execution_context=execution_context)
                 if not analysis:
                     evolution_id = evo_logger.log_run(tool_name, user_prompt, "failed", "analysis", "Could not analyze tool")
                     return False, f"Could not analyze tool: {tool_name}"
@@ -59,9 +62,20 @@ class ToolEvolutionOrchestrator:
                 health_before = analysis.get('health_score', 0)
                 evolution_id = evo_logger.log_run(tool_name, user_prompt, "in_progress", "analysis", None, health_before=health_before)
                 
-                # Store analysis artifact with original code
+                # Store analysis artifact with original code and execution context
                 evo_logger.log_artifact(evolution_id, "analysis", "analyze", analysis)
                 evo_logger.log_artifact(evolution_id, "original_code", "analyze", analysis.get('current_code', ''))
+                
+                # Store execution context metrics if provided
+                if execution_context:
+                    context_metrics = {
+                        "execution_time": getattr(execution_context, 'execution_time_seconds', 0),
+                        "retry_count": getattr(execution_context, 'retry_count', 0),
+                        "errors_encountered": getattr(execution_context, 'errors_encountered', []),
+                        "verification_mode": getattr(execution_context, 'verification_mode', None),
+                        "warnings": getattr(execution_context, 'warnings', [])
+                    }
+                    evo_logger.log_artifact(evolution_id, "execution_context", "analyze", context_metrics)
                 
                 logger.info(f"[Evolution {evolution_id}] Analysis complete, health: {health_before}")
                 self._log_conversation("ANALYSIS", analysis['summary'])
@@ -100,14 +114,16 @@ class ToolEvolutionOrchestrator:
             # Step 3-5: Generate, validate, and test with retry on sandbox failure
             code_gen = self._select_generator()
             sandbox_error = None
+            validation_error = None
             
-            for attempt in range(2):
+            for attempt in range(3):  # Increased from 2 to allow validation feedback retry
                 try:
-                    # Generate code
+                    # Generate code (and pass validation error for feedback on retry)
                     improved_code = code_gen.generate_improved_code(
                         analysis['current_code'],
                         proposal,
-                        sandbox_error=sandbox_error
+                        sandbox_error=sandbox_error,
+                        validation_error=validation_error
                     )
                     
                     # Validate generated code
@@ -177,7 +193,7 @@ class ToolEvolutionOrchestrator:
                                 evo_logger.log_run(tool_name, user_prompt, "failed", "services", str(e), confidence, health_before)
                                 return False, f"Missing services detected but service generation failed: {e}"
                     
-                    # Validate
+                    # Validate (BEFORE sandbox test)
                     from core.tool_evolution.validator import EvolutionValidator
                     validator = EvolutionValidator()
                     is_valid, error = validator.validate(
@@ -186,9 +202,18 @@ class ToolEvolutionOrchestrator:
                         proposal=proposal
                     )
                     evo_logger.log_artifact(evolution_id, "validation", f"attempt_{attempt+1}", {"is_valid": is_valid, "error": error})
+                    
                     if not is_valid:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "validation", error, confidence, health_before)
-                        return False, f"Validation failed: {error}"
+                        validation_error = error
+                        logger.warning(f"[Evolution {evolution_id}] Validation failed (attempt {attempt+1}): {error}")
+                        if attempt < 2:
+                            # Retry with validation feedback
+                            logger.info(f"[Evolution {evolution_id}] Retrying code generation with validation feedback")
+                            continue
+                        else:
+                            # All attempts exhausted
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "validation", error, confidence, health_before)
+                            return False, f"Validation failed after all retries: {error}"
                     
                     self._log_conversation("VALIDATION", "Code validated")
                     
@@ -281,6 +306,7 @@ class ToolEvolutionOrchestrator:
         from core.pending_evolutions_manager import PendingEvolutionsManager
         
         manager = PendingEvolutionsManager()
+        self.last_skill_updates = self._plan_skill_updates(tool_name, analysis)
         
         # Create backup of original file before any changes
         backup_path = self._create_backup(tool_name, analysis['tool_path'])
@@ -290,6 +316,7 @@ class ToolEvolutionOrchestrator:
             "original_code": analysis['current_code'],
             "improved_code": improved_code,
             "proposal": proposal,
+            "tool_spec": proposal.get("tool_spec"),
             "health_before": analysis.get('health_score', 0),
             "conversation_log": self.conversation_log,
             "status": "pending_approval",
@@ -300,6 +327,7 @@ class ToolEvolutionOrchestrator:
             "required_libraries": proposal.get('required_libraries', []),
             "new_service_specs": proposal.get('new_service_specs', {}),
             "service_descriptions": proposal.get('service_descriptions', {}),
+            "skill_updates": self.last_skill_updates,
             "backup_path": backup_path,  # Store backup location
             "tool_path": analysis['tool_path']
         }
@@ -307,6 +335,28 @@ class ToolEvolutionOrchestrator:
         manager.add_pending_evolution(tool_name, evolution_data)
         
         return True, f"Evolution pending approval: {tool_name}"
+
+    def _plan_skill_updates(self, tool_name: str, analysis: dict):
+        try:
+            from core.skills import SkillUpdater
+
+            updater = SkillUpdater()
+            operations = []
+            for capability in analysis.get("capabilities", []) or []:
+                name = capability.get("name") if isinstance(capability, dict) else None
+                if name:
+                    operations.append(name)
+            return updater.plan_tool_evolution_updates(
+                tool_name,
+                operations=operations,
+                gap_context={
+                    "gap_type": "tool_evolution",
+                    "suggested_action": "improve_skill_workflow",
+                    "reasons": [analysis.get("summary")] if analysis.get("summary") else [],
+                },
+            )
+        except Exception:
+            return []
     
     def _create_backup(self, tool_name: str, tool_path: str) -> Optional[str]:
         """Create backup of original tool file."""

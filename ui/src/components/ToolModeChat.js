@@ -10,19 +10,20 @@ function ToolModeChat({ onModeChange }) {
   const [loading, setLoading] = useState(false);
   const [suggestion, setSuggestion] = useState(null);
   const [suggesting, setSuggesting] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
   const toast = useToast();
 
   const fetchSuggestion = async () => {
     setSuggesting(true);
     try {
-      const res = await fetch(`${API_URL}/improvement/tools/suggest`);
+      const res = await fetch(`${API_URL}/improvement/tools/suggest?skip=${suggestionIndex}`);
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.detail || 'Failed to get suggestion');
         return;
       }
       setSuggestion(data);
-      toast.success('Suggestion ready');
+      setSuggestionIndex(prev => prev + 1);
     } catch (err) {
       toast.error('Error: ' + err.message);
     } finally {
@@ -99,7 +100,7 @@ function ToolModeChat({ onModeChange }) {
           title="Let CUA propose the next most important tool based on observed capability gaps"
         >
           {suggesting ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
-          {suggesting ? 'Thinking…' : 'Suggest tool for me'}
+          {suggesting ? 'Thinking…' : suggestionIndex === 0 ? 'Suggest tool for me' : 'Next suggestion'}
         </button>
 
         {suggestion && (

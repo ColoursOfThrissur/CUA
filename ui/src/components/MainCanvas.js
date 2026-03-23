@@ -5,7 +5,7 @@ import EvolutionMode from './EvolutionMode';
 import ToolModeChat from './ToolModeChat';
 import './MainCanvas.css';
 
-function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange }) {
+function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange, skills }) {
   const renderContent = () => {
     if (mode === 'tools') {
       return <ToolModeChat key="tools" onModeChange={onModeChange} />;
@@ -22,6 +22,7 @@ function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAct
         onSendMessage={onSendMessage}
         isProcessing={isProcessing}
         mode={mode}
+        skills={skills}
       />
     );
   };

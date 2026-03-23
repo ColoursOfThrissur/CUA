@@ -1,0 +1,35 @@
+{
+  "name": "knowledge_management",
+  "category": "productivity",
+  "description": "Code snippet storage, note-taking, and knowledge organization.",
+  "trigger_examples": [
+    "save this code snippet",
+    "store this note",
+    "find code examples for",
+    "retrieve my notes about",
+    "organize my code library",
+    "search my snippets"
+  ],
+  "preferred_tools": [
+    "LocalCodeSnippetLibraryTool",
+    "LocalRunNoteTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "code_snippet",
+    "note_content",
+    "search_query",
+    "tag_list"
+  ],
+  "output_types": [
+    "snippet_result",
+    "note_result",
+    "search_results",
+    "library_summary"
+  ],
+  "verification_mode": "output_validation",
+  "risk_level": "low",
+  "ui_renderer": "knowledge_result",
+  "fallback_strategy": "direct_tool_routing"
+}

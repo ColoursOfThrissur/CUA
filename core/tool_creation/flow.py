@@ -5,6 +5,7 @@ FIXED: Step ordering, removed bypass_budget security risk
 import logging
 from typing import Optional, Tuple
 from pathlib import Path
+from api.trace_ws import broadcast_trace_sync
 
 logger = logging.getLogger(__name__)
 
@@ -12,25 +13,34 @@ logger = logging.getLogger(__name__)
 class ToolCreationOrchestrator:
     """Orchestrates the complete tool creation flow"""
     
-    def __init__(self, capability_graph, expansion_mode):
+    def __init__(self, capability_graph, expansion_mode, skill_registry=None, llm_client=None):
         self.capability_graph = capability_graph
         self.expansion_mode = expansion_mode
+        self.skill_registry = skill_registry
+        self.llm_client = llm_client
         self.last_spec = None  # Store last generated spec for API access
+        self.last_skill_updates = []
+        self.skill_aware_orchestrator = None
+        if skill_registry and llm_client:
+            from core.tool_creation.skill_aware_creation import SkillAwareCreationOrchestrator
+            self.skill_aware_orchestrator = SkillAwareCreationOrchestrator(skill_registry, llm_client)
     
     def create_tool(
         self,
         gap_description: str,
         llm_client,
         preferred_tool_name: Optional[str] = None,
+        skill_context: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """Alias for create_new_tool for API compatibility"""
-        return self.create_new_tool(gap_description, llm_client, preferred_tool_name)
+        return self.create_new_tool(gap_description, llm_client, preferred_tool_name, skill_context=skill_context)
     
     def create_new_tool(
         self,
         gap_description: str,
         llm_client,
         preferred_tool_name: Optional[str] = None,
+        skill_context: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
         Complete flow for creating new tool
@@ -43,6 +53,7 @@ class ToolCreationOrchestrator:
         # Step 1: Detect capability gap
         logger.info(f"Capability gap detected: {gap_description}")
         print(f"[FLOW] Step 1: Starting tool creation for: {gap_description[:50]}...")
+        broadcast_trace_sync("creation", f"Starting tool creation: {gap_description[:80]}", "in_progress", {"stage": "gap_detection"})
         creation_id = creation_logger.log_creation(
             tool_name="unknown",
             user_prompt=gap_description,
@@ -51,15 +62,39 @@ class ToolCreationOrchestrator:
         )
         print(f"[FLOW] Creation ID: {creation_id}")
         
+        # Step 1.5: Auto-detect or create skill if not provided
+        if not skill_context and self.skill_aware_orchestrator:
+            logger.info("[SKILL-AWARE] No skill context provided, auto-detecting...")
+            broadcast_trace_sync("creation", "Detecting target skill", "in_progress", {"stage": "skill_detection"})
+            try:
+                skill_context = self.skill_aware_orchestrator.detect_or_create_skill(gap_description)
+                creation_logger.log_artifact(creation_id, "skill_context", "skill_detection", skill_context)
+                
+                if skill_context.get("source") == "created_skill":
+                    logger.info(f"[SKILL-AWARE] Created new skill: {skill_context.get('target_skill')}")
+                    broadcast_trace_sync("creation", f"Created new skill: {skill_context.get('target_skill')}", "success", {"stage": "skill_detection"})
+                elif skill_context.get("target_skill"):
+                    logger.info(f"[SKILL-AWARE] Detected skill: {skill_context.get('target_skill')}")
+                    broadcast_trace_sync("creation", f"Detected skill: {skill_context.get('target_skill')}", "success", {"stage": "skill_detection"})
+                else:
+                    logger.info("[SKILL-AWARE] No skill match, creating general-purpose tool")
+                    broadcast_trace_sync("creation", "No skill match, creating general tool", "info", {"stage": "skill_detection"})
+            except Exception as e:
+                logger.warning(f"[SKILL-AWARE] Skill detection failed: {e}")
+                creation_logger.log_artifact(creation_id, "skill_detection_error", "skill_detection", {"error": str(e)})
+                # Continue without skill context
+        
         # Step 2: LLM proposes tool spec
         from core.tool_creation import SpecGenerator
         spec_generator = SpecGenerator(self.capability_graph)
         try:
             print(f"[FLOW DEBUG] Starting spec generation for: {gap_description}")
+            broadcast_trace_sync("creation", "Generating tool specification", "in_progress", {"stage": "spec_generation"})
             tool_spec = spec_generator.propose_tool_spec(
                 gap_description,
                 llm_client,
                 preferred_tool_name=preferred_tool_name,
+                skill_context=skill_context,
             )
             print(f"[FLOW DEBUG] Spec generation returned: {tool_spec is not None}")
         except Exception as e:
@@ -73,6 +108,7 @@ class ToolCreationOrchestrator:
                 error_message=f"Exception during spec generation: {str(e)}",
             )
             logger.error(f"Spec generation exception: {e}", exc_info=True)
+            broadcast_trace_sync("creation", f"Spec generation failed: {e}", "error", {"stage": "spec_generation"})
             return False, f"Failed to generate tool spec: {str(e)}"
         
         if not tool_spec:
@@ -84,6 +120,7 @@ class ToolCreationOrchestrator:
                 step="spec_generation",
                 error_message="LLM returned None/empty spec",
             )
+            broadcast_trace_sync("creation", "Spec generation returned no result", "error", {"stage": "spec_generation"})
             return False, "Failed to generate tool spec"
         
         # Store spec for API access
@@ -137,6 +174,7 @@ class ToolCreationOrchestrator:
         # Remove non-serializable objects before logging
         spec_for_logging = {k: v for k, v in tool_spec.items() if k != 'node'}
         creation_logger.log_artifact(creation_id, "spec", "spec_generation", spec_for_logging)
+        broadcast_trace_sync("creation", f"Spec ready for {tool_name}", "success", {"stage": "spec_generation", "tool_name": tool_name})
         
         # Log service resolution
         missing_services = tool_spec.get('missing_services', [])
@@ -174,6 +212,7 @@ class ToolCreationOrchestrator:
         tool_spec['_creation_id'] = creation_id
         
         try:
+            broadcast_trace_sync("creation", f"Generating code for {tool_name}", "in_progress", {"stage": "code_generation", "tool_name": tool_name})
             filled_code = generator.generate(None, tool_spec)  # No template needed
         except Exception as e:
             creation_logger.update_creation(
@@ -184,6 +223,7 @@ class ToolCreationOrchestrator:
                 error_message=f"Exception during code generation: {str(e)}",
             )
             logger.error(f"Code generation exception: {e}", exc_info=True)
+            broadcast_trace_sync("creation", f"Code generation failed for {tool_name}: {e}", "error", {"stage": "code_generation", "tool_name": tool_name})
             return False, f"Failed to generate tool logic: {str(e)}"
         
         if not filled_code:
@@ -194,6 +234,7 @@ class ToolCreationOrchestrator:
                 step="code_generation",
                 error_message="Generator returned None/empty code",
             )
+            broadcast_trace_sync("creation", f"Code generation returned no output for {tool_name}", "error", {"stage": "code_generation", "tool_name": tool_name})
             return False, "Failed to generate tool logic"
 
         generation_meta = tool_spec.get("_generation_meta") if isinstance(tool_spec, dict) else None
@@ -205,7 +246,24 @@ class ToolCreationOrchestrator:
         # Step 5: Validate generated code
         from core.tool_creation.validator import ToolValidator
         validator = ToolValidator()
-        is_valid, validation_error = validator.validate(filled_code, tool_spec)
+        broadcast_trace_sync("creation", f"Validating {tool_name}", "in_progress", {"stage": "validation", "tool_name": tool_name})
+        
+        # Get skill definition for service validation
+        skill_definition = None
+        if skill_context and self.skill_registry:
+            skill_name = skill_context.get("target_skill") or skill_context.get("skill_name")
+            if skill_name:
+                skill_definition = self.skill_registry.get(skill_name)
+        
+        is_valid, validation_error = validator.validate(filled_code, tool_spec, skill_definition)
+        
+        # Validate skill alignment if skill_context provided
+        if is_valid and skill_context:
+            skill_validation_error = self._validate_skill_alignment(tool_spec, skill_context)
+            if skill_validation_error:
+                is_valid = False
+                validation_error = skill_validation_error
+        
         if not is_valid:
             # If validation failed due to missing services, generate them into the pending-services queue.
             try:
@@ -245,6 +303,7 @@ class ToolCreationOrchestrator:
                 error_message=f"Validation failed: {validation_error}",
                 code_size=len(filled_code),
             )
+            broadcast_trace_sync("creation", f"Validation failed for {tool_name}: {validation_error}", "error", {"stage": "validation", "tool_name": tool_name})
             return False, f"Generated tool code invalid: {validation_error}"
         
         # Step 5.5: Check and resolve dependencies
@@ -378,7 +437,20 @@ class ToolCreationOrchestrator:
             )
             return False, f"Sandbox validation failed after {max_retries} attempts"
         
-        # Step 8: Register as experimental
+        # Step 8: Update skill with new tool
+        if skill_context and self.skill_aware_orchestrator:
+            try:
+                update_result = self.skill_aware_orchestrator.update_skill_with_tool(skill_context, tool_spec)
+                creation_logger.log_artifact(creation_id, "skill_update", "completed", update_result)
+                if update_result.get("success"):
+                    logger.info(f"[SKILL-AWARE] Updated skill '{skill_context.get('target_skill')}' with tool '{tool_spec['name']}'")
+                else:
+                    logger.warning(f"[SKILL-AWARE] Failed to update skill: {update_result.get('error')}")
+            except Exception as e:
+                logger.warning(f"[SKILL-AWARE] Skill update failed: {e}")
+                creation_logger.log_artifact(creation_id, "skill_update_error", "completed", {"error": str(e)})
+        
+        # Step 9: Register as experimental
         logger.info(f"Tool registered as experimental: {tool_spec['name']}")
 
         # If stage 2 didn't produce validated code, we still create a safe scaffold (stub) but flag it.
@@ -434,8 +506,34 @@ class ToolCreationOrchestrator:
         )
         
         if is_stub:
+            self._capture_skill_updates(tool_spec)
             return True, f"Experimental tool created: {tool_spec['name']} (scaffold only; queued for evolution)"
+        self._capture_skill_updates(tool_spec)
         return True, f"Experimental tool created: {tool_spec['name']}"
+
+    def _capture_skill_updates(self, tool_spec: dict):
+        try:
+            from core.skills import SkillUpdater
+
+            updater = SkillUpdater()
+            self.last_skill_updates = []
+            plan = updater.plan_tool_creation_update(
+                skill_name=str(tool_spec.get("target_skill") or "").strip(),
+                tool_name=str(tool_spec.get("name") or "").strip(),
+                operations=[item.get("operation") for item in tool_spec.get("inputs", []) if isinstance(item, dict) and item.get("operation")],
+                output_types=list(tool_spec.get("outputs") or []),
+                gap_context={
+                    "gap_type": tool_spec.get("gap_type"),
+                    "suggested_action": tool_spec.get("suggested_action"),
+                    "reasons": list(tool_spec.get("reasons") or []),
+                    "example_tasks": list(tool_spec.get("example_tasks") or []),
+                    "example_errors": list(tool_spec.get("example_errors") or []),
+                },
+            )
+            if plan:
+                self.last_skill_updates.append(plan)
+        except Exception:
+            self.last_skill_updates = []
     
     def _cleanup_artifacts(self, tool_name: str):
         """Delete generated tool/test artifacts when validation fails"""
@@ -519,6 +617,46 @@ class ToolCreationOrchestrator:
             "claude": {"strategy": "singleshot", "max_lines": 800},
             "gpt-3.5": {"strategy": "singleshot", "max_lines": 500}
         }
+    
+    def _validate_skill_alignment(self, tool_spec: dict, skill_context: dict) -> Optional[str]:
+        """Validate tool aligns with skill expectations."""
+        skill_name = skill_context.get("skill_name")
+        if not skill_name:
+            return None
+        
+        # Check input types match skill expected_input_types
+        skill_input_types = skill_context.get("expected_input_types", [])
+        tool_inputs = tool_spec.get("inputs", [])
+        
+        if skill_input_types:
+            tool_param_types = set()
+            for inp in tool_inputs:
+                if isinstance(inp, dict):
+                    for param in inp.get("parameters", []):
+                        if isinstance(param, dict):
+                            tool_param_types.add(param.get("type", ""))
+            
+            # At least one input type should match
+            if not any(t in skill_input_types for t in tool_param_types):
+                return f"Tool input types {tool_param_types} don't match skill expected types {skill_input_types}"
+        
+        # Check output types match skill expected_output_types
+        skill_output_types = skill_context.get("expected_output_types", [])
+        tool_outputs = tool_spec.get("outputs", [])
+        
+        if skill_output_types and tool_outputs:
+            if not any(out in skill_output_types for out in tool_outputs):
+                return f"Tool output types {tool_outputs} don't match skill expected types {skill_output_types}"
+        
+        # Check verification_mode compatibility
+        verification_mode = skill_context.get("verification_mode")
+        if verification_mode == "source_backed":
+            # Tool must return sources
+            has_sources = any("source" in str(out).lower() for out in tool_outputs)
+            if not has_sources:
+                return f"Skill requires source_backed verification but tool doesn't return sources"
+        
+        return None
     
     def _is_qwen_model(self, llm_client) -> bool:
         """Check if LLM client is using Qwen model (deprecated - use _select_generator)"""

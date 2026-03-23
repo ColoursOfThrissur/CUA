@@ -42,6 +42,7 @@ class EvolutionQueue:
         self.storage_path.parent.mkdir(exist_ok=True)
         self.queue: List[QueuedEvolution] = []
         self.in_progress: Optional[str] = None
+        self.failed: Dict[str, str] = {}  # tool_name -> error_message
         self._load()
     
     def add(self, evolution: 'QueuedEvolution'):
@@ -81,6 +82,7 @@ class EvolutionQueue:
         self.queue = [e for e in self.queue if e.tool_name != tool_name]
         if self.in_progress == tool_name:
             self.in_progress = None
+        self.failed[tool_name] = error
         self._save()
     
     def get_queue_status(self) -> Dict[str, Any]:
@@ -97,6 +99,7 @@ class EvolutionQueue:
         """Clear entire queue."""
         self.queue = []
         self.in_progress = None
+        self.failed = {}
         self._save()
     
     def _calculate_priority(self, scores: Dict[str, float]) -> float:
@@ -119,16 +122,19 @@ class EvolutionQueue:
                 data = json.loads(self.storage_path.read_text())
                 self.queue = [QueuedEvolution(**e) for e in data.get('queue', [])]
                 self.in_progress = data.get('in_progress')
+                self.failed = data.get('failed', {})
             except Exception as e:
                 print(f"Failed to load evolution queue: {e}")
                 self.queue = []
                 self.in_progress = None
+                self.failed = {}
     
     def _save(self):
         """Save queue to storage."""
         data = {
             'queue': [asdict(e) for e in self.queue],
             'in_progress': self.in_progress,
+            'failed': self.failed,
             'last_updated': time.time()
         }
         self.storage_path.write_text(json.dumps(data, indent=2))

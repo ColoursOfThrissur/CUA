@@ -14,6 +14,7 @@ import PendingEvolutionsOverlay from './components/PendingEvolutionsOverlay';
 import SelfImprovementLog from './components/SelfImprovementLog';
 import TaskManagerPanel from './components/TaskManagerPanel';
 import PendingToolsPanel from './components/PendingToolsPanel';
+import PendingSkillsPanel from './components/PendingSkillsPanel';
 import ToolRegistryPanel from './components/ToolRegistryPanel';
 import AutoEvolutionPanel from './components/AutoEvolutionPanel';
 import CodePreviewModal from './components/CodePreviewModal';
@@ -70,7 +71,11 @@ function AppContent() {
         setAvailableModels(data.available_models || {});
         setCurrentModel(data.current_model || 'mistral:latest');
       })
-      .catch(err => console.error('Failed to load models:', err));
+      .catch(err => {
+        console.error('Failed to load models:', err);
+        setAvailableModels({});
+        setCurrentModel('mistral:latest');
+      });
     
     // Listen for overlay open events from Header
     const handleOpenOverlay = (e) => {
@@ -78,6 +83,25 @@ function AppContent() {
     };
     window.addEventListener('openOverlay', handleOpenOverlay);
     return () => window.removeEventListener('openOverlay', handleOpenOverlay);
+  }, []);
+
+  useEffect(() => {
+    // Fetch skills
+    fetch(`${API_URL}/skills/list`)
+      .then(res => res.json())
+      .then(data => {
+        globalState.updateState({
+          skillCatalog: data.skills || [],
+          skillCategories: data.categories || {}
+        });
+      })
+      .catch(err => {
+        console.error('Failed to load skills:', err);
+        globalState.updateState({
+          skillCatalog: [],
+          skillCategories: {}
+        });
+      });
   }, []);
 
   const handleClearLogs = async () => {
@@ -423,7 +447,10 @@ function AppContent() {
           content: data.response,
           timestamp: new Date().toLocaleTimeString(),
           components: data.execution_result?.components || null,
-          execution_result: data.execution_result || null
+          execution_result: data.execution_result || null,
+          skill: data.execution_result?.selected_skill || null,
+          category: data.execution_result?.selected_category || null,
+          ui_renderer: data.execution_result?.ui_renderer || null
         };
         setMessages(prev => [...prev, assistantMsg]);
       }
@@ -487,6 +514,8 @@ function AppContent() {
           />;
         }
         return null;
+      case 'pending-skills':
+        return <PendingSkillsPanel />;
       case 'registry':
         return <ToolRegistryPanel apiUrl={API_URL} />;
       case 'sync':
@@ -519,6 +548,7 @@ function AppContent() {
       logs: 'Activity Logs',
       tasks: 'Active Tasks',
       pending: activeMode === 'tools' ? 'Pending Tools' : 'Pending Evolutions',
+      'pending-skills': 'Pending Skills',
       registry: 'Tool Registry',
       sync: 'Tool Registry',
       quality: 'Quality Dashboard',
@@ -589,6 +619,7 @@ function AppContent() {
             messages={messages}
             onSendMessage={handleSendMessage}
             isProcessing={isProcessing}
+            skills={globalState.skillCatalog || []}
             onFloatingAction={handleFloatingAction}
             onModeChange={setActiveMode}
             loopStatus={{

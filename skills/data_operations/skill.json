@@ -1,0 +1,38 @@
+{
+  "name": "data_operations",
+  "category": "data",
+  "description": "Data transformation, API calls, database queries, and structured data processing.",
+  "trigger_examples": [
+    "make an API call to",
+    "query this database",
+    "parse this JSON",
+    "transform this data",
+    "fetch data from API",
+    "convert JSON to",
+    "execute SQL query"
+  ],
+  "preferred_tools": [
+    "HTTPTool",
+    "JSONTool",
+    "DatabaseQueryTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "url",
+    "json_data",
+    "sql_query",
+    "api_endpoint",
+    "data_structure"
+  ],
+  "output_types": [
+    "api_response",
+    "query_result",
+    "transformed_data",
+    "json_structure"
+  ],
+  "verification_mode": "output_validation",
+  "risk_level": "medium",
+  "ui_renderer": "data_result",
+  "fallback_strategy": "direct_tool_routing"
+}

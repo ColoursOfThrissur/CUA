@@ -62,6 +62,7 @@ class ToolOrchestrator:
         operation: str,
         parameters: Optional[Dict[str, Any]],
         context: Optional[Dict[str, Any]] = None,
+        execution_context: Optional[Any] = None,
     ) -> OrchestratedToolResult:
         start_time = time.time()
         resolution = resolve_tool_parameters(tool, operation, parameters, context=context)
@@ -123,6 +124,19 @@ class ToolOrchestrator:
                 parameters=resolution.resolved_parameters,
                 output_data=None
             )
+            
+            # Update execution context if provided
+            if execution_context:
+                execution_context.add_error(tool_name, f"Circuit breaker OPEN: {str(e)}", 0)
+                if execution_context.should_fallback():
+                    execution_context.warnings.append(f"Circuit breaker open for {tool_name}, fallback available")
+            
+            # Validate output even in error scenarios
+            if execution_context and hasattr(execution_context, 'verification_mode'):
+                validation_error = self._validate_output(None, execution_context)
+                if validation_error:
+                    execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", 0)
+            
             return OrchestratedToolResult(
                 success=False,
                 data=None,
@@ -147,6 +161,17 @@ class ToolOrchestrator:
                 parameters=resolution.resolved_parameters,
                 output_data=None
             )
+            
+            # Update execution context if provided
+            if execution_context:
+                execution_context.add_error(tool_name, str(e), execution_context.retry_count)
+            
+            # Validate output even in error scenarios
+            if execution_context and hasattr(execution_context, 'verification_mode'):
+                validation_error = self._validate_output(None, execution_context)
+                if validation_error:
+                    execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", execution_context.retry_count)
+            
             # Thin tools raise exceptions for errors - wrap them
             from tools.tool_result import ToolResult, ResultStatus
             return OrchestratedToolResult(
@@ -177,6 +202,31 @@ class ToolOrchestrator:
         success, data, error = self._normalize_result(raw_result)
         artifacts = self._extract_artifacts(data)
         
+        # Validate output against skill context if provided (ALL PATHS)
+        if execution_context and hasattr(execution_context, 'verification_mode'):
+            validation_error = self._validate_output(data, execution_context)
+            if validation_error:
+                # Validation failed - trigger recovery logic
+                execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", execution_context.retry_count)
+                
+                # Check if we should retry or fallback
+                if execution_context.should_retry():
+                    execution_context.retry_count += 1
+                    execution_context.warnings.append(f"Retrying due to validation failure (attempt {execution_context.retry_count})")
+                    success = False
+                    error = f"Output validation failed: {validation_error} (will retry)"
+                elif execution_context.should_fallback():
+                    fallback_tool = execution_context.fallback_tools[0] if execution_context.fallback_tools else None
+                    if fallback_tool:
+                        execution_context.warnings.append(f"Switching to {fallback_tool} due to validation failure")
+                        execution_context.selected_tool = fallback_tool
+                    success = False
+                    error = f"Output validation failed: {validation_error} (will fallback)"
+                else:
+                    # No recovery options - mark as failed
+                    success = False
+                    error = f"Output validation failed: {validation_error}"
+        
         # Log successful execution
         execution_time_ms = (time.time() - start_time) * 1000
         self._execution_logger.log_execution(
@@ -188,6 +238,18 @@ class ToolOrchestrator:
             parameters=resolution.resolved_parameters,
             output_data=data
         )
+        
+        # Update execution context if provided
+        if execution_context:
+            execution_context.add_step(
+                tool=tool_name,
+                operation=operation,
+                status="success" if success else "failure",
+                duration=execution_time_ms / 1000.0,
+                result=data
+            )
+            if success:
+                execution_context.partial_results.append(data)
         
         return OrchestratedToolResult(
             success=success,
@@ -287,3 +349,72 @@ class ToolOrchestrator:
                 if isinstance(item, str):
                     artifacts.append({"type": "file_ref", "key": "files", "path": item})
         return artifacts
+    
+    def _validate_output(self, data: Any, execution_context: Any) -> Optional[str]:
+        """Validate output against skill verification_mode (enhanced for all paths)."""
+        verification_mode = getattr(execution_context, 'verification_mode', None)
+        expected_output_types = getattr(execution_context, 'expected_output_types', [])
+        
+        if not verification_mode:
+            return None
+        
+        # Handle None/empty data (error scenarios)
+        if data is None:
+            if verification_mode in ["source_backed", "side_effect_observed"]:
+                return f"No output data for {verification_mode} verification mode"
+            return None
+        
+        if not isinstance(data, dict):
+            # For non-dict outputs, only validate if strict verification required
+            if verification_mode == "source_backed":
+                return "Output must be dict with 'sources' field for source_backed verification"
+            elif verification_mode == "side_effect_observed":
+                return "Output must be dict with 'file_path' or 'path' field for side_effect_observed verification"
+            return None
+        
+        # Validate based on verification mode
+        if verification_mode == "source_backed":
+            # For source_backed, we need either:
+            # 1. Direct sources field, OR
+            # 2. URL field (indicating content was fetched from a source)
+            has_sources = "sources" in data and data["sources"]
+            has_url = "url" in data and data["url"]
+            has_content = "summary" in data or "content" in data or "text" in data
+            
+            if not (has_sources or has_url):
+                return "Output missing 'sources' field or 'url' field for source_backed verification"
+            if not has_content:
+                return "Output missing 'summary', 'content', or 'text' field for source_backed verification"
+        
+        elif verification_mode == "side_effect_observed":
+            if "file_path" not in data and "path" not in data:
+                return "Output missing required 'file_path' or 'path' field for side_effect_observed verification"
+        
+        # Validate expected_output_types if specified
+        if expected_output_types:
+            output_keys = set(data.keys())
+            type_indicators = {
+                "research_summary": ["sources", "summary", "content", "text", "url"],
+                "page_summary": ["content", "url", "title", "summary", "text"],
+                "structured_extraction": ["extracted_data", "findings", "data", "content", "summary"],
+                "source_comparison": ["sources", "comparison", "analysis", "content"],
+                "file_list": ["files", "paths", "items"],
+                "execution_result": ["output", "result", "status"],
+                "code_summary": ["code", "analysis", "summary"],
+                "change_summary": ["changes", "diff", "modifications"],
+                "diff_result": ["diff", "patch", "changes"],
+                "validation_result": ["valid", "errors", "warnings"],
+                "test_result": ["passed", "failed", "tests", "results"]
+            }
+            
+            matched = False
+            for expected_type in expected_output_types:
+                indicators = type_indicators.get(expected_type, [])
+                if any(ind in output_keys for ind in indicators):
+                    matched = True
+                    break
+            
+            if not matched and expected_output_types:
+                return f"Output type doesn't match expected types: {expected_output_types}. Found keys: {list(output_keys)}"
+        
+        return None

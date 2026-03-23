@@ -72,16 +72,13 @@ class ImmutableBrainStem:
         except Exception:
             return {}
     
-    # CRITICAL: Precomputed checksum - MUST be set before deployment
-    # Generate with: python -c "import hashlib; print(hashlib.sha256(open('core/immutable_brain_stem.py','rb').read()).hexdigest())"
-    _EXPECTED_CHECKSUM = "REPLACE_WITH_ACTUAL_CHECKSUM_BEFORE_PRODUCTION"
-    
     def __init__(self):
-        """Verify integrity on initialization"""
-        # Skip integrity check in development mode
-        # if not self._verify_integrity():
-        #     raise RuntimeError("CRITICAL: BrainStem integrity check FAILED - possible tampering detected")
-        
+        """Verify integrity on initialization using a sidecar checksum file."""
+        status = self._evaluate_integrity()
+        object.__setattr__(self, "_integrity_status", status)
+        if status["enforced"] and not status["valid"]:
+            raise RuntimeError(f"CRITICAL: BrainStem integrity check failed: {status['reason']}")
+
         # Make attributes immutable
         object.__setattr__(self, '_initialized', True)
     
@@ -91,32 +88,72 @@ class ImmutableBrainStem:
             raise RuntimeError("BrainStem is immutable - cannot modify attributes")
         object.__setattr__(self, name, value)
     
+    @staticmethod
+    def _get_checksum_file() -> Path:
+        from core.config_manager import get_config
+        return Path(get_config().security.brainstem_checksum_file)
+
+    @classmethod
+    def _calculate_checksum(cls, file_path: Optional[str] = None) -> str:
+        target = file_path or __file__
+        with open(target, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    @classmethod
+    def _load_expected_checksum(cls) -> Optional[str]:
+        checksum_file = cls._get_checksum_file()
+        if not checksum_file.exists():
+            return None
+        checksum = checksum_file.read_text(encoding="utf-8").strip()
+        return checksum or None
+
+    @classmethod
+    def _evaluate_integrity(cls) -> Dict[str, Any]:
+        """Evaluate integrity against the configured sidecar checksum."""
+        try:
+            from core.config_manager import get_config
+
+            config = get_config().security
+            expected = cls._load_expected_checksum()
+            current = cls._calculate_checksum()
+            enforced = bool(config.enforce_brainstem_integrity)
+
+            if not expected:
+                return {
+                    "valid": not enforced,
+                    "configured": False,
+                    "enforced": enforced,
+                    "reason": "Checksum file missing",
+                    "expected_checksum": None,
+                    "current_checksum": current,
+                }
+
+            is_valid = current == expected
+            return {
+                "valid": is_valid,
+                "configured": True,
+                "enforced": enforced,
+                "reason": "ok" if is_valid else "Checksum mismatch",
+                "expected_checksum": expected,
+                "current_checksum": current,
+            }
+        except Exception as e:
+            return {
+                "valid": False,
+                "configured": False,
+                "enforced": False,
+                "reason": f"Integrity evaluation error: {e}",
+                "expected_checksum": None,
+                "current_checksum": None,
+            }
+
     @classmethod
     def _verify_integrity(cls) -> bool:
-        """Verify file hasn't been tampered with (excluding checksum line)"""
-        try:
-            # Calculate checksum of this file, excluding the checksum line itself
-            current_file = __file__
-            with open(current_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                # Exclude the line containing _EXPECTED_CHECKSUM
-                filtered_lines = [line for line in lines if '_EXPECTED_CHECKSUM' not in line]
-                content = ''.join(filtered_lines).encode('utf-8')
-                checksum = hashlib.sha256(content).hexdigest()
-            
-            # CRITICAL: Fail if checksum not set
-            if cls._EXPECTED_CHECKSUM == "REPLACE_WITH_ACTUAL_CHECKSUM_BEFORE_PRODUCTION":
-                raise RuntimeError("CRITICAL: BrainStem checksum not provisioned - cannot run in production")
-            
-            # Verify checksum matches
-            if checksum != cls._EXPECTED_CHECKSUM:
-                raise RuntimeError(f"CRITICAL: BrainStem integrity violation! Expected: {cls._EXPECTED_CHECKSUM}, Got: {checksum}")
-            
-            return True
-            
-        except Exception as e:
-            print(f"CRITICAL: Integrity check failed: {e}")
-            return False
+        return bool(cls._evaluate_integrity()["valid"])
+
+    @classmethod
+    def get_integrity_status(cls) -> Dict[str, Any]:
+        return dict(cls._evaluate_integrity())
     
     @staticmethod
     def validate_path(path: str) -> ValidationResult:

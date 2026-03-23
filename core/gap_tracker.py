@@ -16,6 +16,14 @@ class GapRecord:
     confidence_avg: float
     reasons: List[str]
     suggested_library: str = None
+    gap_type: str = "missing_capability"
+    suggested_action: str = "create_tool"
+    selected_skill: str = None
+    selected_category: str = None
+    fallback_mode: str = None
+    target_tool: str = None
+    example_tasks: List[str] = None
+    example_errors: List[str] = None
 
 class GapTracker:
     def __init__(self, data_file: str = "data/capability_gaps.json"):
@@ -36,6 +44,16 @@ class GapTracker:
             record.confidence_avg = (record.confidence_avg * (record.occurrence_count - 1) + gap.confidence) / record.occurrence_count
             if gap.reason not in record.reasons:
                 record.reasons.append(gap.reason)
+            if getattr(gap, "example_task", None):
+                record.example_tasks = record.example_tasks or []
+                if gap.example_task not in record.example_tasks:
+                    record.example_tasks.append(gap.example_task)
+                    record.example_tasks = record.example_tasks[-5:]
+            if getattr(gap, "example_error", None):
+                record.example_errors = record.example_errors or []
+                if gap.example_error not in record.example_errors:
+                    record.example_errors.append(gap.example_error)
+                    record.example_errors = record.example_errors[-5:]
         else:
             # Create new
             self.gaps[gap.capability] = GapRecord(
@@ -45,8 +63,28 @@ class GapTracker:
                 occurrence_count=1,
                 confidence_avg=gap.confidence,
                 reasons=[gap.reason],
-                suggested_library=gap.suggested_library
+                suggested_library=gap.suggested_library,
+                gap_type=getattr(gap, "gap_type", "missing_capability"),
+                suggested_action=getattr(gap, "suggested_action", "create_tool"),
+                selected_skill=getattr(gap, "selected_skill", None),
+                selected_category=getattr(gap, "selected_category", None),
+                fallback_mode=getattr(gap, "fallback_mode", None),
+                target_tool=getattr(gap, "target_tool", None),
+                example_tasks=[gap.example_task] if getattr(gap, "example_task", None) else [],
+                example_errors=[gap.example_error] if getattr(gap, "example_error", None) else [],
             )
+        if getattr(gap, "gap_type", None):
+            self.gaps[gap.capability].gap_type = gap.gap_type
+        if getattr(gap, "suggested_action", None):
+            self.gaps[gap.capability].suggested_action = gap.suggested_action
+        if getattr(gap, "selected_skill", None):
+            self.gaps[gap.capability].selected_skill = gap.selected_skill
+        if getattr(gap, "selected_category", None):
+            self.gaps[gap.capability].selected_category = gap.selected_category
+        if getattr(gap, "fallback_mode", None):
+            self.gaps[gap.capability].fallback_mode = gap.fallback_mode
+        if getattr(gap, "target_tool", None):
+            self.gaps[gap.capability].target_tool = gap.target_tool
         
         self._save()
     
@@ -70,6 +108,18 @@ class GapTracker:
             gap for gap in self.gaps.values()
             if gap.occurrence_count >= 3 and gap.confidence_avg >= 0.7
         ]
+
+    def get_prioritized_gaps(self) -> List[GapRecord]:
+        """Get actionable gaps ordered by impact."""
+        prioritized = self.get_actionable_gaps()
+        prioritized.sort(
+            key=lambda gap: (
+                gap.occurrence_count * (gap.confidence_avg or 0.0),
+                1 if gap.suggested_action == "create_tool" else 0,
+            ),
+            reverse=True,
+        )
+        return prioritized
     
     def clear_gap(self, capability: str):
         """Clear a gap (e.g., after tool is created)"""
@@ -89,7 +139,13 @@ class GapTracker:
                     "capability": gap.capability,
                     "occurrences": gap.occurrence_count,
                     "confidence": round(gap.confidence_avg, 2),
-                    "suggested_library": gap.suggested_library
+                    "suggested_library": gap.suggested_library,
+                    "gap_type": gap.gap_type,
+                    "suggested_action": gap.suggested_action,
+                    "selected_skill": gap.selected_skill,
+                    "selected_category": gap.selected_category,
+                    "example_tasks": gap.example_tasks or [],
+                    "example_errors": gap.example_errors or [],
                 }
                 for gap in sorted(self.gaps.values(), key=lambda x: x.occurrence_count, reverse=True)
             ]

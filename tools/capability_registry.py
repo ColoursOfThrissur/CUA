@@ -13,6 +13,7 @@ class CapabilityRegistry:
         self._tools: Dict[str, BaseTool] = {}
         self._capabilities: Dict[str, ToolCapability] = {}
         self._tool_by_capability: Dict[str, str] = {}
+        self._qualified_capabilities: Dict[str, ToolCapability] = {}
         self._performance_history: Dict[str, List[ToolResult]] = {}
         self._orchestrator = None
     
@@ -30,6 +31,7 @@ class CapabilityRegistry:
         for cap_name, capability in tool.get_capabilities().items():
             self._capabilities[cap_name] = capability
             self._tool_by_capability[cap_name] = tool_name
+            self._qualified_capabilities[f"{tool_name}.{cap_name}"] = capability
             self._performance_history[cap_name] = []
 
     def unregister_tool(self, tool_name: str) -> bool:
@@ -46,6 +48,7 @@ class CapabilityRegistry:
             self._tool_by_capability.pop(cap_name, None)
             self._capabilities.pop(cap_name, None)
             self._performance_history.pop(cap_name, None)
+            self._qualified_capabilities.pop(f"{tool_name}.{cap_name}", None)
 
         self._tools.pop(tool_name, None)
         return True
@@ -121,6 +124,54 @@ class CapabilityRegistry:
         )
 
         self._performance_history[capability_name].append(result)
+        return result
+
+    def execute_tool_capability(self, target_tool_name: str, capability_name: str, **kwargs) -> ToolResult:
+        """Execute a capability against an explicit tool to avoid name collisions."""
+        import time
+
+        tool = self.get_tool_by_name(target_tool_name)
+        if tool is None:
+            return ToolResult(
+                tool_name="Registry",
+                capability_name=capability_name,
+                status=ResultStatus.FAILURE,
+                error_message=f"Tool '{target_tool_name}' not found",
+            )
+
+        capabilities = tool.get_capabilities() or {}
+        if capability_name not in capabilities:
+            return ToolResult(
+                tool_name=target_tool_name,
+                capability_name=capability_name,
+                status=ResultStatus.FAILURE,
+                error_message=f"Capability '{capability_name}' not found on tool '{target_tool_name}'",
+            )
+
+        start_time = time.time()
+        if self._orchestrator is None:
+            from core.tool_orchestrator import ToolOrchestrator
+            self._orchestrator = ToolOrchestrator(registry=self)
+
+        orchestration = self._orchestrator.execute_tool_step(
+            tool=tool,
+            tool_name=target_tool_name,
+            operation=capability_name,
+            parameters=kwargs,
+            context={},
+        )
+
+        execution_time = time.time() - start_time
+        result = ToolResult(
+            tool_name=target_tool_name,
+            capability_name=capability_name,
+            status=ResultStatus.SUCCESS if orchestration.success else ResultStatus.FAILURE,
+            data=orchestration.data,
+            error_message=orchestration.error,
+            execution_time=execution_time,
+        )
+        qualified_key = f"{target_tool_name}.{capability_name}"
+        self._performance_history.setdefault(qualified_key, []).append(result)
         return result
     
     def get_capability_performance(self, capability_name: str) -> Dict:

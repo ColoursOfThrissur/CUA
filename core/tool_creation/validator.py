@@ -1,10 +1,13 @@
 """
-Tool code validator - Comprehensive AST-based validation
+Tool code validator - Comprehensive AST-based validation with service pattern validation
 """
 import ast
 import logging
 from typing import Optional, Tuple, Dict, List, Set
+from core.architecture_contract import validate_architecture_contract
 from core.enhanced_code_validator import EnhancedCodeValidator
+from core.service_validation import validate_tool_service_patterns
+from core.skills.models import SkillDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +18,29 @@ class ToolValidator:
     def __init__(self):
         self.enhanced_validator = EnhancedCodeValidator()
     
-    def validate(self, code: str, tool_spec: dict) -> Tuple[bool, str]:
-        """Validate generated tool code with comprehensive checks"""
+    def validate(self, code: str, tool_spec: dict, skill_definition: Optional[SkillDefinition] = None) -> Tuple[bool, str]:
+        """Validate generated tool code with comprehensive checks including service patterns"""
+        contract_ok, contract_error = validate_architecture_contract(tool_spec or {})
+        if not contract_ok:
+            return False, self._format_error("Architecture contract", contract_error, code)
+
         expected_class = self._class_name(tool_spec['name'])
         
         # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
         is_valid, error = self.enhanced_validator.validate(code, expected_class)
         if not is_valid:
             return False, self._format_error("Enhanced validation", error, code)
+        
+        # 0.5. Service pattern validation (NEW)
+        if skill_definition:
+            service_result = validate_tool_service_patterns(code, skill_definition)
+            if not service_result.valid:
+                error_msg = "; ".join(service_result.errors)
+                return False, self._format_error("Service validation", error_msg, code)
+            
+            # Log warnings but don't fail validation
+            if service_result.warnings:
+                logger.warning(f"Service validation warnings: {'; '.join(service_result.warnings)}")
         
         try:
             tree = ast.parse(code)
@@ -390,6 +408,7 @@ class ToolValidator:
             "Mutable defaults": "Replace mutable default with None, then assign in method body",
             "Relative paths": "Use absolute paths like 'data/tool_name/' instead of './'",
             "Undefined helpers": "Define the helper method or remove the call",
+            "Service validation": "Ensure tool uses appropriate self.services.X patterns for skill domain",
         }
         return suggestions.get(category, "Review the error and fix the code")
     

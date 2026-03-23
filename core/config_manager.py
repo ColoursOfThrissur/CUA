@@ -10,6 +10,8 @@ class SecurityConfig(BaseModel):
     max_file_size_mb: int = Field(default=1, ge=1)
     max_plan_steps: int = Field(default=20, ge=1, le=100)
     allowed_roots: List[str] = Field(default=[".", "./output", "./workspace", "./temp"])
+    enforce_brainstem_integrity: bool = False
+    brainstem_checksum_file: str = Field(default="config/immutable_brain_stem.sha256")
     storage_mode: str = Field(default="workspace_only")
     allowed_external_roots: List[str] = Field(default=[])
     blocked_paths: List[str] = Field(default=[
@@ -125,6 +127,8 @@ class Config(BaseModel):
                 config.security.max_file_writes = int(max_writes)
             except ValueError:
                 pass
+        if enforce_integrity := os.getenv("CUA_ENFORCE_BRAINSTEM_INTEGRITY"):
+            config.security.enforce_brainstem_integrity = enforce_integrity.strip().lower() in {"1", "true", "yes", "on"}
         if ollama_url := os.getenv("OLLAMA_URL"):
             config.llm.ollama_url = ollama_url
         

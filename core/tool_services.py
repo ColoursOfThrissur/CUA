@@ -45,6 +45,11 @@ class BrowserService:
     def open_browser(self):
         """Open Brave browser."""
         if self.driver:
+            try:
+                if getattr(self.driver, "window_handles", None):
+                    self.driver.switch_to.window(self.driver.window_handles[0])
+            except Exception:
+                pass
             return self.driver
         
         try:
@@ -68,12 +73,16 @@ class BrowserService:
         if not self.driver:
             self.open_browser()
         try:
+            if getattr(self.driver, "window_handles", None):
+                self.driver.switch_to.window(self.driver.window_handles[0])
             self.driver.get(url)
         except Exception as e:
             # Session lost, reopen browser
             if 'invalid session id' in str(e).lower():
                 self.driver = None
                 self.open_browser()
+                if getattr(self.driver, "window_handles", None):
+                    self.driver.switch_to.window(self.driver.window_handles[0])
                 self.driver.get(url)
             else:
                 raise
@@ -104,6 +113,39 @@ class BrowserService:
         try:
             from selenium.webdriver.common.by import By
             return self.driver.find_element(By.TAG_NAME, 'body').text
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost. Please open browser again.")
+            raise
+
+    def get_current_url(self) -> str:
+        """Get current browser URL."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        try:
+            return self.driver.current_url
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost. Please open browser again.")
+            raise
+
+    def get_page_title(self) -> str:
+        """Get current page title."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        try:
+            return self.driver.title
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost. Please open browser again.")
+            raise
+
+    def get_page_source(self) -> str:
+        """Get current page HTML source."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        try:
+            return self.driver.page_source
         except Exception as e:
             if 'invalid session id' in str(e).lower():
                 raise RuntimeError("Browser session lost. Please open browser again.")

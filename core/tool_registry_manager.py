@@ -11,6 +11,16 @@ from typing import Dict, List, Optional
 
 class ToolRegistryManager:
     """Manages centralized tool registry with LLM-powered discovery"""
+
+    DISABLED_TOOLS = {
+        "LocalRunNoteTool",
+        "TaskBreakdownTool",
+        "ExecutionPlanEvaluatorTool",
+        "IntentClassifierTool",
+        "SystemIntrospectionTool",
+        "UserApprovalGateTool",
+        "WorkflowAutomationTool",
+    }
     
     def __init__(self, registry_path: str = "data/tool_registry.json", tools_dir: str = "tools"):
         self.registry_path = Path(registry_path)
@@ -103,7 +113,15 @@ Respond with only valid JSON."""
             return {"tools": {}, "last_sync": None}
         
         with open(self.registry_path, 'r') as f:
-            return json.load(f)
+            registry = json.load(f)
+
+        if "tools" in registry:
+            registry["tools"] = {
+                name: meta
+                for name, meta in registry["tools"].items()
+                if name not in self.DISABLED_TOOLS
+            }
+        return registry
     
     def get_tool_info(self, tool_name: str) -> Optional[Dict]:
         """Get info for specific tool"""
@@ -155,6 +173,8 @@ Respond with only valid JSON."""
 
         tool_name = (tool_data.get("name") or "").strip()
         if not tool_name:
+            return False
+        if tool_name in self.DISABLED_TOOLS:
             return False
 
         registry = self.get_registry()

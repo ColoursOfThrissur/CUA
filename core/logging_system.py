@@ -24,23 +24,37 @@ class StructuredLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(exist_ok=True)
         self.service_name = service_name
-        
-        # Setup file handler
-        log_file = self.log_dir / f"{service_name}.log"
-        self.file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        self.file_handler.setLevel(logging.DEBUG)
-        
+
         # Setup console handler for immediate feedback
         self.console_handler = logging.StreamHandler(sys.stdout)
         self.console_handler.setLevel(logging.INFO)
-        
+
         # Setup logger
         self.logger = logging.getLogger(service_name)
         self.logger.setLevel(logging.DEBUG)
         self.logger.handlers.clear()
-        self.logger.addHandler(self.file_handler)
         self.logger.addHandler(self.console_handler)
         self.logger.propagate = False
+        self.file_handler = None
+
+        # Setup file handler with graceful fallback in restricted environments.
+        log_file = self.log_dir / f"{service_name}.log"
+        try:
+            self.file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            self.file_handler.setLevel(logging.DEBUG)
+            self.logger.addHandler(self.file_handler)
+        except OSError:
+            self.logger.warning(
+                json.dumps(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "service": self.service_name,
+                        "level": LogLevel.WARNING.value,
+                        "message": "file_logging_disabled",
+                        "log_file": str(log_file),
+                    }
+                )
+            )
     
     def _log(self, level: LogLevel, message: str, **context):
         """Write structured log with current timestamp"""

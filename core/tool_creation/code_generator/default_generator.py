@@ -13,7 +13,7 @@ class DefaultCodeGenerator(BaseCodeGenerator):
     """Single-shot code generation for standard LLMs"""
     
     def generate(self, template: str, tool_spec: dict) -> Optional[str]:
-        """Generate tool code in single LLM call"""
+        """Generate tool code in single LLM call with skill-aware enhancement"""
         prompt_spec = self._build_prompt_spec(tool_spec)
         prompt_spec_json = json.dumps(prompt_spec, indent=2)
         operation_contract = self._build_operation_contract(prompt_spec)
@@ -21,7 +21,7 @@ class DefaultCodeGenerator(BaseCodeGenerator):
         class_name = self._class_name(tool_spec['name'])
         tool_name = tool_spec['name']
         
-        prompt = f"""Fill in the logic for this tool template:
+        base_prompt = f"""Fill in the logic for this tool template:
 
 {template}
 
@@ -43,7 +43,29 @@ Hard requirements:
 
 Return only complete Python code with register_capabilities and execute methods implemented.
 """
-        return self._generate_with_validation(prompt, tool_spec, attempts=3, temperature=0.2)
+        
+        # Enhance prompt with skill constraints if available
+        enhanced_prompt = base_prompt
+        if tool_spec.get("target_skill"):
+            try:
+                from core.skill_aware_creation import enhance_tool_creation_with_skill
+                from core.skills.registry import SkillRegistry
+                
+                # Get skill definition for enhancement
+                skill_registry = SkillRegistry()
+                skill_registry.load_all()
+                skill_def = skill_registry.get(tool_spec["target_skill"])
+                
+                if skill_def:
+                    enhanced_prompt = enhance_tool_creation_with_skill(
+                        base_prompt, skill_def, tool_spec.get("domain", ""), "code"
+                    )
+                    logger.info(f"Enhanced code generation with {skill_def.name} skill constraints")
+            except Exception as e:
+                logger.warning(f"Failed to enhance code generation with skill constraints: {e}")
+                # Continue with base prompt
+        
+        return self._generate_with_validation(enhanced_prompt, tool_spec, attempts=3, temperature=0.2)
     
     def _generate_with_validation(self, prompt: str, tool_spec: dict, attempts: int, temperature: float) -> Optional[str]:
         """Generate with validation loop"""

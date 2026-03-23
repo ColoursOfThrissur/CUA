@@ -1,0 +1,34 @@
+{
+  "name": "web_research",
+  "category": "web",
+  "description": "Research, summarize, compare, and extract information from web sources.",
+  "trigger_examples": [
+    "research this topic on the web",
+    "compare these sources",
+    "summarize this web page",
+    "extract information from this website",
+    "gather findings from multiple pages"
+  ],
+  "preferred_tools": [
+    "WebAccessTool",
+    "ContextSummarizerTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "url",
+    "topic",
+    "query",
+    "source_list"
+  ],
+  "output_types": [
+    "research_summary",
+    "source_comparison",
+    "structured_extraction",
+    "page_summary"
+  ],
+  "verification_mode": "source_backed",
+  "risk_level": "medium",
+  "ui_renderer": "research_summary",
+  "fallback_strategy": "direct_tool_routing"
+}

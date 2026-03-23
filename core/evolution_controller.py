@@ -38,7 +38,7 @@ class EvolutionController:
     - Self-reflect strategically (Gap analysis)
     """
     
-    def __init__(self, llm_client, orchestrator=None, registry=None):
+    def __init__(self, llm_client, orchestrator=None, registry=None, skill_registry=None):
         # Evolution components
         self.capability_graph = CapabilityGraph()
         self.growth_budget = GrowthBudget()
@@ -50,10 +50,13 @@ class EvolutionController:
         # Store orchestrator and registry for tool creation
         self.orchestrator = orchestrator
         self.registry = registry
+        self.skill_registry = skill_registry
         
         self.tool_creation = ToolCreationOrchestrator(
             self.capability_graph,
-            self.expansion_mode
+            self.expansion_mode,
+            skill_registry=skill_registry,
+            llm_client=llm_client
         )
         
         # Security backbone (preserved)

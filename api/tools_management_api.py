@@ -1,5 +1,5 @@
 """API endpoints for tools management page."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from typing import Dict, List
 from pathlib import Path
 
@@ -13,8 +13,16 @@ exec_logger = get_execution_logger()
 llm_analyzer = LLMToolHealthAnalyzer()
 
 
+def add_cors_headers(response: Response):
+    """Add CORS headers to response"""
+    response.headers["Access-Control-Allow-Origin"] = "https://exquisite-quokka-08aa49.netlify.app"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 @router.get("/tools-management/summary")
-async def get_tools_summary() -> Dict:
+async def get_tools_summary(response: Response) -> Dict:
     """Get summary stats for all tools."""
     try:
         # Get all tool files
@@ -65,7 +73,7 @@ async def get_tools_summary() -> Dict:
             else:
                 unknown += 1
         
-        return {
+        result = {
             "total_tools": len(all_tool_files),
             "healthy_tools": healthy,
             "monitor_tools": monitor,
@@ -75,12 +83,15 @@ async def get_tools_summary() -> Dict:
             "tools_with_errors": tools_with_errors,
             "total_executions": total_executions
         }
+        
+        add_cors_headers(response)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tools-management/list")
-async def get_tools_list(status_filter: str = None) -> List[Dict]:
+async def get_tools_list(response: Response, status_filter: str = None) -> List[Dict]:
     """Get list of all tools with health info."""
     try:
         # Get all tool files
@@ -135,6 +146,7 @@ async def get_tools_list(status_filter: str = None) -> List[Dict]:
         # Sort: errors first, then by health score
         tools.sort(key=lambda t: (not t["has_recent_errors"], -t["health_score"]))
         
+        add_cors_headers(response)
         return tools
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

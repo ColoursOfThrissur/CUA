@@ -5,6 +5,8 @@ import logging
 import re
 from typing import Optional, Any, List
 
+from core.architecture_contract import enrich_contract_from_skill_context, validate_architecture_contract
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,8 +21,35 @@ class SpecGenerator:
         gap_description: str,
         llm_client,
         preferred_tool_name: Optional[str] = None,
+        skill_context: Optional[dict] = None,
     ) -> Optional[dict]:
         """LLM proposes tool specification with fixed fallback logic"""
+        # VALIDATION: Filter out invalid capability gaps
+        if gap_description.startswith("skill:"):
+            logger.warning(f"Rejecting skill routing gap as tool creation target: {gap_description}")
+            return None
+        
+        if skill_context:
+            gap_type = skill_context.get("gap_type", "")
+            suggested_action = skill_context.get("suggested_action", "")
+            
+            # Allow skill routing issues if they can be resolved with self.services.X patterns
+            if gap_type == "no_matching_skill" and skill_context:
+                logger.info(f"Resolving skill routing issue with self.services.X patterns: {gap_description}")
+                # Add logic to include self.services.X dependencies
+                skill_context['required_tools'] = skill_context.get('required_tools', []) + ['routing_service']
+                return self._generate_tool_spec_with_services(gap_description, skill_context)
+
+            # Reject other invalid gaps
+            if gap_type in ["actionable_request_no_tool_call"]:
+                logger.warning(f"Rejecting skill routing issue (gap_type={gap_type}) as tool creation target")
+                return None
+            
+            # Reject if suggested action is not tool creation
+            if suggested_action and suggested_action != "create_tool":
+                logger.warning(f"Rejecting gap with suggested_action={suggested_action} (not create_tool)")
+                return None
+        
         # Dynamically get valid parameter types from ParameterType enum
         from tools.tool_capability import ParameterType
         valid_types = [pt.value for pt in ParameterType]
@@ -29,15 +58,15 @@ class SpecGenerator:
         # Dynamically get available services from dependency checker with method signatures
         from core.dependency_checker import DependencyChecker
         service_specs = {
-            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id), exists(id)',
+            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id), exists(id) - Key-value store: each item needs unique ID',
             'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
             'http': 'get(url), post(url, data), put(url, data), delete(url)',
-            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
+            'fs': 'read(path), write(path, content), list(path)',
             'json': 'parse(text), stringify(data), query(data, path)',
             'shell': 'execute(command, args=[])',
             'logging': 'info(msg), warning(msg), error(msg), debug(msg)',
             'time': 'now_utc(), now_local(), now_utc_iso(), now_local_iso()',
-            'ids': 'generate(prefix=""), uuid()',
+            'ids': 'generate(prefix=""), uuid() - Use for generating unique IDs',
             'browser': 'open_browser(), navigate(url), get_page_text(), find_element(by, value), take_screenshot(filename), close()'
         }
         
@@ -47,14 +76,23 @@ class SpecGenerator:
             if name in DependencyChecker.AVAILABLE_SERVICES
         ])
         
+        skill_guidance = self._build_skill_guidance(skill_context)
+        
+        # Build base prompt first
         prompt = f"""Propose a tool specification for: {gap_description}
+
+SKILL CONTEXT:
+{skill_guidance}
 
 Return JSON with:
 - name: tool_name
 - domain: capability_domain
 - inputs: [{{"operation": "op_name", "parameters": [{{"name": "param", "type": "string", "description": "...", "required": true}}]}}]
 - outputs: [list of output types]
+- artifact_types: [list of typed artifacts this tool returns for planner/UI state]
 - dependencies: [list of tool dependencies]
+- verification_mode: how the result should be verified
+- ui_renderer: preferred renderer key for this tool's output family
 - risk_level: 0.0-1.0
 
 VALID PARAMETER TYPES (use ONLY these):
@@ -78,8 +116,29 @@ Example inputs format:
 ]
 """
         
+        # Enhance prompt with skill constraints if available
+        enhanced_prompt = prompt
+        if skill_context and skill_context.get("target_skill"):
+            try:
+                from core.skill_aware_creation import enhance_tool_creation_with_skill
+                from core.skills.registry import SkillRegistry
+                
+                # Get skill definition for enhancement
+                skill_registry = SkillRegistry()
+                skill_registry.load_all()
+                skill_def = skill_registry.get(skill_context["target_skill"])
+                
+                if skill_def:
+                    enhanced_prompt = enhance_tool_creation_with_skill(
+                        prompt, skill_def, gap_description, "spec"
+                    )
+                    logger.info(f"Enhanced prompt with {skill_def.name} skill constraints")
+            except Exception as e:
+                logger.warning(f"Failed to enhance prompt with skill constraints: {e}")
+                # Continue with original prompt
+        
         try:
-            response = llm_client._call_llm(prompt, temperature=0.3, expect_json=True)
+            response = llm_client._call_llm(enhanced_prompt, temperature=0.3, expect_json=True)
             if not response:
                 logger.warning("LLM returned empty response for tool spec")
                 return None
@@ -141,12 +200,40 @@ Example inputs format:
             outputs = self._normalize_to_string_list(spec.get('outputs', []))
             dependencies = self._normalize_to_string_list(spec.get('dependencies', []))
             domain = str(spec.get('domain', 'general'))
+            if skill_context:
+                target_skill = str(skill_context.get("target_skill") or "").strip()
+                target_category = str(skill_context.get("target_category") or "").strip()
+                if domain == "general" and target_category:
+                    domain = target_category
+                if target_skill:
+                    spec["target_skill"] = target_skill
+                if target_category:
+                    spec["target_category"] = target_category
+                if skill_context.get("gap_type"):
+                    spec["gap_type"] = str(skill_context.get("gap_type"))
+                if skill_context.get("suggested_action"):
+                    spec["suggested_action"] = str(skill_context.get("suggested_action"))
+                if skill_context.get("reasons"):
+                    spec["reasons"] = [str(item) for item in skill_context.get("reasons", [])]
+                if skill_context.get("example_tasks"):
+                    spec["example_tasks"] = [str(item) for item in skill_context.get("example_tasks", [])]
+                if skill_context.get("example_errors"):
+                    spec["example_errors"] = [str(item) for item in skill_context.get("example_errors", [])]
+            spec["outputs"] = outputs
+            spec["dependencies"] = dependencies
+            spec["domain"] = domain
             
-            # Resolve services from dependencies
+            # Resolve services from dependencies BEFORE architecture contract validation
             service_resolution = self._resolve_services(dependencies)
             spec['available_services'] = service_resolution['available']
             spec['missing_services'] = service_resolution['missing']
             spec['service_methods'] = service_resolution['methods']
+            
+            spec = enrich_contract_from_skill_context(spec, skill_context)
+            contract_ok, contract_error = validate_architecture_contract(spec)
+            if not contract_ok:
+                logger.warning(f"Architecture contract rejected tool spec: {contract_error}")
+                return None
             
             # Calculate dynamic risk based on domain and operations
             risk_level = self._calculate_risk(domain, dependencies, inputs)
@@ -264,6 +351,115 @@ Example inputs format:
         if cleaned[0].isdigit():
             cleaned = f"tool_{cleaned}"
         return cleaned
+
+    def _build_skill_guidance(self, skill_context: Optional[dict]) -> str:
+        """Build enriched skill guidance for tool generation.
+        
+        PHASE 1.1 ENHANCEMENT: Now includes skill description, trigger examples,
+        and workflow instructions to guide LLM toward better tool design.
+        """
+        if not skill_context:
+            return "No skill context provided. Infer the tool purely from the gap description."
+
+        target_skill = skill_context.get("target_skill") or "unspecified"
+        target_category = skill_context.get("target_category") or "unspecified"
+        
+        # Build comprehensive skill guidance
+        guidance = []
+        guidance.append(f"=== SKILL CONTEXT ===")
+        guidance.append(f"Target skill: {target_skill}")
+        guidance.append(f"Target category: {target_category}")
+        
+        # PHASE 1.1 STEP 2: Add skill description
+        skill_description = skill_context.get("skill_description")
+        if skill_description:
+            guidance.append(f"\nSkill Purpose:")
+            guidance.append(f"{skill_description}")
+        
+        # PHASE 1.1 STEP 3: Add trigger examples
+        trigger_examples = skill_context.get("trigger_examples", [])
+        if trigger_examples:
+            guidance.append(f"\nThis skill handles requests like:")
+            for example in trigger_examples[:5]:  # Show top 5 examples
+                guidance.append(f"  - {example}")
+        
+        # Preferred tools
+        preferred_tools = skill_context.get("preferred_tools", [])
+        if preferred_tools:
+            guidance.append(f"\nPreferred tools in this skill: {', '.join(preferred_tools)}")
+            guidance.append("Consider if this tool should work WITH these tools (inter-tool calls via self.services.call_tool)")
+        
+        # Required tools
+        required_tools = skill_context.get("required_tools", [])
+        if required_tools:
+            guidance.append(f"\nRequired tools in this skill: {', '.join(required_tools)}")
+            guidance.append("This tool may need to call these required tools")
+        
+        # PHASE 1.1 STEP 5: Add preferred connectors (services)
+        preferred_connectors = skill_context.get("preferred_connectors", [])
+        if preferred_connectors:
+            guidance.append(f"\nPreferred services/connectors: {', '.join(preferred_connectors)}")
+            guidance.append("Use these services in your tool implementation when possible")
+        
+        # Input/Output types
+        input_types = skill_context.get("expected_input_types", [])
+        output_types = skill_context.get("expected_output_types", [])
+        if input_types:
+            guidance.append(f"\nExpected input types: {', '.join(input_types)}")
+        if output_types:
+            guidance.append(f"Expected output types: {', '.join(output_types)}")
+            guidance.append("Tool outputs field MUST include these types")
+        
+        # Verification mode
+        verification_mode = skill_context.get("verification_mode")
+        if verification_mode:
+            guidance.append(f"\nVerification mode: {verification_mode}")
+            if verification_mode == "source_backed":
+                guidance.append("Tool MUST return sources/citations in output")
+            elif verification_mode == "strict":
+                guidance.append("Tool MUST validate all outputs strictly")
+            elif verification_mode == "side_effect_observed":
+                guidance.append("Tool MUST demonstrate observable side effects (files created, data changed, etc.)")
+        
+        # Risk level
+        risk_level = skill_context.get("risk_level")
+        if risk_level:
+            guidance.append(f"\nSkill risk level: {risk_level}")
+            if risk_level == "low":
+                guidance.append("Tool should be safe-by-default with minimal external I/O")
+            elif risk_level == "medium":
+                guidance.append("Tool may access external resources; include appropriate error handling")
+            elif risk_level == "high":
+                guidance.append("Tool may perform risky operations but needs validation and safety checks")
+        
+        # UI renderer
+        ui_renderer = skill_context.get("ui_renderer")
+        if ui_renderer:
+            guidance.append(f"\nUI renderer: {ui_renderer}")
+        
+        # Fallback strategy
+        fallback_strategy = skill_context.get("fallback_strategy")
+        if fallback_strategy:
+            guidance.append(f"Fallback strategy: {fallback_strategy}")
+        
+        # Skill constraints
+        skill_constraints = skill_context.get("skill_constraints", [])
+        if skill_constraints:
+            guidance.append(f"\nSkill constraints:")
+            for constraint in skill_constraints:
+                guidance.append(f"- {constraint}")
+        
+        # PHASE 1.1 STEP 4: Add skill workflow instructions (from SKILL.md)
+        workflow_guidance = skill_context.get("workflow_guidance")
+        if workflow_guidance:
+            guidance.append(f"\n=== WORKFLOW GUIDANCE ===")
+            guidance.append(workflow_guidance)
+        
+        guidance.append("\n=== IMPORTANT REQUIREMENTS ===")
+        guidance.append("Tool design must align with ALL skill expectations above.")
+        guidance.append("Follow the workflow guidance closely - it encodes proven patterns for this skill domain.")
+        
+        return "\n".join(guidance)
     
     def _get_type_description(self, type_name: str) -> str:
         """Get human-readable description for parameter type."""
@@ -286,7 +482,7 @@ Example inputs format:
             'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id)',
             'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
             'http': 'get(url), post(url, data), put(url, data), delete(url)',
-            'fs': 'read(path), write(path, content), exists(path), list_dir(path)',
+            'fs': 'read(path), write(path, content), list(path)',
             'json': 'parse(text), stringify(data), query(data, path)',
             'shell': 'execute(command, args=[])',
             'logging': 'info(msg), warning(msg), error(msg), debug(msg)',

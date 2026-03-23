@@ -1,0 +1,37 @@
+{
+  "name": "code_workspace",
+  "category": "development",
+  "description": "Code development, repository analysis, testing, and development workflow automation.",
+  "trigger_examples": [
+    "inspect this codebase",
+    "fix this bug",
+    "implement this feature",
+    "refactor this module",
+    "run tests and update the code",
+    "analyze code quality",
+    "review this pull request"
+  ],
+  "preferred_tools": [
+    "FilesystemTool",
+    "ShellTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "repo_task",
+    "file_path",
+    "test_request",
+    "code_change_request"
+  ],
+  "output_types": [
+    "code_summary",
+    "change_summary",
+    "diff_result",
+    "validation_result",
+    "test_result"
+  ],
+  "verification_mode": "validation_and_tests",
+  "risk_level": "high",
+  "ui_renderer": "code_result",
+  "fallback_strategy": "partial_result_with_gap_recording"
+}

@@ -25,7 +25,7 @@ class ShellTool(BaseTool):
 
     def execute(self, operation: str, parameters: dict) -> ToolResult:
         if operation == 'execute':
-            return self._execute(parameters)
+            return self._execute(**parameters)
         return ToolResult(tool_name=self.name, capability_name=operation, status=ResultStatus.FAILURE, error_message='Unknown operation')
 
     def _execute(self, **kwargs) -> ToolResult:

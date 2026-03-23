@@ -1,0 +1,34 @@
+{
+  "name": "browser_automation",
+  "category": "automation",
+  "description": "Advanced browser automation, web scraping, and interactive web tasks.",
+  "trigger_examples": [
+    "automate this website",
+    "fill out this form",
+    "click on this button",
+    "scrape data from this page",
+    "take a screenshot of this page",
+    "interact with web elements"
+  ],
+  "preferred_tools": [
+    "BrowserAutomationTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "url",
+    "selector",
+    "automation_script",
+    "form_data"
+  ],
+  "output_types": [
+    "automation_result",
+    "screenshot",
+    "scraped_data",
+    "interaction_result"
+  ],
+  "verification_mode": "side_effect_observed",
+  "risk_level": "high",
+  "ui_renderer": "automation_result",
+  "fallback_strategy": "web_research_fallback"
+}

@@ -18,7 +18,7 @@ class EnhancedCodeValidator:
             'storage': ['save', 'get', 'list', 'find', 'count', 'update', 'delete', 'exists'],
             'llm': ['generate'],
             'http': ['get', 'post', 'put', 'delete', 'request'],
-            'fs': ['read', 'write', 'list', 'exists', 'delete', 'mkdir'],
+            'fs': ['read', 'write', 'list'],
             'json': ['parse', 'stringify', 'query'],
             'shell': ['execute'],
             'time': ['now_utc', 'now_local', 'now_utc_iso', 'now_local_iso'],
@@ -54,12 +54,17 @@ class EnhancedCodeValidator:
         # Reset missing services tracker
         self.missing_services = []
         
-        # 1. Check for truncation
+        # 1. Check for hardcoded placeholder values
+        is_valid, error = self._check_hardcoded_values(code)
+        if not is_valid:
+            return False, error
+        
+        # 2. Check for truncation
         is_complete, truncation_error = self._check_truncation(code)
         if not is_complete:
             return False, truncation_error
         
-        # 2. Parse AST
+        # 3. Parse AST
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
@@ -96,6 +101,27 @@ class EnhancedCodeValidator:
     def get_missing_services(self) -> List[Dict[str, str]]:
         """Get list of missing services detected during validation."""
         return self.missing_services
+    
+    def _check_hardcoded_values(self, code: str) -> Tuple[bool, str]:
+        """Check for hardcoded placeholder values that indicate stub/incomplete code."""
+        patterns = [
+            (r'example\.com', 'example.com - use parameters or config for URLs'),
+            (r'test_user|test_password|testuser|testpass', 'test credentials - use parameters'),
+            (r'api_key\s*=\s*["\'][^"\']', 'hardcoded API key - use environment variables'),
+            (r'password\s*=\s*["\'][^"\']', 'hardcoded password - use parameters'),
+            (r'https?://api\.example', 'api.example.com - use configurable endpoints'),
+            (r'localhost:\d+', 'hardcoded localhost URL - use parameters'),
+            (r'127\.0\.0\.1:\d+', 'hardcoded 127.0.0.1 - use parameters'),
+        ]
+        
+        for pattern, description in patterns:
+            matches = re.finditer(pattern, code, re.I)
+            for match in matches:
+                # Get line number
+                line_num = code[:match.start()].count('\n') + 1
+                return False, f"Hardcoded value detected (line {line_num}): {description}"
+        
+        return True, ""
     
     def _check_truncation(self, code: str) -> Tuple[bool, str]:
         """Check if code appears truncated."""

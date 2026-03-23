@@ -22,6 +22,8 @@ export const GlobalStateProvider = ({ children }) => {
         maxIterations: 0,
         pendingApprovals: {},
         pendingTools: [],
+        skillCatalog: [],
+        skillCategories: {},
         taskManager: { active: false },
         backendConnected: false,
         lastUpdate: null
@@ -35,6 +37,8 @@ export const GlobalStateProvider = ({ children }) => {
         maxIterations: 0,
         pendingApprovals: {},
         pendingTools: [],
+        skillCatalog: [],
+        skillCategories: {},
         taskManager: { active: false },
         backendConnected: false,
         lastUpdate: null

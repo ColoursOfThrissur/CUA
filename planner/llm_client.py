@@ -350,11 +350,110 @@ class LLMClient:
 
         return "\n".join(lines)
     
+    def _discover_cua_status(self) -> str:
+        """Dynamically discover CUA's current system status and capabilities"""
+        status_lines = []
+        
+        try:
+            # Discover tool registry status
+            if self.registry:
+                tool_count = len(self.registry.tools)
+                tool_names = [tool.__class__.__name__ for tool in self.registry.tools]
+                status_lines.append(f"Tool Registry: {tool_count} active tools")
+                status_lines.append(f"  Core tools: {', '.join(tool_names[:5])}{'...' if len(tool_names) > 5 else ''}")
+            
+            # Discover skills system status
+            try:
+                from core.skills import get_skill_registry
+                skill_registry = get_skill_registry()
+                if skill_registry:
+                    skills = skill_registry.list_all()
+                    skill_names = [skill.name for skill in skills]
+                    status_lines.append(f"Skills System: {len(skills)} skills active")
+                    status_lines.append(f"  Skills: {', '.join(skill_names)}")
+            except:
+                status_lines.append("Skills System: Status unknown")
+            
+            # Discover improvement systems
+            try:
+                from core.tool_evolution.flow import ToolEvolutionFlow
+                status_lines.append("Tool Evolution: Available")
+            except:
+                status_lines.append("Tool Evolution: Not available")
+            
+            try:
+                from core.tool_creation.flow import ToolCreationFlow
+                status_lines.append("Tool Creation: Available")
+            except:
+                status_lines.append("Tool Creation: Not available")
+            
+            # Discover observability systems
+            try:
+                import os
+                db_files = [f for f in os.listdir('data') if f.endswith('.db')]
+                status_lines.append(f"Observability: {len(db_files)} databases active")
+                status_lines.append(f"  Databases: {', '.join(db_files[:3])}{'...' if len(db_files) > 3 else ''}")
+            except:
+                status_lines.append("Observability: Status unknown")
+            
+            # Discover autonomous agent
+            try:
+                from core.autonomous_agent import AutonomousAgent
+                status_lines.append("Autonomous Agent: Available")
+            except:
+                status_lines.append("Autonomous Agent: Not available")
+            
+            # Discover memory system
+            try:
+                from core.memory_system import MemorySystem
+                status_lines.append("Memory System: Available")
+            except:
+                status_lines.append("Memory System: Not available")
+            
+        except Exception as e:
+            status_lines.append(f"System Discovery Error: {str(e)}")
+        
+        return "\n".join(status_lines) if status_lines else "System status unknown"
+    
     def generate_response(self, user_message: str, conversation_history: List[Dict[str, str]] = None) -> str:
         """
         Generate conversational response (no structured output)
         Returns: Natural language response
         """
+        
+        # Get skills information
+        skills_info = "Skills system not available"
+        if self.registry and hasattr(self.registry, 'skill_registry'):
+            try:
+                skill_registry = self.registry.skill_registry
+                skills_list = []
+                for skill in skill_registry.list_all():
+                    skills_list.append(f"- {skill.name} ({skill.category}): {skill.description}")
+                skills_info = "\n".join(skills_list)
+            except:
+                pass
+        
+        # Try to get skills from the runtime skill registry
+        if skills_info == "Skills system not available":
+            try:
+                from core.skills import get_skill_registry
+                skill_registry = get_skill_registry()
+                if skill_registry:
+                    skills_list = []
+                    for skill in skill_registry.list_all():
+                        preferred_tools = ", ".join(skill.preferred_tools) if skill.preferred_tools else "none"
+                        skills_list.append(f"- {skill.name} ({skill.category}): {skill.description}\n  Preferred tools: {preferred_tools}")
+                    skills_info = "\n".join(skills_list)
+            except:
+                # Fallback to hardcoded skills info
+                skills_info = """- web_research (web): Research, summarize, and extract information from web sources
+  Preferred tools: WebAccessTool, ContextSummarizerTool
+- computer_automation (computer): File operations, shell commands, local system tasks
+  Preferred tools: FilesystemTool, ShellTool
+- code_workspace (development): Code analysis, repository operations, development tasks
+  Preferred tools: CodeEditorTool, TestRunnerTool
+- conversation (conversation): Handle conversations about CUA's capabilities and architecture
+  Preferred tools: none"""
         
         # Get tool capabilities from registry file if available
         tools_info = "No tools available"
@@ -373,19 +472,29 @@ class LLMClient:
                     tools_list.append(f"- {tool_name}: {ops}")
                 tools_info = "\n".join(tools_list)
         
-        # Build conversational prompt
-        system_msg = f"""You are CUA, an autonomous agent assistant.
+        # Dynamically discover CUA's current state and capabilities
+        cua_status = self._discover_cua_status()
+        
+        # Build CUA-specific conversational prompt
+        system_msg = f"""You are CUA (Coordinated Unattended Autonomy) - a local autonomous agent platform.
 
-Your available tools and capabilities:
+CUA CURRENT STATUS (discovered dynamically):
+{cua_status}
+
+CUA SKILLS SYSTEM:
+{skills_info}
+
+CUA TOOLS:
 {tools_info}
 
-Rules:
-- Be concise and helpful
-- If asked what you can do, explain your tools
-- If asked to perform a task, tell user you can execute it
-- Be conversational and friendly
+CRITICAL RULES:
+- NEVER suggest generic AI features like "machine learning" or "predictive analytics"
+- ONLY discuss YOUR actual discovered features and current system state
+- When asked about most important feature, analyze YOUR current capabilities
+- When asked about features to add, identify gaps from YOUR actual system analysis
+- Base all responses on YOUR discovered system state, not assumptions
 
-Respond naturally."""
+Respond as CUA discussing only your dynamically discovered capabilities and status."""
         
         # Build context from history
         messages = []
@@ -448,7 +557,7 @@ Respond naturally."""
                 prompt += f"{role.title()}: {content}\n"
             return prompt
     
-    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False) -> Optional[str]:
+    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None) -> Optional[str]:
         """Call Mistral 7B via Ollama with structured output enforcement and caching"""
         
         from core.logging_system import get_logger
@@ -492,7 +601,7 @@ Respond naturally."""
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json=payload,
-                timeout=self.timeout
+                timeout=timeout_override or self.timeout
             )
             
             if response.status_code == 200:
@@ -576,6 +685,39 @@ Respond naturally."""
                 {"model": self.model, "prompt_preview": prompt[:200]}
             )
             return None
+    
+    def warmup_model(self):
+        """Warm up the model to keep it loaded in memory"""
+        from core.logging_system import get_logger
+        logger = get_logger("llm_client")
+        
+        try:
+            logger.info(f"Warming up model: {self.model}")
+            # Send a minimal request to load the model
+            response = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": "Hello",
+                    "stream": False,
+                    "options": {"num_predict": 1},
+                    "keep_alive": "30m"  # Keep loaded for 30 minutes
+                },
+                timeout=60
+            )
+            if response.status_code == 200:
+                logger.info(f"Model {self.model} warmed up successfully")
+                return True
+            else:
+                logger.warning(f"Model warmup returned HTTP {response.status_code}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to warm up model {self.model}: {e}")
+            return False
+    
+    def clear_cache(self):
+        """Clear response cache"""
+        self._response_cache.clear()
     
     def _unload_model(self):
         """Unload model from memory immediately"""

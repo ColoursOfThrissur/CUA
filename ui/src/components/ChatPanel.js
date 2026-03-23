@@ -3,7 +3,7 @@ import { User, Bot, Mic, Send } from 'lucide-react';
 import OutputRenderer from './output/OutputRenderer';
 import './ChatPanel.css';
 
-function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
+function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] }) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = useRef(null);
 
@@ -73,6 +73,40 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
                 What can you do?
               </button>
             </div>
+            {skills.length > 0 && (
+              <div style={{ marginTop: '24px', textAlign: 'left' }}>
+                <h4 style={{ marginBottom: '10px' }}>Loaded Skills</h4>
+                <div style={{ display: 'grid', gap: '10px' }}>
+                  {skills.map((skill) => (
+                    <button
+                      key={skill.name}
+                      type="button"
+                      onClick={() => setInput(skill.trigger_examples?.[0] || skill.description)}
+                      style={{
+                        textAlign: 'left',
+                        padding: '12px',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        background: 'rgba(255,255,255,0.03)',
+                        color: 'inherit',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                        <strong>{skill.name}</strong>
+                        <span style={{ opacity: 0.75, fontSize: '12px', textTransform: 'uppercase' }}>{skill.category}</span>
+                      </div>
+                      <div style={{ marginTop: '6px', opacity: 0.85 }}>{skill.description}</div>
+                      {skill.ui_renderer && (
+                        <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.7 }}>
+                          Renderer: {skill.ui_renderer}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           messages.map((msg, index) => (
@@ -81,6 +115,49 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode }) {
                 {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
               </div>
               <div className="message-content">
+                {(msg.skill || msg.category) && (
+                  <div style={{
+                    display: 'flex',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                    marginBottom: '8px'
+                  }}>
+                    {msg.skill && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        borderRadius: '999px',
+                        background: 'rgba(34, 197, 94, 0.12)',
+                        border: '1px solid rgba(34, 197, 94, 0.3)',
+                        color: '#86efac',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em'
+                      }}>
+                        Skill: {msg.skill}
+                      </span>
+                    )}
+                    {msg.category && (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        borderRadius: '999px',
+                        background: 'rgba(96, 165, 250, 0.12)',
+                        border: '1px solid rgba(96, 165, 250, 0.3)',
+                        color: '#93c5fd',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em'
+                      }}>
+                        Category: {msg.category}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="message-text">
                   {msg.metadata?.type === 'progress' && (
                     <span className="progress-indicator">⏳ </span>

@@ -1,6 +1,7 @@
 """Validator for tool evolution - ensures no breaking changes."""
 import ast
 from typing import Tuple, Dict, Any, List
+from core.architecture_contract import validate_architecture_contract
 from core.enhanced_code_validator import EnhancedCodeValidator
 from core.cua_code_analyzer import CUACodeAnalyzer, CodeIssue
 
@@ -32,6 +33,10 @@ class EvolutionValidator:
         
         # 0.5. CUA architecture validation (NEW)
         tool_spec = proposal.get('tool_spec')  # May be None for some evolutions
+        if tool_spec:
+            contract_ok, contract_error = validate_architecture_contract(tool_spec)
+            if not contract_ok:
+                return False, f"Architecture contract failed: {contract_error}"
         cua_issues = self.cua_analyzer.analyze(improved_code, tool_spec)
         
         # Block on CRITICAL and HIGH issues
@@ -39,6 +44,13 @@ class EvolutionValidator:
         if critical_issues:
             error_msg = self._format_issues(critical_issues)
             return False, f"CUA validation failed:\n{error_msg}"
+        
+        # 0.6. Validate skill alignment if execution_context provided
+        execution_context = proposal.get('analysis', {}).get('execution_context')
+        if execution_context:
+            skill_error = self._validate_skill_alignment(improved_code, execution_context)
+            if skill_error:
+                return False, f"Skill alignment failed: {skill_error}"
         
         # 1. Syntax check
         try:
@@ -128,3 +140,23 @@ class EvolutionValidator:
             return has_capabilities and has_execute
         except:
             return False
+    
+    def _validate_skill_alignment(self, code: str, execution_context: Any) -> str:
+        """Validate evolved tool still matches skill requirements."""
+        verification_mode = getattr(execution_context, 'verification_mode', None)
+        
+        if not verification_mode:
+            return ""
+        
+        # Check if code returns required fields for verification_mode
+        if verification_mode == "source_backed":
+            # Must return sources in output
+            if "sources" not in code.lower() and "source" not in code.lower():
+                return "Tool must return 'sources' field for source_backed verification"
+        
+        elif verification_mode == "side_effect_observed":
+            # Must create files or have observable side effects
+            if "file_path" not in code.lower() and "path" not in code.lower():
+                return "Tool must return 'file_path' or 'path' for side_effect_observed verification"
+        
+        return ""

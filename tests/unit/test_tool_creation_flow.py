@@ -89,3 +89,33 @@ def test_sandbox_runner_fails_for_missing_file(tmp_path):
     runner = SandboxRunner(expansion)
     assert runner.run_sandbox("NoSuchTool") is False
 
+
+def test_validator_rejects_missing_architecture_contract_for_skill_aware_tool():
+    validator = ToolValidator()
+    code = _tool_code(
+        "TaskSnapshotTool",
+        """        cap = ToolCapability(
+            name="read",
+            description="read",
+            parameters=[Parameter(name="task_id", type=ParameterType.STRING, description="id", required=True)],
+            returns="payload",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(cap, self._read)
+""",
+    ) + """
+    def _read(self, **kwargs):
+        return {"ok": True}
+"""
+    ok, error = validator.validate(
+        code,
+        {
+            "name": "TaskSnapshotTool",
+            "target_skill": "web_research",
+            "target_category": "web",
+        },
+    )
+    assert ok is False
+    assert "Architecture contract" in error

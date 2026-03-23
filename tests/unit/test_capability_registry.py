@@ -210,6 +210,47 @@ def test_execute_capability():
     assert result.is_success()
     assert result.data == {"done": True}
 
+
+def test_execute_tool_capability_avoids_name_collision():
+    class HttpLikeTool(BaseTool):
+        def register_capabilities(self):
+            self.add_capability(
+                ToolCapability(
+                    name="get",
+                    description="http get",
+                    parameters=[],
+                    returns="payload",
+                    safety_level=SafetyLevel.LOW,
+                    examples=[],
+                    dependencies=[],
+                ),
+                lambda: {"source": "http"},
+            )
+
+    class NoteLikeTool(BaseTool):
+        def register_capabilities(self):
+            self.add_capability(
+                ToolCapability(
+                    name="get",
+                    description="note get",
+                    parameters=[],
+                    returns="payload",
+                    safety_level=SafetyLevel.LOW,
+                    examples=[],
+                    dependencies=[],
+                ),
+                lambda: {"source": "note"},
+            )
+
+    registry = CapabilityRegistry()
+    registry.register_tool(HttpLikeTool())
+    registry.register_tool(NoteLikeTool())
+
+    result = registry.execute_tool_capability("HttpLikeTool", "get")
+
+    assert result.is_success()
+    assert result.data == {"source": "http"}
+
 def test_get_capability_performance():
     class TestTool(BaseTool):
         def register_capabilities(self):

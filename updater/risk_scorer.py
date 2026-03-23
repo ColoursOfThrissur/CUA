@@ -62,6 +62,7 @@ class RiskScorer:
         reasons = []
         critical_files = []
         score = 0.0  # Use float for normalization
+        approval_required = False
         
         # Check for blocked files (including renames)
         for file in changed_files:
@@ -87,6 +88,15 @@ class RiskScorer:
                         critical_files=[file],
                         requires_approval=True
                     )
+
+            if normalized in self.HIGH_RISK_FILES:
+                approval_required = True
+                critical_files.append(file)
+                reasons.append(f"High-risk file: {file}")
+                score = max(score, 0.45)
+            elif normalized in self.MEDIUM_RISK_FILES:
+                reasons.append(f"Medium-risk file: {file}")
+                score = max(score, 0.3)
         
         # Calculate individual risk factors (normalized 0-1)
         blast_radius_score = 0.0
@@ -129,13 +139,13 @@ class RiskScorer:
             'files': 0.125
         }
         
-        base_score = (
+        base_score = max(score, (
             blast_radius_score * weights['blast_radius'] +
             core_module_score * weights['core_module'] +
             failure_history_score * weights['failure_history'] +
             lines_score * weights['lines'] +
             files_score * weights['files']
-        )
+        ))
         
         # Multiplicative escalation for combined high-risk factors
         if core_module_score > 0.5 and blast_radius_score > 0.5:
@@ -171,6 +181,12 @@ class RiskScorer:
         else:
             level = UpdateRiskLevel.VERY_LOW
             requires_approval = False
+
+        if approval_required and level in {UpdateRiskLevel.LOW, UpdateRiskLevel.VERY_LOW}:
+            level = UpdateRiskLevel.MEDIUM
+            final_score = max(final_score, 35)
+            requires_approval = True
+            reasons.append("Policy escalation: explicit approval required for high-risk files")
         
         return RiskScore(
             level=level,

@@ -109,6 +109,13 @@
   gap: 1rem;
 }
 
+.section-heading {
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+
 .status-indicator {
   display: flex;
   align-items: center;
@@ -141,6 +148,66 @@
 .control-buttons {
   display: flex;
   gap: 0.75rem;
+}
+
+.coordinated-section {
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.quality-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.quality-banner.ok {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #b7f7d8;
+}
+
+.quality-banner.warning,
+.quality-banner.paused {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #ffd89b;
+}
+
+.quality-banner.paused {
+  flex-direction: row;
+  align-items: center;
+}
+
+.coordinated-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+
+.metric-card {
+  padding: 0.85rem;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.metric-label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.metric-value {
+  color: var(--text-primary);
+  font-size: 1.15rem;
+  font-weight: 700;
 }
 
 .control-buttons button {
@@ -196,6 +263,15 @@
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.coordinated-config-block {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--glass-border);
 }
 
 .config-toggle {

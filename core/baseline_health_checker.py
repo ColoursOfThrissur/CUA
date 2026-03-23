@@ -19,7 +19,8 @@ class BaselineHealthChecker:
             "test_llm_retry.py",
             "test_sandbox_integration.py",
             "test_state_machine_resume.py",
-            "test_update_pipeline.py"
+            "test_update_pipeline.py",
+            "test_tool_registrar_dynamic.py"  # Tests non-existent tool
         ]
     
     def check(self) -> Tuple[bool, str]:
@@ -55,9 +56,14 @@ class BaselineHealthChecker:
         for py_file in self.repo_path.rglob("*.py"):
             if "venv" in str(py_file) or "__pycache__" in str(py_file):
                 continue
-            normalized = str(py_file).replace("\\", "/")
-            if normalized in pending_skip:
+            
+            # Normalize the file path for comparison
+            normalized_file = str(py_file).replace("\\", "/")
+            abs_file = str(py_file.resolve()).replace("\\", "/")
+            
+            if normalized_file in pending_skip or abs_file in pending_skip:
                 continue
+                
             try:
                 ast.parse(py_file.read_text(encoding='utf-8'))
             except SyntaxError as e:
@@ -78,9 +84,13 @@ class BaselineHealthChecker:
                 for key in ("tool_file", "test_file"):
                     path = item.get(key)
                     if path and str(path).endswith(".py"):
-                        rel = str(path).replace("\\", "/")
-                        skip.add(rel)
-                        skip.add(str((self.repo_path / rel).resolve()).replace("\\", "/"))
+                        # Normalize path separators and add both relative and absolute versions
+                        rel_path = str(path).replace("\\", "/")
+                        abs_path = str((self.repo_path / rel_path).resolve()).replace("\\", "/")
+                        skip.add(rel_path)
+                        skip.add(abs_path)
+                        # Also add the original path as-is
+                        skip.add(str(path))
         except Exception:
             return skip
         return skip

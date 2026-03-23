@@ -1,6 +1,7 @@
 """Proposal generator for tool evolution - matches spec generator pattern."""
 import json
 from typing import Dict, Any, Optional
+from core.architecture_contract import derive_skill_contract_for_tool, enrich_contract_from_skill_context
 from core.sqlite_logging import get_logger
 
 logger = get_logger("proposal_generator")
@@ -25,6 +26,11 @@ class EvolutionProposalGenerator:
         llm_issues_text = self._format_llm_issues(analysis.get('llm_issues', []))
         llm_improvements_text = self._format_llm_improvements(analysis.get('llm_improvements', []))
         
+        # Add context priorities if available
+        context_priorities_text = ""
+        if analysis.get('context_priorities'):
+            context_priorities_text = "\n\nEXECUTION CONTEXT PRIORITIES (from recent failures):\n" + "\n".join(analysis['context_priorities'])
+        
         prompt = f"""Analyze this tool and propose ONLY necessary improvements.
 
 Tool: {analysis['tool_name']}
@@ -38,6 +44,7 @@ LLM CODE ANALYSIS:
 
 SUGGESTED IMPROVEMENTS:
 {llm_improvements_text}
+{context_priorities_text}
 
 Current Code:
 ```python
@@ -53,13 +60,14 @@ AVAILABLE SERVICES (tools must use self.services.X with EXACT signatures below):
 WARNING: DO NOT add parameters to service methods that are not listed above. These are the ONLY allowed parameters.
 
 CRITICAL DECISION RULES:
-1. If LLM_ISSUES contains HIGH severity bugs → FIX THEM (broken code, missing imports, undefined methods)
-2. If code_quality_category is WEAK or NEEDS_IMPROVEMENT → FIX CODE ISSUES
-3. If SUGGESTED_IMPROVEMENTS has HIGH priority items → ADD THE FIRST ONE (others will be done in next evolutions)
-4. If SUGGESTED_IMPROVEMENTS has MEDIUM priority items (and no HIGH) → ADD THE FIRST ONE
-5. If SUGGESTED_IMPROVEMENTS has LOW priority items (and no HIGH/MEDIUM) → ADD THE FIRST ONE
-6. If only runtime issues (low success rate) but code is HEALTHY with no bugs and no improvements → SKIP
-7. DO NOT fix "low success rate" by adding generic error handling if code already has proper error handling
+1. If EXECUTION_CONTEXT_PRIORITIES exist → PRIORITIZE THOSE FIRST (real failures from production)
+2. If LLM_ISSUES contains HIGH severity bugs → FIX THEM (broken code, missing imports, undefined methods)
+3. If code_quality_category is WEAK or NEEDS_IMPROVEMENT → FIX CODE ISSUES
+4. If SUGGESTED_IMPROVEMENTS has HIGH priority items → ADD THE FIRST ONE (others will be done in next evolutions)
+5. If SUGGESTED_IMPROVEMENTS has MEDIUM priority items (and no HIGH) → ADD THE FIRST ONE
+6. If SUGGESTED_IMPROVEMENTS has LOW priority items (and no HIGH/MEDIUM) → ADD THE FIRST ONE
+7. If only runtime issues (low success rate) but code is HEALTHY with no bugs and no improvements → SKIP
+8. DO NOT fix "low success rate" by adding generic error handling if code already has proper error handling
 
 IMPORTANT: Implement ONE improvement at a time. After approval, the next evolution will pick the next improvement.
 
@@ -152,6 +160,15 @@ Return ONLY valid JSON."""
             
             # Add analysis context
             proposal['analysis'] = analysis
+            proposal["tool_spec"] = enrich_contract_from_skill_context(
+                {
+                    "name": analysis.get("tool_name"),
+                    "domain": "general",
+                    "outputs": [],
+                    "artifact_types": [],
+                },
+                derive_skill_contract_for_tool(analysis.get("tool_name", "")),
+            )
             
             # Add service descriptions for UI
             if 'required_services' in proposal:
