@@ -269,7 +269,11 @@ function ToolsManagementPage({ onBack }) {
                   </button>
                   <button
                     className="action-btn"
-                    onClick={() => window.location.href = `/?mode=evolution&tool=${selectedTool}`}
+                    onClick={() => {
+                      try { localStorage.setItem('prefillEvolutionTool', selectedTool); } catch(e) {}
+                      if (onBack) onBack();
+                      setTimeout(() => window.dispatchEvent(new CustomEvent('switchMode', { detail: 'evolution' })), 50);
+                    }}
                   >
                     <Zap size={16} /> Start Evolution
                   </button>

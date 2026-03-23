@@ -417,98 +417,41 @@ class LLMClient:
     
     def generate_response(self, user_message: str, conversation_history: List[Dict[str, str]] = None) -> str:
         """
-        Generate conversational response (no structured output)
-        Returns: Natural language response
+        Generate conversational response (no structured output).
+        For summary/result messages (no history), uses a lean prompt.
         """
-        
-        # Get skills information
-        skills_info = "Skills system not available"
-        if self.registry and hasattr(self.registry, 'skill_registry'):
-            try:
-                skill_registry = self.registry.skill_registry
-                skills_list = []
-                for skill in skill_registry.list_all():
-                    skills_list.append(f"- {skill.name} ({skill.category}): {skill.description}")
-                skills_info = "\n".join(skills_list)
-            except:
-                pass
-        
-        # Try to get skills from the runtime skill registry
-        if skills_info == "Skills system not available":
-            try:
-                from core.skills import get_skill_registry
-                skill_registry = get_skill_registry()
-                if skill_registry:
-                    skills_list = []
-                    for skill in skill_registry.list_all():
-                        preferred_tools = ", ".join(skill.preferred_tools) if skill.preferred_tools else "none"
-                        skills_list.append(f"- {skill.name} ({skill.category}): {skill.description}\n  Preferred tools: {preferred_tools}")
-                    skills_info = "\n".join(skills_list)
-            except:
-                # Fallback to hardcoded skills info
-                skills_info = """- web_research (web): Research, summarize, and extract information from web sources
-  Preferred tools: WebAccessTool, ContextSummarizerTool
-- computer_automation (computer): File operations, shell commands, local system tasks
-  Preferred tools: FilesystemTool, ShellTool
-- code_workspace (development): Code analysis, repository operations, development tasks
-  Preferred tools: CodeEditorTool, TestRunnerTool
-- conversation (conversation): Handle conversations about CUA's capabilities and architecture
-  Preferred tools: none"""
-        
-        # Get tool capabilities from registry file if available
-        tools_info = "No tools available"
-        try:
-            from core.tool_registry_manager import ToolRegistryManager
-            registry_mgr = ToolRegistryManager()
-            tools_info = registry_mgr.get_all_capabilities_text()
-        except:
-            # Fallback to direct registry query
-            if self.registry:
-                tools_list = []
-                for tool in self.registry.tools:
-                    caps = tool.get_capabilities()
-                    ops = ", ".join(sorted(caps.keys()))
-                    tool_name = getattr(tool, "name", tool.__class__.__name__)
-                    tools_list.append(f"- {tool_name}: {ops}")
-                tools_info = "\n".join(tools_list)
-        
-        # Dynamically discover CUA's current state and capabilities
-        cua_status = self._discover_cua_status()
-        
-        # Build CUA-specific conversational prompt
-        system_msg = f"""You are CUA (Coordinated Unattended Autonomy) - a local autonomous agent platform.
-
-CUA CURRENT STATUS (discovered dynamically):
-{cua_status}
-
-CUA SKILLS SYSTEM:
-{skills_info}
-
-CUA TOOLS:
-{tools_info}
-
-CRITICAL RULES:
-- NEVER suggest generic AI features like "machine learning" or "predictive analytics"
-- ONLY discuss YOUR actual discovered features and current system state
-- When asked about most important feature, analyze YOUR current capabilities
-- When asked about features to add, identify gaps from YOUR actual system analysis
-- Base all responses on YOUR discovered system state, not assumptions
-
-Respond as CUA discussing only your dynamically discovered capabilities and status."""
-        
-        # Build context from history
         messages = []
         if conversation_history:
-            for msg in conversation_history[-3:]:
+            for msg in (conversation_history or [])[-3:]:
                 messages.append(msg)
         messages.append({"role": "user", "content": user_message})
-        
-        # Format with model-specific prompt
+
+        # Lean path: summary calls pass empty history — skip heavy system prompt
+        if not conversation_history:
+            context = self._format_chat_prompt("You are a helpful assistant. Answer concisely.", messages)
+            response = self._call_llm(context, temperature=0.7, max_tokens=400, expect_json=False)
+            return response or "Task completed."
+
+        # Full path: conversational turns need CUA context
+        try:
+            from core.skills import get_skill_registry
+            sk_reg = get_skill_registry()
+            skills_info = "\n".join(
+                f"- {s.name} ({s.category}): {s.description}"
+                for s in (sk_reg.list_all() if sk_reg else [])
+            ) or "Skills unavailable"
+        except Exception:
+            skills_info = "Skills unavailable"
+
+        tool_names = ", ".join(t.__class__.__name__ for t in getattr(self.registry, 'tools', [])) if self.registry else "none"
+        system_msg = (
+            "You are CUA, a local autonomous agent.\n"
+            f"Active tools: {tool_names}\n"
+            f"Skills:\n{skills_info}\n"
+            "Answer based only on your actual capabilities."
+        )
         context = self._format_chat_prompt(system_msg, messages)
-        
-        # Call LLM for conversational response
-        response = self._call_llm(context, temperature=0.7, expect_json=False)
-        
+        response = self._call_llm(context, temperature=0.7, max_tokens=400, expect_json=False)
         return response or "I'm here to help! Ask me anything or give me a task to execute."
     
     def _format_prompt(self, content: str, expect_json: bool = False) -> str:
@@ -575,13 +518,16 @@ Respond as CUA discussing only your dynamically discovered capabilities and stat
         logger.debug(f"LLM call: model={self.model}, temp={temperature}, expect_json={expect_json}")
         
         try:
+            # Token budget: plans ~600 tok, summaries ~300 tok, JSON ops ~400 tok
+            # Only tool-generation / evolution needs 2048+
+            default_predict = 800 if expect_json else 512
             options = {
                 "temperature": temperature,
                 "top_p": 0.9,
                 "top_k": 40,
                 "repeat_penalty": 1.1,
-                "num_predict": max_tokens or 2048,
-                "num_ctx": 8192,
+                "num_predict": max_tokens or default_predict,
+                "num_ctx": 8192 if expect_json else 4096,
                 "num_gpu": 99,
                 "num_thread": 8,
             }

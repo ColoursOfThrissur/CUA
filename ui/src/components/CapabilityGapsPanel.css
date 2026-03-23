@@ -81,14 +81,43 @@
 
 .cgp-item {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.5rem;
   padding: 0.75rem;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
 }
+
+.cgp-item-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cgp-create-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--mode-color) 40%, var(--glass-border));
+  background: color-mix(in srgb, var(--mode-color) 12%, transparent);
+  color: var(--mode-color);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  white-space: nowrap;
+}
+
+.cgp-create-btn:hover {
+  background: color-mix(in srgb, var(--mode-color) 22%, transparent);
+  transform: translateY(-1px);
+}
+
 
 .cgp-item.actionable {
   border-color: color-mix(in srgb, var(--mode-color) 60%, var(--glass-border));

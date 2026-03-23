@@ -139,12 +139,15 @@ class OutputAnalyzer:
                 })
             
             # Check for images
-            if 'image' in data or 'image_url' in data:
+            if 'image' in data or 'image_url' in data or 'screenshot_b64' in data:
+                b64 = data.get('screenshot_b64')
                 components.append({
-                    'type': 'image',
-                    'renderer': 'image',
+                    'type': 'screenshot',
+                    'renderer': 'screenshot',
+                    'src': f'data:image/png;base64,{b64}' if b64 else None,
                     'url': data.get('image_url') or data.get('image'),
-                    'alt': data.get('image_alt', 'Generated image')
+                    'filepath': data.get('filepath', ''),
+                    'alt': data.get('image_alt', 'Screenshot'),
                 })
             
             # Check for markdown

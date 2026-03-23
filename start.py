@@ -15,8 +15,6 @@ def start_cua():
     try:
         api_process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", str(config.api.port), "--reload"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
         )
         
         # Wait briefly and check if process started
@@ -25,10 +23,7 @@ def start_cua():
         
         if api_process.poll() is not None:
             # Process died
-            stdout, stderr = api_process.communicate()
             print(f"ERROR: API server failed to start")
-            print(f"STDOUT: {stdout.decode()}")
-            print(f"STDERR: {stderr.decode()}")
             sys.exit(1)
         
         # Verify API is responding

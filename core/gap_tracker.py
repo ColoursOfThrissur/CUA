@@ -24,6 +24,11 @@ class GapRecord:
     target_tool: str = None
     example_tasks: List[str] = None
     example_errors: List[str] = None
+    # Resolution layer fields
+    resolution_action: str = None   # reroute | mcp | api_wrap | create_tool
+    resolution_target: str = None   # existing tool / MCP server / API name
+    resolution_notes: List[str] = None
+    resolution_attempted: bool = False
 
 class GapTracker:
     def __init__(self, data_file: str = "data/capability_gaps.json"):
@@ -110,17 +115,29 @@ class GapTracker:
         ]
 
     def get_prioritized_gaps(self) -> List[GapRecord]:
-        """Get actionable gaps ordered by impact."""
+        """Get actionable gaps ordered by impact. Gaps with cheaper resolutions sort lower."""
         prioritized = self.get_actionable_gaps()
         prioritized.sort(
             key=lambda gap: (
                 gap.occurrence_count * (gap.confidence_avg or 0.0),
-                1 if gap.suggested_action == "create_tool" else 0,
+                # create_tool gaps rank highest (most urgent), cheaper resolutions rank lower
+                1 if (gap.resolution_action or gap.suggested_action) == "create_tool" else 0,
             ),
             reverse=True,
         )
         return prioritized
     
+    def mark_resolved(self, capability: str, action: str, target: str = None, notes: List[str] = None):
+        """Mark a gap as resolved with the chosen resolution action."""
+        if capability in self.gaps:
+            record = self.gaps[capability]
+            record.resolution_action = action
+            record.resolution_target = target
+            record.resolution_notes = notes or []
+            record.resolution_attempted = True
+            record.suggested_action = action  # keep suggested_action in sync
+            self._save()
+
     def clear_gap(self, capability: str):
         """Clear a gap (e.g., after tool is created)"""
         if capability in self.gaps:
@@ -146,6 +163,9 @@ class GapTracker:
                     "selected_category": gap.selected_category,
                     "example_tasks": gap.example_tasks or [],
                     "example_errors": gap.example_errors or [],
+                    "resolution_action": gap.resolution_action,
+                    "resolution_target": gap.resolution_target,
+                    "resolution_attempted": gap.resolution_attempted,
                 }
                 for gap in sorted(self.gaps.values(), key=lambda x: x.occurrence_count, reverse=True)
             ]
@@ -157,9 +177,12 @@ class GapTracker:
             try:
                 with open(self.data_file) as f:
                     data = json.load(f)
-                    self.gaps = {
-                        k: GapRecord(**v) for k, v in data.items()
-                    }
+                # Tolerate old records missing new resolution fields
+                valid_fields = {f.name for f in GapRecord.__dataclass_fields__.values()}
+                self.gaps = {
+                    k: GapRecord(**{fk: fv for fk, fv in v.items() if fk in valid_fields})
+                    for k, v in data.items()
+                }
             except Exception:
                 self.gaps = {}
     

@@ -158,9 +158,8 @@ function EvolutionMode() {
         {tab !== 'manual' ? null : (
         <>
         <div className="evolution-header">
-          <Zap size={32} />
+          <Zap size={18} />
           <h2>Tool Evolution</h2>
-          <p>Improve existing tools based on quality metrics</p>
         </div>
 
         <div className="evolution-form">

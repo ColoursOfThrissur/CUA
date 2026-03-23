@@ -1,21 +1,63 @@
-import React, { useEffect, useRef } from 'react';
-import { User, Bot, Mic, Send } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { User, Bot, Mic, Send, Square, ChevronDown, ChevronUp } from 'lucide-react';
 import OutputRenderer from './output/OutputRenderer';
 import './ChatPanel.css';
 
-function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] }) {
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+function AgentPlanStatus({ agentPlan }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const completedCount = agentPlan.steps.filter(s => s.status === 'completed').length;
+  const failedCount = agentPlan.steps.filter(s => s.status === 'failed').length;
+  const total = agentPlan.steps.length;
+  const progress = total > 0 ? Math.round((completedCount / total) * 100) : 0;
+
+  return (
+    <div className="agent-plan-status">
+      <div className="agent-plan-header" onClick={() => setCollapsed(c => !c)}>
+        <div className="agent-plan-header-left">
+          <span className="agent-plan-spinner" />
+          <span className="agent-plan-title">Executing Plan</span>
+          <span className="agent-plan-iter">iter {agentPlan.iteration}/{agentPlan.max_iterations}</span>
+        </div>
+        <div className="agent-plan-header-right">
+          <span className="agent-plan-counts">
+            <span className="apc-done">{completedCount}✓</span>
+            {failedCount > 0 && <span className="apc-fail">{failedCount}✗</span>}
+            <span className="apc-total">/{total}</span>
+          </span>
+          <div className="agent-plan-progress-bar">
+            <div className="agent-plan-progress-fill" style={{ width: `${progress}%` }} />
+          </div>
+          {collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+        </div>
+      </div>
+      {!collapsed && (
+        <div className="agent-plan-steps">
+          {agentPlan.steps.map(step => (
+            <div key={step.step_id} className={`agent-plan-step status-${step.status}`}>
+              <span className="step-icon">
+                {step.status === 'completed' ? '✓'
+                  : step.status === 'failed' ? '✗'
+                  : step.status === 'running' ? '⟳'
+                  : '·'}
+              </span>
+              <span className="step-desc">{step.description}</span>
+              <span className="step-tool">{step.tool_name}.{step.operation}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [], backendConnected = true, agentPlan = null }) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = useRef(null);
 
   const getPlaceholder = () => {
-    switch (mode) {
-      case 'tools':
-        return 'Describe the tool you want to create...';
-      case 'evolution':
-        return 'Request tool improvements or start self-improvement...';
-      default:
-        return 'Type a command or question... (Ctrl+Enter to send)';
-    }
+    return 'Ask anything or give a task... (Ctrl+Enter to send)';
   };
 
   useEffect(() => {
@@ -33,6 +75,14 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       handleSubmit(e);
+    }
+  };
+
+  const handleStop = async () => {
+    try {
+      await fetch(`${API_URL}/chat/stop`, { method: 'POST' });
+    } catch (e) {
+      console.error('Stop failed:', e);
     }
   };
 
@@ -60,48 +110,34 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
       <div className="chat-messages">
         {messages.length === 0 ? (
           <div className="chat-welcome">
-            <h2>Welcome to CUA Agent</h2>
-            <p>Try these commands:</p>
+            {!backendConnected && (
+              <div className="welcome-offline">
+                Backend offline — responses unavailable
+              </div>
+            )}
+            <h2>CUA Agent</h2>
+            <p>What would you like to do?</p>
             <div className="example-commands">
-              <button onClick={() => setInput('list files in current directory')}>
-                List files
-              </button>
-              <button onClick={() => setInput('create a test file')}>
-                Create file
-              </button>
-              <button onClick={() => setInput('what can you do?')}>
-                What can you do?
-              </button>
+              <button onClick={() => setInput('list files in current directory')}>List files</button>
+              <button onClick={() => setInput('search the web for latest AI news')}>Web search</button>
+              <button onClick={() => setInput('what can you do?')}>What can you do?</button>
             </div>
             {skills.length > 0 && (
-              <div style={{ marginTop: '24px', textAlign: 'left' }}>
-                <h4 style={{ marginBottom: '10px' }}>Loaded Skills</h4>
-                <div style={{ display: 'grid', gap: '10px' }}>
+              <div className="skills-grid">
+                <h4>Available Skills</h4>
+                <div className="skills-list">
                   {skills.map((skill) => (
                     <button
                       key={skill.name}
                       type="button"
+                      className="skill-card"
                       onClick={() => setInput(skill.trigger_examples?.[0] || skill.description)}
-                      style={{
-                        textAlign: 'left',
-                        padding: '12px',
-                        borderRadius: '12px',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        background: 'rgba(255,255,255,0.03)',
-                        color: 'inherit',
-                        cursor: 'pointer'
-                      }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                      <div className="skill-card-header">
                         <strong>{skill.name}</strong>
-                        <span style={{ opacity: 0.75, fontSize: '12px', textTransform: 'uppercase' }}>{skill.category}</span>
+                        <span className="skill-category">{skill.category}</span>
                       </div>
-                      <div style={{ marginTop: '6px', opacity: 0.85 }}>{skill.description}</div>
-                      {skill.ui_renderer && (
-                        <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.7 }}>
-                          Renderer: {skill.ui_renderer}
-                        </div>
-                      )}
+                      <div className="skill-card-desc">{skill.description}</div>
                     </button>
                   ))}
                 </div>
@@ -116,45 +152,23 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
               </div>
               <div className="message-content">
                 {(msg.skill || msg.category) && (
-                  <div style={{
-                    display: 'flex',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                    marginBottom: '8px'
-                  }}>
-                    {msg.skill && (
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        padding: '4px 8px',
-                        borderRadius: '999px',
-                        background: 'rgba(34, 197, 94, 0.12)',
-                        border: '1px solid rgba(34, 197, 94, 0.3)',
-                        color: '#86efac',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.04em'
-                      }}>
-                        Skill: {msg.skill}
+                  <div className="message-skill-tags">
+                    {msg.skill && <span className="skill-tag skill-tag--green">skill: {msg.skill}</span>}
+                    {msg.category && <span className="skill-tag skill-tag--blue">{msg.category}</span>}
+                    {msg.execution_result?.decision?.strategy && msg.execution_result.decision.strategy !== 'conversation' && (
+                      <span className="skill-tag skill-tag--strategy">{msg.execution_result.decision.strategy.replace('_', ' ')}</span>
+                    )}
+                    {msg.execution_result?.decision?.confidence != null && msg.execution_result.decision.confidence > 0 && (
+                      <span className={`skill-tag skill-tag--confidence ${
+                        msg.execution_result.decision.confidence >= 0.7 ? 'conf-high'
+                        : msg.execution_result.decision.confidence >= 0.45 ? 'conf-mid'
+                        : 'conf-low'
+                      }`}>
+                        {Math.round(msg.execution_result.decision.confidence * 100)}%
                       </span>
                     )}
-                    {msg.category && (
-                      <span style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        padding: '4px 8px',
-                        borderRadius: '999px',
-                        background: 'rgba(96, 165, 250, 0.12)',
-                        border: '1px solid rgba(96, 165, 250, 0.3)',
-                        color: '#93c5fd',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.04em'
-                      }}>
-                        Category: {msg.category}
-                      </span>
+                    {msg.execution_result?.rounds_used > 1 && (
+                      <span className="skill-tag skill-tag--rounds">{msg.execution_result.rounds_used} rounds</span>
                     )}
                   </div>
                 )}
@@ -164,6 +178,23 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
                   )}
                   {msg.content}
                 </div>
+                {/* Verification warnings */}
+                {msg.role === 'assistant' && msg.execution_result?.verification_warnings?.length > 0 && (
+                  <div className="msg-verify-warnings">
+                    {msg.execution_result.verification_warnings.map((w, i) => (
+                      <div key={i} className="msg-verify-item">⚠ {w}</div>
+                    ))}
+                  </div>
+                )}
+                {/* Capability gap detected */}
+                {msg.role === 'assistant' && msg.execution_result?.gap_detected && (
+                  <div className="msg-gap-notice">
+                    <span>⚡ Capability gap detected</span>
+                    {msg.execution_result.gap_action && (
+                      <span className="msg-gap-action"> → {msg.execution_result.gap_action}</span>
+                    )}
+                  </div>
+                )}
                 {msg.role === 'assistant' && msg.execution_result?.status === 'awaiting_approval' && msg.execution_result?.plan && (
                   <div style={{
                     marginTop: '10px',
@@ -232,9 +263,13 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
           <div className="message assistant">
             <div className="message-avatar"><Bot size={20} /></div>
             <div className="message-content">
-              <div className="typing-indicator">
-                <span></span><span></span><span></span>
-              </div>
+              {agentPlan ? (
+                <AgentPlanStatus agentPlan={agentPlan} />
+              ) : (
+                <div className="typing-indicator">
+                  <span></span><span></span><span></span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -259,17 +294,28 @@ function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [] })
         >
           <Mic size={18} />
         </button>
-        <button 
-          type="submit" 
-          className="btn-send" 
-          disabled={isProcessing || !input.trim()}
-        >
-          <Send size={16} />
-          Send
-        </button>
+        {isProcessing ? (
+          <button
+            type="button"
+            className="btn-stop"
+            onClick={handleStop}
+            title="Stop execution"
+          >
+            <Square size={16} />
+            Stop
+          </button>
+        ) : (
+          <button 
+            type="submit" 
+            className="btn-send" 
+            disabled={!input.trim()}
+          >
+            <Send size={16} />
+            Send
+          </button>
+        )}
       </form>
     </div>
   );
 }
 
-export default ChatPanel;

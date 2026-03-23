@@ -222,8 +222,7 @@ async def get_tool_executions(tool_name: str, limit: int = 10) -> List[Dict]:
     try:
         executions = exec_logger.get_recent_executions(tool_name, limit)
         return executions if executions else []
-    except Exception as e:
-        # Return empty list if no executions found
+    except Exception:
         return []
 
 

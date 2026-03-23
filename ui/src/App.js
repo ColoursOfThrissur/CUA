@@ -64,6 +64,18 @@ function AppContent() {
   }, [theme]);
 
   useEffect(() => {
+    if (!isProcessing) return;
+    const t = setTimeout(() => setIsProcessing(false), 3 * 60 * 1000);
+    return () => clearTimeout(t);
+  }, [isProcessing]);
+
+  useEffect(() => {
+    const onPlanCleared = () => setIsProcessing(false);
+    window.addEventListener('agentPlanCleared', onPlanCleared);
+    return () => window.removeEventListener('agentPlanCleared', onPlanCleared);
+  }, []);
+
+  useEffect(() => {
     // Fetch available models on mount
     fetch(`${API_URL}/settings/models`)
       .then(res => res.json())
@@ -81,8 +93,15 @@ function AppContent() {
     const handleOpenOverlay = (e) => {
       setOverlayOpen(e.detail);
     };
+    const handleSwitchMode = (e) => {
+      setActiveMode(e.detail);
+    };
     window.addEventListener('openOverlay', handleOpenOverlay);
-    return () => window.removeEventListener('openOverlay', handleOpenOverlay);
+    window.addEventListener('switchMode', handleSwitchMode);
+    return () => {
+      window.removeEventListener('openOverlay', handleOpenOverlay);
+      window.removeEventListener('switchMode', handleSwitchMode);
+    };
   }, []);
 
   useEffect(() => {
@@ -421,11 +440,18 @@ function AppContent() {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
 
+  const formatTimestamp = (date) => {
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return isToday ? time : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+  };
+
   const handleSendMessage = async (message) => {
     const userMsg = {
       role: 'user',
       content: message,
-      timestamp: new Date().toLocaleTimeString()
+      timestamp: formatTimestamp(new Date())
     };
     
     setMessages(prev => [...prev, userMsg]);
@@ -445,7 +471,7 @@ function AppContent() {
         const assistantMsg = {
           role: 'assistant',
           content: data.response,
-          timestamp: new Date().toLocaleTimeString(),
+          timestamp: formatTimestamp(new Date()),
           components: data.execution_result?.components || null,
           execution_result: data.execution_result || null,
           skill: data.execution_result?.selected_skill || null,
@@ -458,11 +484,12 @@ function AppContent() {
       const errorMsg = {
         role: 'assistant',
         content: `Error: ${error.message}`,
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: formatTimestamp(new Date())
       };
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsProcessing(false);
+      globalState.updateState({ agentPlan: null });
     }
   };
 
@@ -607,6 +634,7 @@ function AppContent() {
           onModeChange={setActiveMode}
           theme={theme}
           onThemeToggle={handleThemeToggle}
+          onClearCache={handleClearCache}
         />
         
         {activeMode === 'observability' ? (
@@ -620,8 +648,10 @@ function AppContent() {
             onSendMessage={handleSendMessage}
             isProcessing={isProcessing}
             skills={globalState.skillCatalog || []}
+            backendConnected={globalState.backendConnected}
             onFloatingAction={handleFloatingAction}
             onModeChange={setActiveMode}
+            agentPlan={globalState.agentPlan}
             loopStatus={{
               running: globalState.running,
               iteration: globalState.iteration,
@@ -656,13 +686,7 @@ function AppContent() {
           />
         )}
         
-        <button
-          onClick={handleClearCache}
-          className="clear-cache-button"
-          title="Clear all caches"
-        >
-          🗑️ Clear Cache
-        </button>
+
       </div>
     </ErrorBoundary>
   );

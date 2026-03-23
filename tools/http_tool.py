@@ -1,21 +1,33 @@
 """
-HTTP Tool - Network requests capability
+HTTP Tool - Full HTTP client with headers, auth, response parsing, and retry.
 """
 import hashlib
 import logging
 import time
 from urllib.parse import urlparse
+
 import requests
+
 from tools.tool_interface import BaseTool
-from tools.tool_result import ResultStatus, ToolResult
+from tools.tool_result import ToolResult, ResultStatus
+from tools.tool_capability import ToolCapability, Parameter, ParameterType, SafetyLevel
+
 logger = logging.getLogger(__name__)
 
-class HTTPTool(BaseTool):
-    ALLOWED_DOMAINS = ['localhost', '127.0.0.1', 'api.github.com', 'github.com', 'pypi.org', 'httpbin.org', 'wikipedia.org', 'en.wikipedia.org']
 
-    def __init__(self, orchestrator=None, cache_enabled: bool=False, ttl: int=3600):
-        self.description = 'Make HTTP requests'
-        self.capabilities = ['get', 'post', 'put', 'delete']
+class HTTPTool(BaseTool):
+    """Make HTTP requests with domain allowlist, caching, and auth support."""
+
+    # Domains always allowed regardless of scheme
+    ALWAYS_ALLOWED_DOMAINS = [
+        "localhost", "127.0.0.1", "0.0.0.0",
+        "api.github.com", "github.com",
+        "pypi.org", "httpbin.org",
+        "wikipedia.org", "en.wikipedia.org",
+    ]
+
+    def __init__(self, orchestrator=None, cache_enabled: bool = False, ttl: int = 3600):
+        self.description = "Make HTTP requests: GET, POST, PUT, PATCH, DELETE with headers and auth."
         self.cache_enabled = cache_enabled
         self.ttl = ttl
         self.cache_store = {}
@@ -24,139 +36,214 @@ class HTTPTool(BaseTool):
             self.services = orchestrator.get_services(self.__class__.__name__)
 
     def register_capabilities(self):
-        """Register HTTP request capabilities."""
-        from tools.tool_capability import Parameter, ParameterType, SafetyLevel, ToolCapability
-        self.add_capability(ToolCapability(name='get', description='Make HTTP GET request', parameters=[Parameter('url', ParameterType.STRING, 'URL to request')], returns='Response data', safety_level=SafetyLevel.MEDIUM, examples=[{'url': 'http://localhost:8000/health'}]), self._get)
-        self.add_capability(ToolCapability(name='post', description='Make HTTP POST request', parameters=[Parameter('url', ParameterType.STRING, 'URL to request'), Parameter('data', ParameterType.DICT, 'Data to send')], returns='Response data', safety_level=SafetyLevel.MEDIUM, examples=[{'url': 'http://localhost:8000/api', 'data': {}}]), self._post)
-        self.add_capability(ToolCapability(name='put', description='Make HTTP PUT request', parameters=[Parameter('url', ParameterType.STRING, 'URL to request'), Parameter('data', ParameterType.DICT, 'Data to send')], returns='Response data', safety_level=SafetyLevel.MEDIUM, examples=[{'url': 'http://localhost:8000/api', 'data': {}}]), self._put)
-        self.add_capability(ToolCapability(name='delete', description='Make HTTP DELETE request', parameters=[Parameter('url', ParameterType.STRING, 'URL to request')], returns='Response data', safety_level=SafetyLevel.MEDIUM, examples=[{'url': 'http://localhost:8000/api'}]), self._delete)
+        _url_param = Parameter("url", ParameterType.STRING, "Full URL to request")
+        _headers_param = Parameter("headers", ParameterType.DICT, "Extra request headers", required=False)
+        _auth_param = Parameter("auth", ParameterType.DICT, "Auth dict: {type: bearer|basic, token/username/password}", required=False)
+        _timeout_param = Parameter("timeout", ParameterType.INTEGER, "Request timeout in seconds. Default: 15", required=False)
+        _data_param = Parameter("data", ParameterType.DICT, "Request body as JSON object", required=False)
+        _params_param = Parameter("params", ParameterType.DICT, "URL query parameters", required=False)
 
-    def execute(self, operation: str, parameters: dict) -> ToolResult:
-        if operation == 'get':
-            return self._get(parameters)
-        if operation == 'post':
-            return self._post(parameters)
-        if operation == 'put':
-            return self._put(parameters)
-        if operation == 'delete':
-            return self._delete(parameters)
-        return ToolResult(tool_name=self.name, capability_name=operation, status=ResultStatus.FAILURE, error_message='Unknown operation')
+        self.add_capability(ToolCapability(
+            name="get",
+            description="Make an HTTP GET request and return status, headers, and body.",
+            parameters=[_url_param, _params_param, _headers_param, _auth_param, _timeout_param],
+            returns="Dict with status, body, headers.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "https://api.github.com/repos/python/cpython"}],
+        ), self._handle_get)
 
-    def _get(self, params: dict) -> ToolResult:
-        url = params.get('url')
-        validation_error = self._validate_url(url, 'get')
-        if validation_error:
-            return validation_error
-        if self.cache_enabled:
-            cache_key = self._cache_key(url, params)
-            cached_response = self._get_cached(cache_key)
-            if cached_response is not None:
-                logger.info('Returning cached response for URL: %s', url)
-                return ToolResult(tool_name=self.name, capability_name='get', status=ResultStatus.SUCCESS, data={'status': 200, 'body': cached_response})
-        try:
-            start_time = time.time()
-            response = requests.get(url, headers=self._build_request_headers(), timeout=10)
-            end_time = time.time()
-            if response.status_code >= 400:
-                return ToolResult(tool_name=self.name, capability_name='get', status=ResultStatus.FAILURE, error_message=f'HTTP Error: {response.status_code}')
-            response_data = response.text[:5000]
-            if self.cache_enabled:
-                self._set_cache(self._cache_key(url, params), response_data)
-            logger.info('GET request successful for URL: %s in %.2fs', url, end_time - start_time)
-            return ToolResult(tool_name=self.name, capability_name='get', status=ResultStatus.SUCCESS, data={'status': response.status_code, 'body': response_data})
-        except requests.exceptions.RequestException as exc:
-            return ToolResult(tool_name=self.name, capability_name='get', status=ResultStatus.FAILURE, error_message=str(exc))
+        self.add_capability(ToolCapability(
+            name="post",
+            description="Make an HTTP POST request with a JSON body.",
+            parameters=[_url_param, _data_param, _headers_param, _auth_param, _timeout_param],
+            returns="Dict with status, body, headers.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "http://localhost:8000/chat", "data": {"message": "hello"}}],
+        ), self._handle_post)
 
-    def _post(self, params: dict) -> ToolResult:
-        url, data = self._extract_url_and_data(params)
-        validation_error = self._validate_url(url, 'post')
-        if validation_error:
-            return validation_error
-        return self._send_with_body('post', url, data)
+        self.add_capability(ToolCapability(
+            name="put",
+            description="Make an HTTP PUT request with a JSON body.",
+            parameters=[_url_param, _data_param, _headers_param, _auth_param, _timeout_param],
+            returns="Dict with status, body, headers.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "http://localhost:8000/api/item/1", "data": {"name": "updated"}}],
+        ), self._handle_put)
 
-    def _put(self, params: dict) -> ToolResult:
-        url = params.get('url')
-        data = params.get('data', {})
-        validation_error = self._validate_url(url, 'put')
-        if validation_error:
-            return validation_error
-        return self._send_with_body('put', url, data)
+        self.add_capability(ToolCapability(
+            name="patch",
+            description="Make an HTTP PATCH request with a partial JSON body.",
+            parameters=[_url_param, _data_param, _headers_param, _auth_param, _timeout_param],
+            returns="Dict with status, body, headers.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "http://localhost:8000/api/item/1", "data": {"status": "active"}}],
+        ), self._handle_patch)
 
-    def _delete(self, params: dict) -> ToolResult:
-        url = params.get('url')
-        validation_error = self._validate_url(url, 'delete')
-        if validation_error:
-            return validation_error
-        try:
-            start_time = time.time()
-            response = requests.delete(url, headers=self._build_request_headers(), timeout=10)
-            end_time = time.time()
-            if response.status_code >= 400:
-                return ToolResult(tool_name=self.name, capability_name='delete', status=ResultStatus.FAILURE, error_message=f'HTTP Error: {response.status_code}')
-            logger.info('DELETE request successful for URL: %s in %.2fs', url, end_time - start_time)
-            return ToolResult(tool_name=self.name, capability_name='delete', status=ResultStatus.SUCCESS, data={'status': response.status_code, 'body': response.text[:1000]})
-        except requests.exceptions.RequestException as exc:
-            return ToolResult(tool_name=self.name, capability_name='delete', status=ResultStatus.FAILURE, error_message=str(exc))
+        self.add_capability(ToolCapability(
+            name="delete",
+            description="Make an HTTP DELETE request.",
+            parameters=[_url_param, _headers_param, _auth_param, _timeout_param],
+            returns="Dict with status, body.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "http://localhost:8000/api/item/1"}],
+        ), self._handle_delete)
 
-    def _send_with_body(self, method: str, url: str, data: dict) -> ToolResult:
-        try:
-            start_time = time.time()
-            response = requests.request(method=method.upper(), url=url, json=data, headers=self._build_request_headers(), timeout=10)
-            end_time = time.time()
-            if response.status_code >= 400:
-                return ToolResult(tool_name=self.name, capability_name=method, status=ResultStatus.FAILURE, error_message=f'HTTP Error: {response.status_code}')
-            logger.info('%s request successful for URL: %s in %.2fs', method.upper(), url, end_time - start_time)
-            return ToolResult(tool_name=self.name, capability_name=method, status=ResultStatus.SUCCESS, data={'status': response.status_code, 'body': response.text[:1000]})
-        except requests.exceptions.RequestException as exc:
-            return ToolResult(tool_name=self.name, capability_name=method, status=ResultStatus.FAILURE, error_message=str(exc))
+        self.add_capability(ToolCapability(
+            name="download_file",
+            description="Download a file from a URL and save it to a local path.",
+            parameters=[
+                _url_param,
+                Parameter("destination", ParameterType.STRING, "Local file path to save to"),
+                _headers_param,
+                _timeout_param,
+            ],
+            returns="Dict with success, destination, size_bytes.",
+            safety_level=SafetyLevel.MEDIUM,
+            examples=[{"url": "https://example.com/file.pdf", "destination": "output/file.pdf"}],
+        ), self._handle_download_file)
 
-    def _validate_url(self, url: str, capability: str):
+        self.add_capability(ToolCapability(
+            name="head",
+            description="Make an HTTP HEAD request to check resource existence and headers without downloading body.",
+            parameters=[_url_param, _headers_param, _timeout_param],
+            returns="Dict with status and response headers.",
+            safety_level=SafetyLevel.LOW,
+            examples=[{"url": "https://example.com/resource"}],
+        ), self._handle_head)
+
+    # ── Core request helper ───────────────────────────────────────────────────
+
+    def _request(self, method: str, url: str, data: dict = None, headers: dict = None,
+                 auth: dict = None, timeout: int = 15, params: dict = None, stream: bool = False):
         if not url:
-            return ToolResult(tool_name=self.name, capability_name=capability, status=ResultStatus.FAILURE, error_message='URL required')
+            raise ValueError("url is required")
         if not self._is_allowed_url(url):
-            allowed_domains_str = ', '.join(self.ALLOWED_DOMAINS)
-            return ToolResult(tool_name=self.name, capability_name=capability, status=ResultStatus.FAILURE, error_message=f'URL not allowed. Allowed domains: {allowed_domains_str}')
+            raise ValueError(f"URL not allowed. HTTPS URLs are always permitted. HTTP only for: {', '.join(self.ALWAYS_ALLOWED_DOMAINS)}")
+
+        merged_headers = {**self._default_headers(), **(headers or {})}
+        auth_obj = self._build_auth(auth)
+        timeout = timeout or 15
+
+        cache_key = None
+        if method == "GET" and self.cache_enabled:
+            cache_key = self._cache_key(url, params or {})
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+
+        resp = requests.request(
+            method=method.upper(), url=url,
+            json=data, headers=merged_headers,
+            auth=auth_obj, timeout=timeout,
+            params=params, stream=stream,
+        )
+
+        result = {
+            "status": resp.status_code,
+            "ok": resp.status_code < 400,
+            "headers": dict(resp.headers),
+            "body": resp.text[:20000] if not stream else None,
+            "url": resp.url,
+        }
+        # Try to parse JSON body automatically
+        if "application/json" in resp.headers.get("Content-Type", ""):
+            try:
+                result["json"] = resp.json()
+            except Exception:
+                pass
+
+        if cache_key and resp.status_code < 400:
+            self._set_cache(cache_key, result)
+
+        return result
+
+    def _default_headers(self) -> dict:
+        return {"User-Agent": "CUA/1.0", "Accept": "application/json, text/html;q=0.9, */*;q=0.8"}
+
+    def _build_auth(self, auth: dict):
+        if not auth:
+            return None
+        auth_type = (auth.get("type") or "").lower()
+        if auth_type == "bearer":
+            return None  # handled via header injection below — caller should pass in headers
+        if auth_type == "basic":
+            return (auth.get("username", ""), auth.get("password", ""))
         return None
 
     def _is_allowed_url(self, url: str) -> bool:
         try:
             parsed = urlparse(url)
-            if not parsed.netloc:
-                return False
-            if parsed.scheme == 'https':
+            if parsed.scheme == "https":
                 return True
-            return any((parsed.netloc == domain or parsed.netloc.endswith('.' + domain) for domain in self.ALLOWED_DOMAINS))
+            netloc = parsed.netloc.split(":")[0]
+            return any(netloc == d or netloc.endswith("." + d) for d in self.ALWAYS_ALLOWED_DOMAINS)
         except Exception:
             return False
 
-    def _build_request_headers(self) -> dict:
-        return {'User-Agent': 'CUA/1.0', 'Accept': 'application/json'}
+    # ── Handlers ──────────────────────────────────────────────────────────────
+
+    def _handle_get(self, url: str, params: dict = None, headers: dict = None,
+                    auth: dict = None, timeout: int = 15, **kwargs) -> dict:
+        return self._request("GET", url, headers=headers, auth=auth, timeout=timeout, params=params)
+
+    def _handle_post(self, url: str, data: dict = None, headers: dict = None,
+                     auth: dict = None, timeout: int = 15, **kwargs) -> dict:
+        return self._request("POST", url, data=data, headers=headers, auth=auth, timeout=timeout)
+
+    def _handle_put(self, url: str, data: dict = None, headers: dict = None,
+                    auth: dict = None, timeout: int = 15, **kwargs) -> dict:
+        return self._request("PUT", url, data=data, headers=headers, auth=auth, timeout=timeout)
+
+    def _handle_patch(self, url: str, data: dict = None, headers: dict = None,
+                      auth: dict = None, timeout: int = 15, **kwargs) -> dict:
+        return self._request("PATCH", url, data=data, headers=headers, auth=auth, timeout=timeout)
+
+    def _handle_delete(self, url: str, headers: dict = None,
+                       auth: dict = None, timeout: int = 15, **kwargs) -> dict:
+        return self._request("DELETE", url, headers=headers, auth=auth, timeout=timeout)
+
+    def _handle_download_file(self, url: str, destination: str, headers: dict = None,
+                               timeout: int = 30, **kwargs) -> dict:
+        if not destination:
+            raise ValueError("destination is required")
+        import os
+        os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+        resp = requests.get(url, headers={**self._default_headers(), **(headers or {})},
+                            timeout=timeout or 30, stream=True)
+        resp.raise_for_status()
+        size = 0
+        with open(destination, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+                size += len(chunk)
+        return {"success": True, "destination": destination, "size_bytes": size, "status": resp.status_code}
+
+    def _handle_head(self, url: str, headers: dict = None, timeout: int = 10, **kwargs) -> dict:
+        if not url:
+            raise ValueError("url is required")
+        resp = requests.head(url, headers={**self._default_headers(), **(headers or {})}, timeout=timeout or 10)
+        return {"status": resp.status_code, "ok": resp.status_code < 400, "headers": dict(resp.headers)}
+
+    # ── Cache helpers ─────────────────────────────────────────────────────────
 
     def _cache_key(self, url: str, params: dict) -> str:
-        return hashlib.sha256((url + str(params)).encode('utf-8')).hexdigest()
+        return hashlib.sha256((url + str(params)).encode()).hexdigest()
 
-    def _get_cached(self, cache_key: str):
-        current_time = time.time()
-        if cache_key in self.cache_store:
-            expiration_time, data = self.cache_store[cache_key]
-            if current_time < expiration_time:
-                return data
-            del self.cache_store[cache_key]
+    def _get_cached(self, key: str):
+        entry = self.cache_store.get(key)
+        if entry and time.time() < entry[0]:
+            return entry[1]
+        if entry:
+            del self.cache_store[key]
         return None
 
-    def _set_cache(self, cache_key: str, response_data: str):
-        self.cache_store[cache_key] = (time.time() + self.ttl, response_data)
+    def _set_cache(self, key: str, data):
+        self.cache_store[key] = (time.time() + self.ttl, data)
 
-    def _put(self, params: dict) -> ToolResult:
-        url, data = self._extract_url_and_data(params)
-        validation_error = self._validate_url(url, "put")
-        if validation_error:
-            return validation_error
-        return self._send_with_body("put", url, data)
-
-
-
-    def _extract_url_and_data(self, params: dict):
-        url = params.get("url")
-        data = params.get("data", {})
-        return url, data
+    def execute(self, operation: str, parameters: dict) -> ToolResult:
+        if operation in self._capabilities:
+            return self.execute_capability(operation, **parameters)
+        return ToolResult(
+            tool_name=self.name, capability_name=operation,
+            status=ResultStatus.FAILURE, error_message=f"Unknown operation: {operation}",
+        )

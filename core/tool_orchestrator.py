@@ -1,10 +1,13 @@
 """Shared orchestration layer for tool invocation and result normalization."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import inspect
 import time
+
+logger = logging.getLogger(__name__)
 
 from core.parameter_resolution import resolve_tool_parameters
 from core.storage_broker import get_storage_broker
@@ -12,6 +15,7 @@ from core.tool_services import ToolServices
 from core.validation_service import ValidationService
 from core.tool_execution_logger import get_execution_logger
 from core.circuit_breaker import get_circuit_breaker, CircuitBreakerError
+from core.verification_engine import get_verification_engine, VERDICT_RETRY, VERDICT_FALLBACK, VERDICT_ESCALATE
 
 
 @dataclass
@@ -37,6 +41,7 @@ class ToolOrchestrator:
         self._registry = registry
         self._execution_logger = get_execution_logger()
         self._circuit_breaker = get_circuit_breaker()
+        self._verifier = get_verification_engine(llm_client)
     
     def get_services(self, tool_name: str) -> ToolServices:
         """Get service facade for a tool (cached per tool name)."""
@@ -130,17 +135,13 @@ class ToolOrchestrator:
                 execution_context.add_error(tool_name, f"Circuit breaker OPEN: {str(e)}", 0)
                 if execution_context.should_fallback():
                     execution_context.warnings.append(f"Circuit breaker open for {tool_name}, fallback available")
-            
-            # Validate output even in error scenarios
-            if execution_context and hasattr(execution_context, 'verification_mode'):
-                validation_error = self._validate_output(None, execution_context)
-                if validation_error:
-                    execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", 0)
-            
+
+            error_msg = f"Tool quarantined due to repeated failures. {str(e)}"
+            self._verify_error_result(error_msg, tool_name, operation, execution_context)
             return OrchestratedToolResult(
                 success=False,
                 data=None,
-                error=f"Tool quarantined due to repeated failures. {str(e)}",
+                error=error_msg,
                 raw_result=None,
                 tool_name=tool_name,
                 operation=operation,
@@ -150,7 +151,6 @@ class ToolOrchestrator:
                 meta={"auto_filled": resolution.auto_filled, "circuit_breaker": "open"},
             )
         except Exception as e:
-            # Log failed execution
             execution_time_ms = (time.time() - start_time) * 1000
             self._execution_logger.log_execution(
                 tool_name=tool_name,
@@ -161,19 +161,9 @@ class ToolOrchestrator:
                 parameters=resolution.resolved_parameters,
                 output_data=None
             )
-            
-            # Update execution context if provided
             if execution_context:
                 execution_context.add_error(tool_name, str(e), execution_context.retry_count)
-            
-            # Validate output even in error scenarios
-            if execution_context and hasattr(execution_context, 'verification_mode'):
-                validation_error = self._validate_output(None, execution_context)
-                if validation_error:
-                    execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", execution_context.retry_count)
-            
-            # Thin tools raise exceptions for errors - wrap them
-            from tools.tool_result import ToolResult, ResultStatus
+            self._verify_error_result(str(e), tool_name, operation, execution_context)
             return OrchestratedToolResult(
                 success=False,
                 data=None,
@@ -201,31 +191,41 @@ class ToolOrchestrator:
         
         success, data, error = self._normalize_result(raw_result)
         artifacts = self._extract_artifacts(data)
-        
-        # Validate output against skill context if provided (ALL PATHS)
-        if execution_context and hasattr(execution_context, 'verification_mode'):
-            validation_error = self._validate_output(data, execution_context)
-            if validation_error:
-                # Validation failed - trigger recovery logic
-                execution_context.add_error(tool_name, f"Output validation failed: {validation_error}", execution_context.retry_count)
-                
-                # Check if we should retry or fallback
-                if execution_context.should_retry():
-                    execution_context.retry_count += 1
-                    execution_context.warnings.append(f"Retrying due to validation failure (attempt {execution_context.retry_count})")
-                    success = False
-                    error = f"Output validation failed: {validation_error} (will retry)"
-                elif execution_context.should_fallback():
-                    fallback_tool = execution_context.fallback_tools[0] if execution_context.fallback_tools else None
-                    if fallback_tool:
-                        execution_context.warnings.append(f"Switching to {fallback_tool} due to validation failure")
-                        execution_context.selected_tool = fallback_tool
-                    success = False
-                    error = f"Output validation failed: {validation_error} (will fallback)"
-                else:
-                    # No recovery options - mark as failed
-                    success = False
-                    error = f"Output validation failed: {validation_error}"
+
+        # Multi-layer verification (ALL paths — success and error)
+        verification = self._verifier.verify(
+            data=data,
+            tool_name=tool_name,
+            operation=operation,
+            skill_context=execution_context,
+        )
+        if not verification.passed:
+            logger.warning(
+                f"[VERIFY] {tool_name}.{operation} → {verification.verdict} "
+                f"(confidence={verification.confidence:.2f}): {verification.notes}"
+            )
+            if execution_context:
+                for issue in verification.issues:
+                    if issue.severity == "error":
+                        execution_context.add_error(tool_name, issue.message, getattr(execution_context, 'retry_count', 0))
+
+            if verification.verdict == VERDICT_RETRY:
+                success = False
+                error = f"Verification failed (retry): {verification.notes}"
+            elif verification.verdict == VERDICT_FALLBACK:
+                success = False
+                error = f"Verification failed (fallback): {verification.notes}"
+                if execution_context and hasattr(execution_context, 'fallback_tools') and execution_context.fallback_tools:
+                    execution_context.selected_tool = execution_context.fallback_tools[0]
+                    execution_context.warnings.append(f"Switched to fallback due to verification: {verification.notes}")
+            elif verification.verdict == VERDICT_ESCALATE:
+                success = False
+                error = f"Verification escalated (cross-source disagreement): {verification.notes}"
+        else:
+            # Warn but don't fail on warnings-only
+            for issue in verification.issues:
+                if execution_context:
+                    execution_context.warnings.append(f"[VERIFY] {issue.message}")
         
         # Log successful execution
         execution_time_ms = (time.time() - start_time) * 1000
@@ -326,6 +326,9 @@ class ToolOrchestrator:
             if "success" in result:
                 success = bool(result.get("success"))
                 data = result.get("data")
+                # If success=True but no nested "data" key, use the whole dict as data
+                if success and data is None:
+                    data = {k: v for k, v in result.items() if k not in ("success", "error", "error_message")}
                 error = result.get("error") or result.get("error_message")
                 if success:
                     error = None
@@ -350,6 +353,20 @@ class ToolOrchestrator:
                     artifacts.append({"type": "file_ref", "key": "files", "path": item})
         return artifacts
     
+    def _verify_error_result(
+        self, error: str, tool_name: str, operation: str, execution_context: Optional[Any]
+    ) -> None:
+        """Run verification on error/fallback paths so issues are logged consistently."""
+        verification = self._verifier.verify(
+            data=None,
+            tool_name=tool_name,
+            operation=operation,
+            skill_context=execution_context,
+        )
+        if execution_context and verification.issues:
+            for issue in verification.issues:
+                execution_context.warnings.append(f"[VERIFY:{issue.layer}] {issue.message}")
+
     def _validate_output(self, data: Any, execution_context: Any) -> Optional[str]:
         """Validate output against skill verification_mode (enhanced for all paths)."""
         verification_mode = getattr(execution_context, 'verification_mode', None)

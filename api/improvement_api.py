@@ -801,6 +801,39 @@ async def suggest_next_tool(skip: int = 0):
                 registry_snapshot_tools=len(registry_tool_names),
             )
 
+        # Surface cheaper resolution paths before suggesting tool creation
+        effective_action = top.resolution_action or top.suggested_action or "create_tool"
+        if effective_action in {"reroute", "mcp", "api_wrap"}:
+            resolution_target = top.resolution_target or ""
+            action_labels = {
+                "reroute": "reroute_existing_tool",
+                "mcp": "use_mcp_server",
+                "api_wrap": "create_api_wrapper",
+            }
+            return ToolSuggestionResponse(
+                action=action_labels.get(effective_action, effective_action),
+                target_tool=resolution_target or top.target_tool,
+                tool_name=resolution_target or _camel(gap_name) + "Tool",
+                description=(
+                    f"Resolution for '{gap_name}': {effective_action} via '{resolution_target}'. "
+                    f"Notes: {'; '.join((top.resolution_notes or [])[:2])}."
+                ),
+                rationale=(
+                    f"A cheaper path than tool creation was found for '{gap_name}'. "
+                    f"Use '{effective_action}' before creating a new tool."
+                ),
+                source="gap_tracker",
+                confidence=min(0.95, float(top.confidence_avg or 0.75)),
+                capability_gap=gap_name,
+                target_skill=top.selected_skill,
+                reasons=list((top.reasons or [])[:3]),
+                example_tasks=list((top.example_tasks or [])[:3]),
+                example_errors=list((top.example_errors or [])[:3]),
+                gap_type=top.gap_type,
+                suggested_action=effective_action,
+                registry_snapshot_tools=len(registry_tool_names),
+            )
+
         # Let the LLM refine tool name + description into a better creation prompt.
         try:
             prompt = f"""You are helping an autonomous agent system (CUA) decide what tool to create next.

@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, BarChart3, Calendar, Database, MessageSquare, Wrench, Zap, Sun, Moon, Activity, Bot, Target } from 'lucide-react';
+import { Settings, Database, MessageSquare, Wrench, Zap, Sun, Moon, Activity, Bot, Trash2 } from 'lucide-react';
 import './Header.css';
 
-function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange, theme, onThemeToggle, onOpenAutoEvolution }) {
+function Header({ loopStatus, availableModels, currentModel, onModelChange, onOpenObservability, activeMode, onModeChange, theme, onThemeToggle, onOpenAutoEvolution, onClearCache }) {
   const [showSettings, setShowSettings] = useState(false);
 
   const modes = [
@@ -61,6 +61,7 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
           title="Auto-Evolution"
         >
           <Bot size={18} />
+          <span className="btn-label">Auto-Evolve</span>
         </button>
         <button 
           className="btn btn-theme" 
@@ -75,11 +76,13 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
           title="Tools Management"
         >
           <Activity size={18} />
+          <span className="btn-label">Tools</span>
         </button>
-        <button className="btn btn-settings" onClick={onOpenObservability}>
+        <button className="btn btn-settings" onClick={onOpenObservability} title="Observability">
           <Database size={18} />
+          <span className="btn-label">Data</span>
         </button>
-        <button className="btn btn-settings" onClick={() => setShowSettings(!showSettings)}>
+        <button className="btn btn-settings" onClick={() => setShowSettings(!showSettings)} title="Settings">
           <Settings size={18} />
         </button>
       </div>
@@ -100,13 +103,13 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
             </select>
           </div>
           <div className="settings-divider"></div>
-          <button className="settings-menu-item" onClick={() => { setShowSettings(false); onOpenObservability(); }}>
-            <Database size={16} />
-            Observability
-          </button>
           <button className="settings-menu-item" onClick={() => { setShowSettings(false); window.dispatchEvent(new CustomEvent('openOverlay', { detail: 'sessions' })); }}>
             <MessageSquare size={16} />
             Sessions
+          </button>
+          <button className="settings-menu-item settings-menu-item--danger" onClick={() => { setShowSettings(false); onClearCache && onClearCache(); }}>
+            <Trash2 size={16} />
+            Clear Cache
           </button>
         </div>
       )}

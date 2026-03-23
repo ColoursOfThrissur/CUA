@@ -5,7 +5,7 @@ import EvolutionMode from './EvolutionMode';
 import ToolModeChat from './ToolModeChat';
 import './MainCanvas.css';
 
-function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange, skills }) {
+function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange, skills, backendConnected, agentPlan }) {
   const renderContent = () => {
     if (mode === 'tools') {
       return <ToolModeChat key="tools" onModeChange={onModeChange} />;
@@ -23,6 +23,8 @@ function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAct
         isProcessing={isProcessing}
         mode={mode}
         skills={skills}
+        backendConnected={backendConnected}
+        agentPlan={agentPlan}
       />
     );
   };

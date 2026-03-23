@@ -48,6 +48,12 @@ SERVICE_METHODS = {
         'take_screenshot(filename)',
         'close()',
     ],
+    'credentials': [
+        'get(key)',
+        'set(key, value, description="", allowed_tools=None)',
+        'exists(key)',
+        'delete(key)',
+    ],
 }
 
 def get_service_methods(service_name: str):

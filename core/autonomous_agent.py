@@ -44,12 +44,15 @@ class AutonomousAgent:
         self.llm_client = llm_client
         self.skill_registry = skill_registry
         self.skill_selector = skill_selector or SkillSelector()
+        from core.strategic_memory import get_strategic_memory
+        self.strategic_memory = get_strategic_memory()
     
     def achieve_goal(
         self,
         goal: AgentGoal,
         session_id: str,
-        context: Optional[Dict] = None
+        context: Optional[Dict] = None,
+        stop_check=None
     ) -> Dict[str, Any]:
         """
         Autonomously work toward achieving a goal.
@@ -57,7 +60,7 @@ class AutonomousAgent:
         Returns:
             Result dict with success status, iterations, and final state
         """
-        logger.info(f"Agent starting goal: {goal.goal_text}")
+        logger.info(f"[AGENT] Starting goal: '{goal.goal_text[:80]}'")
         
         # Set active goal in memory
         self.memory.set_active_goal(session_id, goal.goal_text)
@@ -76,7 +79,18 @@ class AutonomousAgent:
         
         while iteration < goal.max_iterations and not success:
             iteration += 1
-            logger.info(f"Goal iteration {iteration}/{goal.max_iterations}")
+            if stop_check and stop_check():
+                logger.info("[AGENT] Stop requested — aborting")
+                return {
+                    "success": False,
+                    "iterations": iteration,
+                    "execution_history": execution_history,
+                    "final_state": final_state,
+                    "goal": goal.goal_text,
+                    "message": "Stopped by user",
+                    "status": "stopped",
+                }
+            logger.info(f"[AGENT] Iteration {iteration}/{goal.max_iterations}")
             
             try:
                 # Step 1: Plan
@@ -98,24 +112,61 @@ class AutonomousAgent:
                     }
                 
                 # Step 2: Execute
+                import time as _time
                 execution_id = f"{session_id}_iter{iteration}"
+                exec_start = _time.time()
+
+                # Emit plan to UI
+                from core.event_bus import get_event_bus
+                _bus = get_event_bus()
+                _bus.emit_sync("agent_plan", {
+                    "iteration": iteration,
+                    "max_iterations": goal.max_iterations,
+                    "steps": [
+                        {
+                            "step_id": s.step_id,
+                            "description": s.description,
+                            "tool_name": s.tool_name,
+                            "operation": s.operation,
+                            "status": "pending",
+                        }
+                        for s in plan.steps
+                    ],
+                })
+
                 state = self.executor.execute_plan(plan, execution_id)
+                exec_duration = _time.time() - exec_start
                 execution_history.append(execution_id)
                 final_state = state
-                
+
                 # Link execution to session
                 self.memory.add_execution(session_id, execution_id)
-                
+
                 # Step 3: Verify
                 verification = self._verify_results(goal, state, session_id)
-                
+
+                # Shared data for strategic memory recording
+                _skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
+                _plan_steps = [
+                    {"tool_name": s.tool_name, "operation": s.operation, "domain": s.domain}
+                    for s in plan.steps
+                ]
+
                 if verification["success"]:
                     success = True
-                    logger.info(f"Goal achieved in {iteration} iterations")
+                    self.strategic_memory.record(
+                        goal=goal.goal_text, skill_name=_skill_name,
+                        steps=_plan_steps, success=True, duration_s=exec_duration,
+                    )
+                    logger.info(f"[AGENT] Goal achieved in {iteration} iteration(s)")
                     break
-                
+
                 # Step 4: Analyze failure and prepare for retry
                 if iteration < goal.max_iterations:
+                    self.strategic_memory.record(
+                        goal=goal.goal_text, skill_name=_skill_name,
+                        steps=_plan_steps, success=False, duration_s=exec_duration,
+                    )
                     self._analyze_failure(goal, state, verification, session_id)
                     context = self._update_context_for_retry(context, state, verification)
                 
@@ -165,7 +216,7 @@ class AutonomousAgent:
         iteration: int
     ) -> Optional[ExecutionPlan]:
         """Plan for current iteration."""
-        logger.info(f"Planning iteration {iteration}")
+        logger.info(f"[AGENT] Planning iteration {iteration}")
         
         # Get conversation context
         conv_summary = self.memory.get_conversation_summary(session_id)
@@ -233,7 +284,7 @@ class AutonomousAgent:
         session_id: str
     ) -> Dict[str, Any]:
         """Verify if execution achieved the goal."""
-        logger.info("Verifying execution results")
+        logger.info(f"[AGENT] Verifying execution results")
         
         # Check if all steps completed
         completed_steps = [
@@ -360,7 +411,7 @@ Respond with ONLY valid JSON in this format:
         session_id: str
     ):
         """Analyze why goal wasn't achieved and learn from it."""
-        logger.info("Analyzing failure for next iteration")
+        logger.info(f"[AGENT] Analyzing failure for next iteration")
         
         # Detailed failure analysis
         failed_steps = verification.get("failed_steps", [])

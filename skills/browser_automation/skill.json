@@ -1,31 +1,62 @@
 {
   "name": "browser_automation",
   "category": "automation",
-  "description": "Advanced browser automation, web scraping, and interactive web tasks.",
+  "description": "Advanced browser automation, web scraping, form interaction, multi-tab control, and interactive web tasks.",
   "trigger_examples": [
     "automate this website",
     "fill out this form",
     "click on this button",
     "scrape data from this page",
     "take a screenshot of this page",
-    "interact with web elements"
+    "interact with web elements",
+    "navigate to this URL",
+    "type into this input",
+    "submit this form",
+    "wait for element to appear",
+    "scroll down the page",
+    "run javascript on the page",
+    "open a new tab",
+    "switch browser tab",
+    "get cookies from this site",
+    "select dropdown option",
+    "switch to iframe",
+    "press enter on the page",
+    "go back in browser history",
+    "hover over this element",
+    "find all links on the page",
+    "get element text",
+    "check if element is visible",
+    "open chatgpt",
+    "open this website and type",
+    "login to this site",
+    "log into this website",
+    "sign in to this page",
+    "open browser and navigate",
+    "go to this website and click",
+    "type in the search box",
+    "enter text into the field",
+    "open and interact with"
   ],
   "preferred_tools": [
-    "BrowserAutomationTool"
+    "BrowserAutomationTool",
+    "WebAccessTool"
   ],
   "required_tools": [],
   "preferred_connectors": [],
   "input_types": [
     "url",
     "selector",
-    "automation_script",
-    "form_data"
+    "form_data",
+    "script",
+    "automation_steps"
   ],
   "output_types": [
     "automation_result",
     "screenshot",
     "scraped_data",
-    "interaction_result"
+    "interaction_result",
+    "element_info",
+    "page_content"
   ],
   "verification_mode": "side_effect_observed",
   "risk_level": "high",

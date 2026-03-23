@@ -39,7 +39,142 @@ class TaskPlanner:
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.skill_registry = skill_registry
+        from core.strategic_memory import get_strategic_memory
+        self.strategic_memory = get_strategic_memory()
     
+    def replan_remaining(
+        self,
+        original_goal: str,
+        remaining_steps: List["TaskStep"],
+        replan_context: Dict,
+        context: Optional[Dict] = None,
+    ) -> List["TaskStep"]:
+        """
+        Regenerate only the remaining steps of a plan given what has already
+        completed and what failed. Returns a new list of TaskStep objects
+        that replace the original remaining steps.
+        """
+        logger.info(f"[PLANNER] Replanning {len(remaining_steps)} remaining steps for: '{original_goal[:60]}'")
+
+        available_tools = self._get_tool_capabilities()
+        completed_summary = replan_context.get("completed_summary", {})
+        failed_steps = replan_context.get("failed_steps", [])
+        failed_errors = replan_context.get("failed_errors", {})
+
+        completed_str = json.dumps(completed_summary, indent=2) if completed_summary else "None"
+        failed_str = json.dumps(failed_errors, indent=2) if failed_errors else "None"
+        remaining_desc = json.dumps(
+            [{"step_id": s.step_id, "description": s.description, "tool": s.tool_name, "op": s.operation}
+             for s in remaining_steps],
+            indent=2
+        )
+
+        prompt = f"""You are replanning the remaining steps of a task that partially failed.
+
+ORIGINAL GOAL: {original_goal}
+
+COMPLETED STEPS (outputs available):
+{completed_str}
+
+FAILED STEPS (errors):
+{failed_str}
+
+ORIGINAL REMAINING STEPS (may need to change):
+{remaining_desc}
+
+AVAILABLE TOOLS:
+{json.dumps(available_tools, indent=2)}
+
+Generate replacement steps to achieve the original goal given what succeeded.
+Use different tools/operations than the ones that failed.
+Keep step_ids sequential from the last completed step.
+
+PARALLELISM RULES:
+- Steps with "dependencies": [] run IN PARALLEL with other dependency-free steps
+- Only add a dependency when a step genuinely needs the OUTPUT of a prior step
+- Always ask: "can this step start immediately?" — if yes, leave dependencies empty
+- CRITICAL: get_current_page reads the CURRENTLY OPEN browser page — it MUST depend on the navigate/open_page step that loaded the page. Never put get_current_page in dependencies: []
+
+Return ONLY a JSON array of steps:
+[
+  {{
+    "step_id": "step_N",
+    "description": "...",
+    "tool_name": "ToolName",
+    "operation": "operation_name",
+    "parameters": {{}},
+    "dependencies": [],
+    "expected_output": "...",
+    "domain": "web|computer|development|other",
+    "retry_on_failure": true
+  }}
+]
+
+Return ONLY valid JSON array, no explanation."""
+
+        try:
+            response = self.llm_client._call_llm(prompt, temperature=0.3, max_tokens=1500)
+            response = response.strip()
+            if "```json" in response:
+                response = response[response.find("```json") + 7:response.rfind("```")].strip()
+            elif "```" in response:
+                response = response[response.find("```") + 3:response.rfind("```")].strip()
+
+            steps_data = self._parse_plan_response(f'{{"steps": {response} }}')
+            if isinstance(steps_data, dict):
+                steps_data = steps_data.get("steps", steps_data)
+            if not isinstance(steps_data, list):
+                raise ValueError("Expected JSON array")
+
+            current_tools = {t.__class__.__name__: t for t in getattr(self.tool_registry, "tools", [])}
+            new_steps = []
+            for sd in steps_data:
+                tool_name = sd.get("tool_name")
+                operation = sd.get("operation")
+                if tool_name not in current_tools:
+                    logger.warning(f"Replan: unknown tool {tool_name}, skipping")
+                    continue
+                tool = current_tools[tool_name]
+                caps = tool.get_capabilities() or {}
+                # Remap hallucinated op names
+                if operation not in caps:
+                    remapped = self._OP_ALIASES.get(operation)
+                    if remapped and remapped in caps:
+                        operation = remapped
+                    else:
+                        logger.warning(f"Replan: unknown op {operation} on {tool_name}, skipping")
+                        continue
+                capability = caps[operation]
+                params = sd.get("parameters", {})
+                params = self._normalize_params(params, capability)
+                new_steps.append(TaskStep(
+                    step_id=sd["step_id"],
+                    description=sd["description"],
+                    tool_name=tool_name,
+                    operation=operation,
+                    parameters=params,
+                    dependencies=sd.get("dependencies", []),
+                    expected_output=sd.get("expected_output", ""),
+                    domain=sd.get("domain", "general"),
+                    retry_on_failure=sd.get("retry_on_failure", True),
+                    max_retries=sd.get("max_retries", 3),
+                ))
+
+            if new_steps:
+                logger.info(f"[PLANNER] Replan produced {len(new_steps)} replacement steps")
+                try:
+                    self._validate_dependencies(new_steps)
+                except ValueError as e:
+                    logger.warning(f"Replan dependency validation failed: {e}, returning original steps")
+                    return remaining_steps
+                return new_steps
+
+        except Exception as e:
+            logger.error(f"Replan failed: {e}")
+
+        # Fallback: return original remaining steps unchanged
+        return remaining_steps
+
     def plan_task(self, user_goal: str, context: Optional[Dict] = None) -> ExecutionPlan:
         """
         Convert user goal into executable plan.
@@ -51,20 +186,25 @@ class TaskPlanner:
         Returns:
             ExecutionPlan with ordered steps
         """
-        logger.info(f"Planning task for goal: {user_goal}")
+        logger.info(f"[PLANNER] Planning task: '{user_goal[:80]}'")
         
         # Get available tools and their capabilities
         available_tools = self._get_tool_capabilities()
+
+        # Retrieve similar past plans to bias the LLM
+        skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
+        past_plans = self.strategic_memory.retrieve(user_goal, skill_name=skill_name, top_k=3)
         
         # Build planning prompt
-        prompt = self._build_planning_prompt(user_goal, available_tools, context)
+        prompt = self._build_planning_prompt(user_goal, available_tools, context, past_plans)
         
         # Get plan from LLM
         try:
             response = self.llm_client._call_llm(
                 prompt,
                 temperature=0.3,
-                max_tokens=2000
+                max_tokens=2000,
+                expect_json=True
             )
             
             # Parse LLM response into structured plan
@@ -73,7 +213,7 @@ class TaskPlanner:
             # Validate and optimize plan
             plan = self._validate_plan(plan_data, user_goal)
             
-            logger.info(f"Generated plan with {len(plan.steps)} steps")
+            logger.info(f"[PLANNER] Plan ready: {len(plan.steps)} steps, complexity={plan_data.get('complexity','?')}")
             return plan
             
         except Exception as e:
@@ -100,7 +240,7 @@ class TaskPlanner:
         
         for tool_instance in current_tools:
             tool_name = tool_instance.__class__.__name__
-            if raw_web_tools_hidden and tool_name in {"HTTPTool", "BrowserAutomationTool"}:
+            if raw_web_tools_hidden and tool_name == "HTTPTool":
                 continue
             capabilities = []
             tool_caps = tool_instance.get_capabilities() or {}
@@ -124,13 +264,35 @@ class TaskPlanner:
         
         return tools_info
     
-    def _build_planning_prompt(self, goal: str, tools: Dict, context: Optional[Dict]) -> str:
+    def _build_planning_prompt(self, goal: str, tools: Dict, context: Optional[Dict], past_plans: list = None) -> str:
         """Build prompt for LLM to generate plan."""
-        tools_desc = json.dumps(tools, indent=2)
-        context_str = json.dumps(context, indent=2) if context else "None"
+        skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
+        preferred = set((context or {}).get("skill_context", {}).get("preferred_tools", []))
+        # Always include summarizer as optional utility
+        preferred.add("ContextSummarizerTool")
+
+        # Filter tool schema to preferred tools only; fall back to full set if no match
+        filtered = {k: v for k, v in tools.items() if k in preferred} if preferred else tools
+        if not filtered:
+            filtered = tools
+
+        compact_tools = {}
+        for tool_name, caps in filtered.items():
+            compact_tools[tool_name] = [
+                {
+                    "name": cap["name"],
+                    "required": [p["name"] for p in cap.get("parameters", []) if p.get("required")],
+                    "optional": [p["name"] for p in cap.get("parameters", []) if not p.get("required")],
+                }
+                for cap in caps
+            ]
+        tools_desc = json.dumps(compact_tools, indent=2)
+        context_str = f"skill: {skill_name}" if skill_name else "None"
         skill_guidance = self._build_skill_guidance(context)
         domain_guidance = self._build_domain_guidance(context)
-        
+        past_plans_str = self._build_past_plans_guidance(past_plans or [])
+        examples = self._build_skill_examples(skill_name)
+
         return f"""You are a task planning AI. Break down the user's goal into executable steps using available tools.
 
 USER GOAL: {goal}
@@ -138,29 +300,30 @@ USER GOAL: {goal}
 AVAILABLE TOOLS:
 {tools_desc}
 
-CONTEXT:
-{context_str}
+CONTEXT: {context_str}
 
 SKILL GUIDANCE:
 {skill_guidance}
 
-DOMAIN CATALOG:
-{domain_guidance}
+PAST SUCCESSFUL APPROACHES:
+{past_plans_str}
 
-CRITICAL TOOL SELECTION RULES:
-- For web retrieval, searches, page opening, page extraction, or light crawling: Use WebAccessTool
-- For file operations (read, write, list): Use FilesystemTool  
-- For shell commands (ls, pwd): Use ShellTool
-- For text summarization: Use ContextSummarizerTool
-- For database queries: Use DatabaseQueryTool
-- Prefer WebAccessTool.fetch_url for web content retrieval, WebAccessTool.search_web for searches, WebAccessTool.open_page for interactive page opening, WebAccessTool.get_current_page after prior browser navigation, and WebAccessTool.crawl_site for small same-site crawls.
+EXAMPLES FOR THIS SKILL:
+{examples}
 
-Generate a JSON execution plan with this structure:
+PARALLELISM RULES:
+- dependencies:[] means runs in parallel with other dependency-free steps
+- Only add a dependency when a step needs the OUTPUT of a prior step
+- Never run multiple BrowserAutomationTool.navigate in parallel (shared browser)
+- get_current_page MUST depend on the navigate/fetch step that loaded the page
+- take_screenshot MUST depend on the last navigate before it
+
+Generate a JSON execution plan:
 {{
   "goal": "restated goal",
   "complexity": "simple|moderate|complex",
   "estimated_duration": <seconds>,
-  "requires_approval": true/false,
+  "requires_approval": false,
   "steps": [
     {{
       "step_id": "step_1",
@@ -176,41 +339,21 @@ Generate a JSON execution plan with this structure:
   ]
 }}
 
-CRITICAL RULES:
-1. ALL required parameters MUST be provided with actual values from the user goal
-1b. Choose the best domain for EACH step. A plan may use multiple domains across different steps.
-2. For "open google": use WebAccessTool with open_page and url="https://www.google.com"
-3. For "search X": prefer WebAccessTool.search_web with query="X" and do not force google unless the user explicitly asks for it
-4. For "fetch or summarize a page": prefer WebAccessTool.fetch_url with the page URL
-4b. For "crawl this site" or "collect multiple pages": prefer WebAccessTool.crawl_site with start_url and max_pages
-4c. For "after opening/searching, read what is on the page": use WebAccessTool.get_current_page
-5. Steps must be ordered - dependencies execute first
-6. Use only available tools and operations
-7. Parameters must match tool requirements exactly
-8. Never invent unsupported operations or bypass the higher-level web tool when WebAccessTool is available
-
-EXAMPLE - "open google and search autonomous agents":
-{{
-  "goal": "Open Google and search for autonomous agents",
-  "complexity": "simple",
-  "estimated_duration": 10,
-  "requires_approval": false,
-  "steps": [
-    {{
-      "step_id": "step_1",
-      "domain": "web",
-      "description": "Open Google and search",
-      "tool_name": "WebAccessTool",
-      "operation": "search_web",
-      "parameters": {{"query": "autonomous agents"}},
-      "dependencies": [],
-      "expected_output": "Search results content returned",
-      "retry_on_failure": true
-    }}
-  ]
-}}
-
 Return ONLY valid JSON, no explanation."""
+
+    def _build_past_plans_guidance(self, past_plans: list) -> str:
+        if not past_plans:
+            return "No similar past plans found."
+        lines = []
+        for rec in past_plans:
+            lines.append(
+                f"- Goal: '{rec.goal_sample}' | Skill: {rec.skill_name} "
+                f"| Win rate: {rec.win_rate():.0%} ({rec.success_count}✓/{rec.fail_count}✗) "
+                f"| Avg duration: {rec.avg_duration_s:.1f}s"
+            )
+            for s in rec.steps[:6]:  # cap at 6 steps to keep prompt tight
+                lines.append(f"    {s.get('tool','?')}.{s.get('operation','?')} [{s.get('domain','')}]")
+        return "\n".join(lines)
 
     def _build_skill_guidance(self, context: Optional[Dict]) -> str:
         skill_context = (context or {}).get("skill_context")
@@ -228,12 +371,51 @@ Return ONLY valid JSON, no explanation."""
             f"Constraints: {'; '.join(skill_context.get('skill_constraints', [])) or 'none'}"
         )
 
+    def _build_skill_examples(self, skill_name: str) -> str:
+        examples = {
+            "web_research": [
+                'Goal: "pisces horoscope today" → search_web(query="Pisces horoscope today") → summarize_text(deps:[step_1])',
+                'Goal: "summarize wikipedia page on AI" → fetch_url(url="https://en.wikipedia.org/wiki/Artificial_intelligence") → summarize_text(deps:[step_1])',
+                'NOTE: horoscope/sports/live-data sites are JS SPAs — always use search_web, never fetch_url for those.',
+            ],
+            "browser_automation": [
+                'Goal: "go to google and search cats" → navigate(url="https://google.com") → fill_input(selector="input[name=q]", text="cats", deps:[step_1]) → click_element(selector="input[type=submit]", deps:[step_2])',
+                'Goal: "take screenshot of github" → navigate(url="https://github.com") → take_screenshot(deps:[step_1])',
+                'NOTE: never run two navigate steps in parallel — shared browser instance.',
+            ],
+            "computer_automation": [
+                'Goal: "list files in data folder" → list_directory(path="data")',
+                'Goal: "read config.yaml and show contents" → read_file(path="config.yaml")',
+            ],
+            "code_workspace": [
+                'Goal: "run tests" → execute(command="pytest -q")',
+                'Goal: "read main.py" → read_file(path="main.py")',
+            ],
+            "data_operations": [
+                'Goal: "parse this JSON string" → parse(text="{...}")',
+                'Goal: "query tool execution logs" → query_logs(limit=20)',
+            ],
+            "knowledge_management": [
+                'Goal: "save this code snippet" → save_snippet(name="...", code="...", language="python")',
+                'Goal: "find snippets about auth" → search(query="auth")',
+            ],
+        }
+        lines = examples.get(skill_name, [
+            'Use the most appropriate tool for the goal.',
+            'Prefer search_web for live/dynamic content, fetch_url for static pages.',
+        ])
+        return "\n".join(f"- {l}" for l in lines)
+
     def _build_domain_guidance(self, context: Optional[Dict]) -> str:
         domain_catalog = (context or {}).get("domain_catalog")
         if not domain_catalog:
             return "No domain catalog available."
-
-        return json.dumps(domain_catalog, indent=2)
+        # Compact: just domain name → tool names, skip full descriptions
+        lines = []
+        for domain in (domain_catalog.get("domains") or []):
+            tools = [t.get("name", "") for t in (domain.get("tools") or [])]
+            lines.append(f"{domain.get('name', '?')}: {', '.join(tools)}")
+        return "\n".join(lines) if lines else json.dumps(domain_catalog, indent=2)
     
     def _parse_plan_response(self, response: str) -> Dict:
         """Parse LLM response into plan data."""
@@ -251,79 +433,201 @@ Return ONLY valid JSON, no explanation."""
             response = response[start:end].strip()
         
         try:
-            return json.loads(response)
+            import re
+            # Strip // comments only outside string values
+            def _strip_comments(s):
+                result = []
+                in_string = False
+                escape_next = False
+                i = 0
+                while i < len(s):
+                    ch = s[i]
+                    if escape_next:
+                        result.append(ch)
+                        escape_next = False
+                    elif ch == '\\':
+                        result.append(ch)
+                        escape_next = True
+                    elif ch == '"':
+                        result.append(ch)
+                        in_string = not in_string
+                    elif not in_string and ch == '/' and i + 1 < len(s) and s[i+1] == '/':
+                        # skip to end of line
+                        while i < len(s) and s[i] != '\n':
+                            i += 1
+                        continue
+                    elif in_string and ch == '\n':
+                        result.append(' ')  # bare newline inside string → space
+                    else:
+                        result.append(ch)
+                    i += 1
+                return ''.join(result)
+            cleaned = _strip_comments(response)
+            cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)  # strip trailing commas
+            cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)  # strip control chars
+            cleaned = re.sub(r'[\xa0\u00a0\u200b\u200c\u200d\u2028\u2029\ufeff\u00ad]', ' ', cleaned)  # normalize unicode spaces
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError as first_err:
+                pos = first_err.pos
+                snippet = cleaned[max(0, pos-20):pos+20]
+                logger.error(f"JSON parse fail at pos {pos}, bytes: {[hex(ord(c)) for c in snippet]}")
+                return json.loads(cleaned, strict=False)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse plan JSON: {e}\nResponse: {response}")
             raise ValueError(f"Invalid plan format: {e}")
     
+    # Operation alias map: LLM hallucinations → real operation names
+    _OP_ALIASES = {
+        "fill_form": "fill_input",
+        "fill_form_field": "fill_input",
+        "fill_and_submit_form": "submit_form",
+        "type_text": "fill_input",
+        "input_text": "fill_input",
+        "enter_text": "fill_input",
+        "open_url": "navigate",
+        "open_browser": "navigate",
+        "go_to": "navigate",
+        "goto": "navigate",
+        "open_and_navigate": "navigate",
+        "press_key": "keyboard_action",
+        "key_press": "keyboard_action",
+        "screenshot": "take_screenshot",
+    }
+
     def _validate_plan(self, plan_data: Dict, original_goal: str) -> ExecutionPlan:
         """Validate and convert plan data to ExecutionPlan."""
-        # Validate required fields
         required = ["goal", "steps", "complexity", "estimated_duration"]
         for field in required:
             if field not in plan_data:
                 raise ValueError(f"Missing required field: {field}")
         
-        # Force registry refresh to get latest tools
-        if hasattr(self.tool_registry, 'refresh'):
-            try:
-                self.tool_registry.refresh()
-            except Exception as e:
-                logger.warning(f"Failed to refresh registry during validation: {e}")
-        
-        # Get fresh tools from registry
         current_tools = {tool.__class__.__name__: tool for tool in getattr(self.tool_registry, 'tools', [])}
         
-        # Validate steps
         steps = []
+        skipped_ids = set()  # track skipped step_ids to fix dependencies
+
         for step_data in plan_data["steps"]:
-            # Check tool exists
+            step_id = step_data.get("step_id", "?")
             tool_name = step_data.get("tool_name")
             if tool_name not in current_tools:
-                logger.warning(f"Unknown tool: {tool_name}, skipping step")
+                logger.warning(f"Unknown tool: {tool_name}, skipping step {step_id}")
+                skipped_ids.add(step_id)
                 continue
             
             tool = current_tools[tool_name]
-            
-            # Check operation exists
             operation = step_data.get("operation")
             capabilities = tool.get_capabilities() or {}
+
+            # Remap hallucinated operation names to real ones
             if operation not in capabilities:
-                logger.warning(f"Unknown operation {operation} for tool {tool_name}, skipping step")
-                continue
+                remapped = self._OP_ALIASES.get(operation)
+                if remapped and remapped in capabilities:
+                    logger.warning(f"Remapping op '{operation}' → '{remapped}' for {tool_name} on step {step_id}")
+                    operation = remapped
+                else:
+                    logger.warning(f"Unknown operation '{operation}' for {tool_name}, skipping step {step_id}")
+                    skipped_ids.add(step_id)
+                    continue
             
-            # Validate required parameters are provided
             capability = capabilities[operation]
             provided_params = step_data.get("parameters", {})
-            missing_required = []
-            
-            for param in capability.parameters:
-                if param.required and param.name not in provided_params:
-                    missing_required.append(param.name)
-            
+
+            # Auto-fix param name aliases (e.g. element_selector → selector)
+            provided_params = self._normalize_params(provided_params, capability)
+
+            missing_required = [
+                p.name for p in capability.parameters
+                if p.required and p.name not in provided_params
+            ]
             if missing_required:
-                logger.warning(f"Step {step_data['step_id']} missing required params: {missing_required}, skipping")
+                logger.warning(f"Step {step_id} missing required params: {missing_required}, skipping")
+                skipped_ids.add(step_id)
                 continue
             
-            # Create TaskStep
-            step = TaskStep(
-                step_id=step_data["step_id"],
+            # Remove dependencies on skipped steps
+            deps = [d for d in step_data.get("dependencies", []) if d not in skipped_ids]
+
+            # Auto-fix: get_current_page with no deps must depend on its paired navigate/open step.
+            # Pairing: find the navigate step whose index is closest-before this step and not yet
+            # claimed by a prior get_current_page — prevents two get_current_page steps both
+            # depending on the same (last) navigate when two navigate+read pairs exist.
+            if operation == "get_current_page" and not deps:
+                nav_ops = {"navigate", "open_page", "open_and_navigate", "fetch_url"}
+                all_step_ids = [s["step_id"] for s in plan_data["steps"]]
+                current_idx = all_step_ids.index(step_id) if step_id in all_step_ids else len(all_step_ids)
+                # Collect navigate steps that appear before this step, in order
+                prior_navs = [
+                    s["step_id"] for s in plan_data["steps"]
+                    if s.get("operation") in nav_ops
+                    and s.get("step_id") not in skipped_ids
+                    and all_step_ids.index(s["step_id"]) < current_idx
+                ]
+                # Find which navigate steps are already claimed by earlier get_current_page steps
+                claimed = {
+                    dep
+                    for s in steps  # already-built steps
+                    if s.operation == "get_current_page"
+                    for dep in s.dependencies
+                }
+                # Pick the closest unclaimed navigate; fall back to closest claimed if all claimed
+                unclaimed = [n for n in reversed(prior_navs) if n not in claimed]
+                chosen = unclaimed[0] if unclaimed else (prior_navs[-1] if prior_navs else None)
+                if chosen:
+                    deps = [chosen]
+                    logger.info(f"Auto-paired {step_id} (get_current_page) → {chosen} (navigate)")
+
+            steps.append(TaskStep(
+                step_id=step_id,
                 description=step_data["description"],
                 tool_name=tool_name,
                 operation=operation,
                 parameters=provided_params,
                 domain=step_data.get("domain") or self._infer_domain_for_tool(tool_name, context=plan_data),
-                dependencies=step_data.get("dependencies", []),
+                dependencies=deps,
                 expected_output=step_data.get("expected_output", ""),
                 retry_on_failure=step_data.get("retry_on_failure", True),
                 max_retries=step_data.get("max_retries", 3)
-            )
-            steps.append(step)
+            ))
         
         if not steps:
             raise ValueError("No valid steps in plan - all steps were invalid or missing required parameters")
-        
-        # Validate dependency graph (no cycles)
+
+        # Auto-fix: serialize parallel BrowserAutomationTool.navigate steps (shared browser instance)
+        # Also ensure take_screenshot steps depend on the last navigate before them
+        nav_steps = [
+            s for s in steps
+            if s.tool_name == "BrowserAutomationTool" and s.operation == "navigate" and not s.dependencies
+        ]
+        if len(nav_steps) > 1:
+            for i in range(1, len(nav_steps)):
+                nav_steps[i].dependencies = [nav_steps[i - 1].step_id]
+                logger.info(f"Auto-serialized navigate step {nav_steps[i].step_id} → depends on {nav_steps[i-1].step_id} (shared browser)")
+
+        # Auto-fix: take_screenshot must depend on the LAST navigate before it (not just any navigate)
+        # This also fixes screenshots that already have a dep on an earlier navigate (stale dep)
+        all_step_ids = [s.step_id for s in steps]
+        nav_step_ids = {
+            s.step_id for s in steps
+            if s.tool_name == "BrowserAutomationTool" and s.operation == "navigate"
+        }
+        for s in steps:
+            if s.tool_name == "BrowserAutomationTool" and s.operation == "take_screenshot":
+                current_idx = all_step_ids.index(s.step_id)
+                prior_navs = [
+                    ps.step_id for ps in steps
+                    if ps.tool_name == "BrowserAutomationTool" and ps.operation == "navigate"
+                    and all_step_ids.index(ps.step_id) < current_idx
+                ]
+                if prior_navs:
+                    last_nav = prior_navs[-1]
+                    # Replace deps: keep non-nav deps, ensure last_nav is included
+                    non_nav_deps = [d for d in s.dependencies if d not in nav_step_ids]
+                    new_deps = non_nav_deps + [last_nav]
+                    if new_deps != s.dependencies:
+                        logger.info(f"Auto-fixed screenshot {s.step_id} deps: {s.dependencies} → {new_deps}")
+                        s.dependencies = new_deps
+
         self._validate_dependencies(steps)
         
         return ExecutionPlan(
@@ -333,6 +637,26 @@ Return ONLY valid JSON, no explanation."""
             complexity=plan_data["complexity"],
             requires_approval=plan_data.get("requires_approval", False)
         )
+
+    def _normalize_params(self, params: Dict, capability) -> Dict:
+        """Remap common LLM param name variants to the real param names."""
+        real_names = {p.name for p in capability.parameters}
+        aliases = {
+            "element_selector": "selector",
+            "css_selector": "selector",
+            "xpath": "selector",
+            "value": "text",
+            "input_text": "text",
+            "content": "text",
+            "javascript": "script",
+            "js": "script",
+            "code": "script",
+        }
+        result = dict(params)
+        for alias, real in aliases.items():
+            if alias in result and alias not in real_names and real in real_names and real not in result:
+                result[real] = result.pop(alias)
+        return result
 
     def _infer_domain_for_tool(self, tool_name: str, context: Optional[Dict] = None) -> str:
         domain_catalog = (context or {}).get("domain_catalog") if isinstance(context, dict) else None

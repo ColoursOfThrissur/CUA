@@ -45,7 +45,7 @@
 .evolution-content {
   flex: 1;
   overflow-y: auto;
-  padding: 3rem 2rem 1rem 2rem;
+  padding: 1.5rem 2rem 1rem 2rem;
 }
 
 .evolution-input-area {
@@ -61,17 +61,21 @@
 
 .evolution-header {
   text-align: center;
-  margin-bottom: 3rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
 }
 
 .evolution-header svg {
   color: var(--mode-color);
-  margin-bottom: 1rem;
+  flex-shrink: 0;
 }
 
 .evolution-header h2 {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
+  font-size: 1.25rem;
+  margin: 0;
   background: linear-gradient(135deg, var(--mode-color), var(--mode-color));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -79,7 +83,7 @@
 }
 
 .evolution-header p {
-  color: var(--text-secondary);
+  display: none;
 }
 
 .evolution-form {

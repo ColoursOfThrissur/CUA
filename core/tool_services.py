@@ -13,6 +13,7 @@ from core.services.http_service import HTTPService
 from core.services.filesystem_service import FileSystemService
 from core.services.json_service import JSONService
 from core.services.shell_service import ShellService
+from core.services.credential_service import CredentialService
 
 
 class BrowserService:
@@ -151,6 +152,231 @@ class BrowserService:
                 raise RuntimeError("Browser session lost. Please open browser again.")
             raise
     
+    def find_elements(self, by: str, value: str) -> list:
+        """Find all matching elements on page."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        from selenium.webdriver.common.by import By
+        by_map = {'id': By.ID, 'name': By.NAME, 'xpath': By.XPATH, 'css': By.CSS_SELECTOR, 'class': By.CLASS_NAME, 'tag': By.TAG_NAME, 'text': By.LINK_TEXT, 'partial_text': By.PARTIAL_LINK_TEXT}
+        try:
+            return self.driver.find_elements(by_map.get(by, By.CSS_SELECTOR), value)
+        except Exception as e:
+            if 'invalid session id' in str(e).lower():
+                raise RuntimeError("Browser session lost.")
+            raise
+
+    def click(self, by: str, value: str):
+        """Click an element."""
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Element not found: {by}={value}")
+        try:
+            element.click()
+        except Exception:
+            self.execute_js("arguments[0].click();", element)
+
+    def type_text(self, by: str, value: str, text: str, clear_first: bool = True):
+        """Type text into an input element."""
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Element not found: {by}={value}")
+        if clear_first:
+            element.clear()
+        element.send_keys(text)
+
+    def wait_for_element(self, by: str, value: str, timeout: int = 10):
+        """Wait for element to be present and visible."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        by_map = {'id': By.ID, 'name': By.NAME, 'xpath': By.XPATH, 'css': By.CSS_SELECTOR, 'class': By.CLASS_NAME}
+        locator = (by_map.get(by, By.CSS_SELECTOR), value)
+        return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator))
+
+    def wait_for_page_load(self, timeout: int = 15):
+        """Wait for document.readyState to be complete."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state = self.driver.execute_script("return document.readyState")
+            if state == "complete":
+                return True
+            time.sleep(0.3)
+        return False
+
+    def scroll(self, direction: str = "down", amount: int = 500):
+        """Scroll the page. direction: up/down/top/bottom."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        if direction == "top":
+            self.driver.execute_script("window.scrollTo(0, 0);")
+        elif direction == "bottom":
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        elif direction == "up":
+            self.driver.execute_script(f"window.scrollBy(0, -{amount});")
+        else:
+            self.driver.execute_script(f"window.scrollBy(0, {amount});")
+
+    def scroll_to_element(self, by: str, value: str):
+        """Scroll element into view."""
+        element = self.find_element(by, value)
+        if element:
+            self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
+
+    def execute_js(self, script: str, *args):
+        """Execute JavaScript in the browser."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        return self.driver.execute_script(script, *args)
+
+    def new_tab(self, url: str = "") -> int:
+        """Open a new tab and return its index."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.execute_script("window.open(arguments[0], '_blank');", url)
+        handles = self.driver.window_handles
+        self.driver.switch_to.window(handles[-1])
+        return len(handles) - 1
+
+    def switch_tab(self, index: int):
+        """Switch to tab by index."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        handles = self.driver.window_handles
+        if index < 0 or index >= len(handles):
+            raise RuntimeError(f"Tab index {index} out of range (0-{len(handles)-1})")
+        self.driver.switch_to.window(handles[index])
+
+    def close_tab(self):
+        """Close current tab and switch to previous."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.close()
+        handles = self.driver.window_handles
+        if handles:
+            self.driver.switch_to.window(handles[-1])
+        else:
+            self.driver = None
+
+    def list_tabs(self) -> list:
+        """List all open tab handles."""
+        if not self.driver:
+            return []
+        return list(self.driver.window_handles)
+
+    def get_cookies(self) -> list:
+        """Get all cookies for current page."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        return self.driver.get_cookies()
+
+    def set_cookie(self, name: str, value: str, domain: str = None):
+        """Set a cookie."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        cookie = {"name": name, "value": value}
+        if domain:
+            cookie["domain"] = domain
+        self.driver.add_cookie(cookie)
+
+    def clear_cookies(self):
+        """Clear all cookies."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.delete_all_cookies()
+
+    def hover(self, by: str, value: str):
+        """Hover over an element."""
+        from selenium.webdriver.common.action_chains import ActionChains
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Element not found: {by}={value}")
+        ActionChains(self.driver).move_to_element(element).perform()
+
+    def select_option(self, by: str, value: str, option_text: str):
+        """Select an option from a <select> dropdown by visible text."""
+        from selenium.webdriver.support.ui import Select
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Select element not found: {by}={value}")
+        Select(element).select_by_visible_text(option_text)
+
+    def switch_to_iframe(self, by: str, value: str):
+        """Switch context into an iframe."""
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Iframe not found: {by}={value}")
+        self.driver.switch_to.frame(element)
+
+    def switch_to_default(self):
+        """Switch back to main document from iframe."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.switch_to.default_content()
+
+    def press_key(self, key: str):
+        """Press a keyboard key on the active element. key: Enter, Tab, Escape, etc."""
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.common.action_chains import ActionChains
+        key_map = {
+            'enter': Keys.ENTER, 'tab': Keys.TAB, 'escape': Keys.ESCAPE, 'esc': Keys.ESCAPE,
+            'space': Keys.SPACE, 'backspace': Keys.BACKSPACE, 'delete': Keys.DELETE,
+            'up': Keys.ARROW_UP, 'down': Keys.ARROW_DOWN, 'left': Keys.ARROW_LEFT, 'right': Keys.ARROW_RIGHT,
+            'home': Keys.HOME, 'end': Keys.END, 'pageup': Keys.PAGE_UP, 'pagedown': Keys.PAGE_DOWN,
+            'f5': Keys.F5, 'ctrl+a': (Keys.CONTROL, 'a'), 'ctrl+c': (Keys.CONTROL, 'c'),
+            'ctrl+v': (Keys.CONTROL, 'v'), 'ctrl+z': (Keys.CONTROL, 'z'),
+        }
+        mapped = key_map.get(key.lower(), key)
+        ac = ActionChains(self.driver)
+        if isinstance(mapped, tuple):
+            ac.key_down(mapped[0]).send_keys(mapped[1]).key_up(mapped[0]).perform()
+        else:
+            ac.send_keys(mapped).perform()
+
+    def get_element_attribute(self, by: str, value: str, attr: str) -> str:
+        """Get an attribute value from an element."""
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Element not found: {by}={value}")
+        return element.get_attribute(attr)
+
+    def get_element_text(self, by: str, value: str) -> str:
+        """Get visible text of an element."""
+        element = self.find_element(by, value)
+        if not element:
+            raise RuntimeError(f"Element not found: {by}={value}")
+        return element.text
+
+    def is_element_visible(self, by: str, value: str) -> bool:
+        """Check if element exists and is visible."""
+        try:
+            element = self.find_element(by, value)
+            return element is not None and element.is_displayed()
+        except Exception:
+            return False
+
+    def go_back(self):
+        """Navigate back in browser history."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.back()
+
+    def go_forward(self):
+        """Navigate forward in browser history."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.forward()
+
+    def refresh(self):
+        """Refresh current page."""
+        if not self.driver:
+            raise RuntimeError("Browser not open")
+        self.driver.refresh()
+
     def take_screenshot(self, filename: str) -> str:
         """Take screenshot and save to file."""
         if not self.driver:
@@ -160,7 +386,7 @@ class BrowserService:
         filepath = f"output/{filename}"
         self.driver.save_screenshot(filepath)
         return filepath
-    
+
     def close(self):
         """Close browser."""
         if self.driver:
@@ -371,6 +597,7 @@ class ToolServices:
         self.fs = FileSystemService(allowed_roots or [".", "data", "output"])
         self.logging = LoggingService(tool_name)
         self.browser = BrowserService()
+        self.credentials = CredentialService(caller_tool=tool_name)
         self.orchestrator = orchestrator
         self.registry = registry
     

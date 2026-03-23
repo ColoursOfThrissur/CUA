@@ -1,15 +1,31 @@
 {
   "name": "computer_automation",
   "category": "computer",
-  "description": "Local system operations, file management, shell commands, and system benchmarking.",
+  "description": "Local system operations: file management, shell commands, script execution, system benchmarking, and environment inspection.",
   "trigger_examples": [
     "list files in this directory",
     "create a file locally",
     "move these files",
+    "copy this file",
+    "delete this file",
     "run a command on my machine",
+    "run this python script",
+    "execute this shell script",
+    "search for files matching",
+    "get file info",
+    "check if file exists",
+    "append to this file",
+    "read this file",
+    "write to this file",
     "run benchmark suite",
     "add benchmark case",
-    "check system performance"
+    "check system performance",
+    "pipe these commands",
+    "check environment variables",
+    "which python is installed",
+    "create this directory",
+    "read this json file",
+    "write json to file"
   ],
   "preferred_tools": [
     "FilesystemTool",
@@ -21,13 +37,17 @@
   "input_types": [
     "path",
     "command",
-    "local_task"
+    "script",
+    "local_task",
+    "file_content"
   ],
   "output_types": [
     "file_operation_result",
     "directory_listing",
     "command_output",
+    "script_output",
     "execution_trace",
+    "file_info",
     "summary_report"
   ],
   "verification_mode": "side_effect_observed",

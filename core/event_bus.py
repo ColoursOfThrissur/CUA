@@ -45,6 +45,20 @@ class EventBus:
                         callback(event)
                 except Exception as e:
                     print(f"Event callback error: {e}")
+
+    def emit_sync(self, event_type: str, data: dict):
+        """Fire-and-forget emit from sync (non-async) code."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(
+                    loop.create_task,
+                    self.emit(event_type, data)
+                )
+            else:
+                loop.run_until_complete(self.emit(event_type, data))
+        except Exception:
+            pass
     
     async def get_event(self):
         """Get next event from queue."""

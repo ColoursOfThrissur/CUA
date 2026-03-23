@@ -1,7 +1,7 @@
 {
   "name": "code_workspace",
   "category": "development",
-  "description": "Code development, repository analysis, testing, and development workflow automation.",
+  "description": "Code development, repository analysis, testing, script execution, and development workflow automation.",
   "trigger_examples": [
     "inspect this codebase",
     "fix this bug",
@@ -9,7 +9,21 @@
     "refactor this module",
     "run tests and update the code",
     "analyze code quality",
-    "review this pull request"
+    "review this pull request",
+    "run this python script",
+    "execute these tests",
+    "search for files matching",
+    "read this source file",
+    "write this code to file",
+    "copy this file",
+    "move this module",
+    "check if this file exists",
+    "get file metadata",
+    "run git status",
+    "run pip install",
+    "check which python is installed",
+    "create this directory structure",
+    "append to this log file"
   ],
   "preferred_tools": [
     "FilesystemTool",
@@ -21,14 +35,17 @@
     "repo_task",
     "file_path",
     "test_request",
-    "code_change_request"
+    "code_change_request",
+    "script"
   ],
   "output_types": [
     "code_summary",
     "change_summary",
     "diff_result",
     "validation_result",
-    "test_result"
+    "test_result",
+    "script_output",
+    "file_info"
   ],
   "verification_mode": "validation_and_tests",
   "risk_level": "high",

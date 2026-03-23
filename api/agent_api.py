@@ -182,3 +182,30 @@ async def get_learned_patterns(pattern_type: str, limit: int = 10):
         "count": len(patterns),
         "patterns": patterns
     }
+
+
+@router.get("/agent/strategic-memory")
+async def get_strategic_memory_stats():
+    """Stats and top patterns from strategic memory."""
+    from core.strategic_memory import get_strategic_memory
+    sm = get_strategic_memory()
+    stats = sm.get_stats()
+    # Include top 10 records sorted by win_rate * success_count
+    records = sorted(
+        sm._records.values(),
+        key=lambda r: r.win_rate() * r.success_count,
+        reverse=True,
+    )[:10]
+    stats["top_patterns"] = [
+        {
+            "goal_sample": r.goal_sample,
+            "skill_name": r.skill_name,
+            "win_rate": round(r.win_rate(), 2),
+            "success_count": r.success_count,
+            "fail_count": r.fail_count,
+            "avg_duration_s": r.avg_duration_s,
+            "steps": r.steps,
+        }
+        for r in records
+    ]
+    return stats

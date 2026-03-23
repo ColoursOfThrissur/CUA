@@ -4,6 +4,7 @@ from typing import Tuple, Dict, Any, List
 from core.architecture_contract import validate_architecture_contract
 from core.enhanced_code_validator import EnhancedCodeValidator
 from core.cua_code_analyzer import CUACodeAnalyzer, CodeIssue
+from core.service_validation import ServicePatternValidator
 
 
 class EvolutionValidator:
@@ -12,6 +13,7 @@ class EvolutionValidator:
     def __init__(self):
         self.enhanced_validator = EnhancedCodeValidator()
         self.cua_analyzer = CUACodeAnalyzer()
+        self.service_validator = ServicePatternValidator()
     
     def validate(
         self,
@@ -45,7 +47,14 @@ class EvolutionValidator:
             error_msg = self._format_issues(critical_issues)
             return False, f"CUA validation failed:\n{error_msg}"
         
-        # 0.6. Validate skill alignment if execution_context provided
+        # 0.6. Service pattern validation (previously 0% — now wired for evolution)
+        skill_definition = proposal.get('skill_definition')
+        if skill_definition:
+            svc_result = self.service_validator.validate_tool_against_skill(improved_code, skill_definition)
+            if not svc_result.valid:
+                return False, f"Service validation failed: {'; '.join(svc_result.errors)}"
+
+        # 0.7. Validate skill alignment if execution_context provided
         execution_context = proposal.get('analysis', {}).get('execution_context')
         if execution_context:
             skill_error = self._validate_skill_alignment(improved_code, execution_context)

@@ -5,7 +5,13 @@ import { useToast } from './Toast';
 import './ToolModeChat.css';
 
 function ToolModeChat({ onModeChange }) {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => {
+    try {
+      const prefill = localStorage.getItem('prefillToolDescription');
+      if (prefill) { localStorage.removeItem('prefillToolDescription'); return prefill; }
+    } catch (e) {}
+    return '';
+  });
   const [toolName, setToolName] = useState('');
   const [loading, setLoading] = useState(false);
   const [suggestion, setSuggestion] = useState(null);

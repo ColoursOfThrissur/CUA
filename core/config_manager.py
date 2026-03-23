@@ -74,6 +74,11 @@ class ImprovementConfig(BaseModel):
         'api/server.py'
     ])
 
+class MCPServerConfig(BaseModel):
+    name: str
+    url: str
+    enabled: bool = False
+
 class Config(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -81,7 +86,8 @@ class Config(BaseModel):
     api: APIConfig = Field(default_factory=APIConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     improvement: ImprovementConfig = Field(default_factory=ImprovementConfig)
-    
+    mcp_servers: List[MCPServerConfig] = Field(default_factory=list)
+
     # Database paths
     db_plan_history: str = "data/plan_history.db"
     db_analytics: str = "data/analytics.db"

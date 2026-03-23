@@ -26,7 +26,8 @@ export const GlobalStateProvider = ({ children }) => {
         skillCategories: {},
         taskManager: { active: false },
         backendConnected: false,
-        lastUpdate: null
+        lastUpdate: null,
+        agentPlan: null,
       };
     } catch (error) {
       console.error('Failed to load state from localStorage:', error);
@@ -41,7 +42,8 @@ export const GlobalStateProvider = ({ children }) => {
         skillCategories: {},
         taskManager: { active: false },
         backendConnected: false,
-        lastUpdate: null
+        lastUpdate: null,
+        agentPlan: null,
       };
     }
   });
@@ -49,10 +51,11 @@ export const GlobalStateProvider = ({ children }) => {
   const [ws, setWs] = useState(null);
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-  // Persist to localStorage on change
+  // Persist to localStorage on change (exclude transient runtime state)
   useEffect(() => {
     try {
-      localStorage.setItem('cua_state', JSON.stringify(state));
+      const { agentPlan, backendConnected, ...persistable } = state;
+      localStorage.setItem('cua_state', JSON.stringify(persistable));
     } catch (error) {
       console.error('Failed to save state to localStorage:', error);
     }
@@ -141,6 +144,31 @@ export const GlobalStateProvider = ({ children }) => {
                   .then(r => r.json())
                   .then(data => updateState({ pendingTools: data.pending_tools }))
                   .catch(console.error);
+                break;
+
+              case 'agent_plan':
+                updateState({ agentPlan: msg.data });
+                break;
+
+              case 'agent_step_update':
+                setState(prev => {
+                  if (!prev.agentPlan) return prev;
+                  return {
+                    ...prev,
+                    lastUpdate: Date.now(),
+                    agentPlan: {
+                      ...prev.agentPlan,
+                      steps: prev.agentPlan.steps.map(s =>
+                        s.step_id === msg.data.step_id ? { ...s, status: msg.data.status, error: msg.data.error } : s
+                      ),
+                    },
+                  };
+                });
+                break;
+
+              case 'agent_plan_clear':
+                updateState({ agentPlan: null });
+                window.dispatchEvent(new CustomEvent('agentPlanCleared'));
                 break;
 
               case 'pong':

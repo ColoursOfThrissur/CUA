@@ -25,7 +25,8 @@ class DependencyChecker:
     # Available services in ToolServices
     AVAILABLE_SERVICES = {
         'storage', 'time', 'ids', 'llm', 'http', 'json', 'shell', 'fs', 'logging', 'browser',
-        'extract_key_points', 'sentiment_analysis', 'detect_language', 
+        'credentials',
+        'extract_key_points', 'sentiment_analysis', 'detect_language',
         'generate_json_output', 'call_tool', 'list_tools', 'has_capability'
     }
     

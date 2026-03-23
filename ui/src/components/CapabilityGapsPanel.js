@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw, Target } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Target, PlusCircle } from 'lucide-react';
 import { API_URL } from '../config';
 import { useToast } from './Toast';
 import './CapabilityGapsPanel.css';
@@ -35,6 +35,11 @@ function CapabilityGapsPanel() {
     fetchGaps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleCreateTool = (gap) => {
+    localStorage.setItem('prefillToolDescription', `Create a tool for: ${gap.capability}`);
+    window.dispatchEvent(new CustomEvent('switchMode', { detail: 'tools' }));
+  };
 
   const summary = data?.gaps || {};
 
@@ -77,10 +82,15 @@ function CapabilityGapsPanel() {
             {actionable.map((g) => (
               <div key={g.capability} className="cgp-item actionable">
                 <div className="cap">{g.capability}</div>
-                <div className="meta">
-                  <span>occ: {g.occurrences}</span>
-                  <span>conf: {g.confidence}</span>
-                  {g.suggested_library ? <span>lib: {g.suggested_library}</span> : null}
+                <div className="cgp-item-footer">
+                  <div className="meta">
+                    <span>{g.occurrences} occurrences</span>
+                    <span>{Math.round((g.confidence || 0) * 100)}% confidence</span>
+                    {g.suggested_library ? <span>lib: {g.suggested_library}</span> : null}
+                  </div>
+                  <button className="cgp-create-btn" onClick={() => handleCreateTool(g)} title="Create tool for this gap">
+                    <PlusCircle size={14} /> Create Tool
+                  </button>
                 </div>
               </div>
             ))}
@@ -100,10 +110,15 @@ function CapabilityGapsPanel() {
             {gapsList.map((g) => (
               <div key={g.capability} className="cgp-item">
                 <div className="cap">{g.capability}</div>
-                <div className="meta">
-                  <span>occ: {g.occurrences}</span>
-                  <span>conf: {g.confidence}</span>
-                  {g.suggested_library ? <span>lib: {g.suggested_library}</span> : null}
+                <div className="cgp-item-footer">
+                  <div className="meta">
+                    <span>{g.occurrences} occurrences</span>
+                    <span>{Math.round((g.confidence || 0) * 100)}% confidence</span>
+                    {g.suggested_library ? <span>lib: {g.suggested_library}</span> : null}
+                  </div>
+                  <button className="cgp-create-btn" onClick={() => handleCreateTool(g)} title="Create tool for this gap">
+                    <PlusCircle size={14} /> Create Tool
+                  </button>
                 </div>
               </div>
             ))}

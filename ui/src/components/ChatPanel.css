@@ -65,6 +65,170 @@
   box-shadow: 0 4px 12px color-mix(in srgb, var(--mode-color) 20%, transparent);
 }
 
+.welcome-offline {
+  margin-bottom: 1rem;
+  padding: 8px 16px;
+  background: var(--accent-red-light);
+  border: 1px solid var(--accent-red-border);
+  border-radius: var(--radius-md);
+  color: var(--accent-red);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.skills-grid {
+  margin-top: 24px;
+  text-align: left;
+}
+
+.skills-grid h4 {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.skills-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skill-card {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+  background: var(--bg-tertiary);
+  color: inherit;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.skill-card:hover {
+  border-color: var(--mode-color);
+  background: color-mix(in srgb, var(--mode-color) 8%, transparent);
+  transform: translateY(-1px);
+}
+
+.skill-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.skill-category {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.skill-card-desc {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.message-skill-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.skill-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skill-tag--green {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #86efac;
+}
+
+.skill-tag--blue {
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  color: #93c5fd;
+}
+
+.skill-tag--strategy {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+}
+
+.skill-tag--rounds {
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  color: #c4b5fd;
+}
+
+.skill-tag--confidence {
+  font-variant-numeric: tabular-nums;
+}
+
+.skill-tag--confidence.conf-high {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #6ee7b7;
+}
+
+.skill-tag--confidence.conf-mid {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+}
+
+.skill-tag--confidence.conf-low {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.msg-verify-warnings {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.msg-verify-item {
+  font-size: 11px;
+  color: #fde68a;
+  opacity: 0.8;
+  padding: 2px 6px;
+  background: rgba(251, 191, 36, 0.07);
+  border-radius: 4px;
+  border-left: 2px solid rgba(251, 191, 36, 0.4);
+}
+
+.msg-gap-notice {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent-orange);
+  opacity: 0.85;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.msg-gap-action {
+  color: var(--text-secondary);
+}
+
+
 .message {
   display: flex;
   gap: 0.75rem;
@@ -208,7 +372,7 @@
   cursor: not-allowed;
 }
 
-.btn-voice, .btn-send {
+.btn-voice, .btn-send, .btn-stop {
   padding: 0.75rem 1.25rem;
   border: none;
   border-radius: var(--radius-md);
@@ -216,6 +380,20 @@
   cursor: pointer;
   transition: all var(--transition-normal);
   backdrop-filter: blur(5px);
+}
+
+.btn-stop {
+  background: var(--accent-red, #ef4444);
+  color: white;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-stop:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
 }
 
 .btn-voice {
@@ -272,3 +450,170 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* ── Agent Plan Status ───────────────────────────────────────────────────── */
+
+.agent-plan-status {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  min-width: 320px;
+  max-width: 520px;
+  backdrop-filter: blur(var(--blur-amount));
+  box-shadow: var(--shadow-md);
+}
+
+.agent-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  transition: background var(--transition-normal);
+}
+
+.agent-plan-header:hover {
+  background: var(--bg-hover);
+}
+
+.agent-plan-status:has(.agent-plan-steps) .agent-plan-header {
+  border-bottom-color: var(--border-primary);
+}
+
+.agent-plan-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-plan-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.agent-plan-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border-secondary);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: plan-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes plan-spin {
+  to { transform: rotate(360deg); }
+}
+
+.agent-plan-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agent-plan-iter {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.agent-plan-counts {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.apc-done  { color: var(--accent-green); }
+.apc-fail  { color: var(--accent-red); }
+.apc-total { color: var(--text-muted); }
+
+.agent-plan-progress-bar {
+  width: 52px;
+  height: 4px;
+  background: var(--border-primary);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.agent-plan-progress-fill {
+  height: 100%;
+  background: var(--accent-blue);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.agent-plan-steps {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+
+.agent-plan-step {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 12px;
+  transition: background var(--transition-normal);
+}
+
+.agent-plan-step.status-pending   { opacity: 0.4; }
+.agent-plan-step.status-running   { background: rgba(74, 158, 255, 0.07); opacity: 1; }
+.agent-plan-step.status-completed { background: rgba(16, 185, 129, 0.06); opacity: 1; }
+.agent-plan-step.status-failed    { background: rgba(239, 68, 68, 0.07); opacity: 1; }
+
+.step-icon {
+  font-size: 11px;
+  text-align: center;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.status-completed .step-icon { color: var(--accent-green); }
+.status-failed    .step-icon { color: var(--accent-red); }
+.status-running   .step-icon { color: var(--accent-blue); animation: plan-spin 1.2s linear infinite; display: inline-block; }
+.status-pending   .step-icon { color: var(--text-muted); }
+
+.step-desc {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.step-tool {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Light theme overrides */
+[data-theme="light"] .agent-plan-status {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+}
+
+[data-theme="light"] .agent-plan-step.status-running   { background: var(--accent-blue-light); }
+[data-theme="light"] .agent-plan-step.status-completed { background: var(--accent-green-light); }
+[data-theme="light"] .agent-plan-step.status-failed    { background: var(--accent-red-light); }

@@ -1,7 +1,7 @@
 {
   "name": "data_operations",
   "category": "data",
-  "description": "Data transformation, API calls, database queries, and structured data processing.",
+  "description": "Data transformation, API calls, database queries, JSON manipulation, and structured data processing.",
   "trigger_examples": [
     "make an API call to",
     "query this database",
@@ -9,7 +9,22 @@
     "transform this data",
     "fetch data from API",
     "convert JSON to",
-    "execute SQL query"
+    "execute SQL query",
+    "post data to this endpoint",
+    "put this data to the API",
+    "patch this resource",
+    "delete this API resource",
+    "download this file",
+    "check if this URL exists",
+    "merge these JSON objects",
+    "flatten this nested JSON",
+    "filter this array by",
+    "extract these keys from",
+    "diff these two JSON objects",
+    "validate this JSON schema",
+    "remap these JSON fields",
+    "stringify this object",
+    "query this JSON path"
   ],
   "preferred_tools": [
     "HTTPTool",
@@ -23,13 +38,16 @@
     "json_data",
     "sql_query",
     "api_endpoint",
-    "data_structure"
+    "data_structure",
+    "json_path"
   ],
   "output_types": [
     "api_response",
     "query_result",
     "transformed_data",
-    "json_structure"
+    "json_structure",
+    "validation_result",
+    "diff_result"
   ],
   "verification_mode": "output_validation",
   "risk_level": "medium",

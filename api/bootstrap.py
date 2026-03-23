@@ -92,10 +92,12 @@ def load_router_bundle() -> RouterBundle:
         from api.agent_api import router as agent_router, set_agent_dependencies
         from api.skills_api import router as skills_router, set_skill_registry
         from api.trace_ws import router as trace_router
-        from api.circuit_breaker_api import router as circuit_breaker_router
+        from api.circuit_breaker_api import router as circuit_breaker_router, set_skill_registry_for_cb
         from api.session_api import router as session_router
         from api.services_api import router as services_router, set_services_dependencies
         from api.pending_skills_api import router as pending_skills_router, set_skills_dependencies
+        from api.mcp_api import router as mcp_router, set_registry as set_mcp_registry
+        from api.credentials_api import router as credentials_router
 
         return RouterBundle(
             routers_available=True,
@@ -127,6 +129,8 @@ def load_router_bundle() -> RouterBundle:
                 session_router,
                 services_router,
                 pending_skills_router,
+                mcp_router,
+                credentials_router,
             ],
             refresh_runtime_registry_from_files=refresh_runtime_registry_from_files,
             setters={
@@ -149,6 +153,8 @@ def load_router_bundle() -> RouterBundle:
                 "set_services_dependencies": set_services_dependencies,
                 "set_skills_dependencies": set_skills_dependencies,
                 "set_coordinated_engine": set_coordinated_engine,
+                "set_mcp_registry": set_mcp_registry,
+                "set_skill_registry_for_cb": set_skill_registry_for_cb,
             },
         )
     except ImportError as e:
@@ -196,6 +202,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from core.skills import SkillRegistry, SkillSelector
         from core.coordinated_autonomy_engine import CoordinatedAutonomyEngine
         from core.circuit_breaker import get_circuit_breaker
+        from core.decision_engine import get_decision_engine
 
         config = get_config()
         circuit_breaker = get_circuit_breaker()
@@ -214,6 +221,24 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             except Exception as e:
                 print(f"Warning: Could not load {tool_module_name}: {e}")
 
+        # Load MCP adapter tools for each enabled MCP server
+        for mcp_server in (config.mcp_servers or []):
+            if not mcp_server.enabled:
+                continue
+            try:
+                from tools.experimental.MCPAdapterTool import MCPAdapterTool
+                adapter = MCPAdapterTool(
+                    server_name=mcp_server.name,
+                    server_url=mcp_server.url,
+                )
+                if adapter.is_connected():
+                    registry.register_tool(adapter)
+                    print(f"MCP adapter loaded: {mcp_server.name} ({len(adapter._mcp_tools)} tools)")
+                else:
+                    print(f"Warning: MCP server '{mcp_server.name}' at {mcp_server.url} not reachable — skipped")
+            except Exception as e:
+                print(f"Warning: Could not load MCP adapter for '{mcp_server.name}': {e}")
+
         executor = SecureExecutor(registry)
         parser = PlanParser()
         permission_gate = PermissionGate()
@@ -221,6 +246,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         skill_registry = SkillRegistry()
         skill_registry.load_all()
         skill_selector = SkillSelector()
+        get_decision_engine(skill_registry=skill_registry)  # initialise singleton with registry
         state_manager = StateManager()
         plan_validator = PlanValidator()
         logger = get_logger("cua_api")
@@ -241,7 +267,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
 
         scheduler = ImprovementScheduler()
         task_planner = TaskPlanner(llm_client, registry, skill_registry=skill_registry)
-        execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator)
+        execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator, task_planner=task_planner)
         memory_system = MemorySystem()
         autonomous_agent = AutonomousAgent(
             task_planner=task_planner,
@@ -360,3 +386,5 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     bundle.setters["set_services_dependencies"](pending_services_manager, service_injector)
     bundle.setters["set_skills_dependencies"](pending_skills_manager, runtime.skill_registry)
     bundle.setters["set_coordinated_engine"](runtime.coordinated_autonomy_engine)
+    bundle.setters["set_mcp_registry"](runtime.registry)
+    bundle.setters["set_skill_registry_for_cb"](runtime.skill_registry)

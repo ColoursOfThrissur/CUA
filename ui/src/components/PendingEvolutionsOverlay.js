@@ -230,39 +230,33 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
           )}
 
           {item.new_service_specs && Object.keys(item.new_service_specs).length > 0 && (
-            <div className="new-services" style={{background: 'rgba(168, 85, 247, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
-              <strong style={{color: '#a855f7'}}>🆕 New Services Needed:</strong>
+            <div className="new-services">
+              <strong className="dep-label dep-label--purple">🆕 New Services Needed:</strong>
               {Object.entries(item.new_service_specs).map(([name, spec]) => (
-                <div key={name} style={{marginTop: '8px', marginLeft: '10px'}}>
-                  <div style={{fontWeight: '600'}}>{name}</div>
-                  <div style={{fontSize: '0.9em', color: 'var(--text-secondary)', marginTop: '2px'}}>{spec.description}</div>
-                  <div style={{fontSize: '0.85em', color: 'var(--text-tertiary)', marginTop: '2px'}}>Methods: {spec.methods?.join(', ')}</div>
+                <div key={name} className="dep-service-item">
+                  <div className="dep-service-name">{name}</div>
+                  <div className="dep-service-desc">{spec.description}</div>
+                  <div className="dep-service-methods">Methods: {spec.methods?.join(', ')}</div>
                 </div>
               ))}
             </div>
           )}
 
           {item.required_libraries && item.required_libraries.length > 0 && (
-            <div className="required-libraries" style={{background: 'rgba(34, 197, 94, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
-              <strong style={{color: '#22c55e'}}>📚 Required Libraries:</strong>
-              <div style={{marginTop: '5px', marginLeft: '10px'}}>
-                {item.required_libraries.join(', ')}
-              </div>
+            <div className="required-libraries">
+              <strong className="dep-label dep-label--green">📚 Required Libraries:</strong>
+              <div className="dep-libs">{item.required_libraries.join(', ')}</div>
             </div>
           )}
-          
+
           {item.proposal.dependencies && (item.proposal.dependencies.missing_libraries?.length > 0 || item.proposal.dependencies.missing_services?.length > 0) && (
-            <div className="dependencies-warning" style={{background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '6px', marginTop: '10px'}}>
-              <strong style={{color: '#ef4444'}}>⚠️ Missing Dependencies:</strong>
+            <div className="dependencies-warning">
+              <strong className="dep-label dep-label--red">⚠️ Missing Dependencies:</strong>
               {item.proposal.dependencies.missing_libraries?.length > 0 && (
-                <div style={{marginTop: '5px'}}>
-                  <span style={{color: 'var(--text-secondary)'}}>Libraries:</span> {item.proposal.dependencies.missing_libraries.join(', ')}
-                </div>
+                <div className="dep-row"><span className="dep-key">Libraries:</span> {item.proposal.dependencies.missing_libraries.join(', ')}</div>
               )}
               {item.proposal.dependencies.missing_services?.length > 0 && (
-                <div style={{marginTop: '5px'}}>
-                  <span style={{color: 'var(--text-secondary)'}}>Services:</span> {item.proposal.dependencies.missing_services.join(', ')}
-                </div>
+                <div className="dep-row"><span className="dep-key">Services:</span> {item.proposal.dependencies.missing_services.join(', ')}</div>
               )}
             </div>
           )}
@@ -272,7 +266,6 @@ function PendingEvolutionsOverlay({ onOpenQuality }) {
               className="btn-test" 
               onClick={() => handleRunTests(item.tool_name)}
               disabled={testingTool === item.tool_name}
-              style={{backgroundColor: '#f59e0b'}}
             >
               {testingTool === item.tool_name ? 'Testing...' : 'Run Tests'}
             </button>

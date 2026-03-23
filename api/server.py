@@ -1,10 +1,26 @@
 import sys
 import os
+import logging
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Clear any cached bad imports
 if 'core.permission_gate' in sys.modules:
     del sys.modules['core.permission_gate']
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+# Configure root logger so all logger.info/debug calls across every module
+# (planner, agent, execution_engine, etc.) appear in the terminal.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,  # override any prior basicConfig calls
+)
+# Keep noisy third-party loggers quieter
+for _noisy in ("httpx", "httpcore", "urllib3", "requests", "uvicorn.access", "multipart"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+# ──────────────────────────────────────────────────────────────────────────────
 
 from fastapi import FastAPI, WebSocket, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -248,6 +264,7 @@ def _continue_tool_calling(
     base_history: List[Dict[str, Any]],
     executed_calls: List[Dict[str, Any]],
     skill_selection: Dict[str, Any],
+    execution_context: Optional[Any] = None,
 ):
     executed_summary = _truncate_for_history(executed_calls, limit=3000)
     planning_context = skill_selection.get("planning_context") or {}
@@ -259,6 +276,21 @@ def _continue_tool_calling(
         synthetic_follow_up = choose_web_next_action(artifacts)
         if synthetic_follow_up:
             return True, synthetic_follow_up, None
+
+    # Refresh skill_context with live execution state for better LLM guidance
+    refreshed_skill_context = dict(planning_context)
+    if execution_context:
+        refreshed_skill_context["completed_steps"] = len(getattr(execution_context, "step_history", []))
+        refreshed_skill_context["errors_so_far"] = len(getattr(execution_context, "errors_encountered", []))
+        refreshed_skill_context["selected_tool"] = getattr(execution_context, "selected_tool", None)
+        refreshed_skill_context["fallback_tools"] = getattr(execution_context, "fallback_tools", [])
+        refreshed_skill_context["warnings"] = getattr(execution_context, "warnings", [])[-3:]
+        # Narrow allowed_tools to healthy tools from refreshed context
+        if execution_context.available_tools:
+            healthy = [n for n, tv in execution_context.available_tools.items() if getattr(tv, "healthy", True)]
+            if healthy:
+                allowed_tools = healthy
+
     continuation_history = list(base_history)
     continuation_history.append({"role": "user", "content": original_message})
     continuation_history.append({
@@ -282,7 +314,7 @@ def _continue_tool_calling(
     success, tool_calls, response = tool_caller.call_with_tools(
         "Review the previous tool results and continue only if needed.",
         continuation_history,
-        skill_context=skill_selection.get("planning_context"),
+        skill_context=refreshed_skill_context,
         allowed_tools=allowed_tools or None,
     )
     if category == "web" and (not success or not tool_calls):
@@ -385,11 +417,13 @@ def _execute_dynamic_capability(registry, llm_client, message: str):
     return registry.execute_capability(capability, **arguments)
 
 def _record_capability_gap(task: str, error: str = "", skill_selection: Optional[Dict[str, Any]] = None) -> None:
-    """Best-effort: detect and persist capability gaps for self-directed growth."""
+    """Detect gap → resolve through cheapest path (platform-aware) → persist with resolution metadata."""
     try:
         from core.capability_mapper import CapabilityMapper
         from core.gap_detector import GapDetector
         from core.gap_tracker import GapTracker
+        from core.capability_resolver import CapabilityResolver
+        from core.semantic_router import get_semantic_router
 
         mapper = CapabilityMapper()
         mapper.build_capability_graph()
@@ -399,10 +433,32 @@ def _record_capability_gap(task: str, error: str = "", skill_selection: Optional
         if not gap or gap.confidence < 0.75:
             return
 
+        # Enrich with semantic context for platform-aware resolution
+        semantic_ctx = get_semantic_router(llm_client).route(task)
+        semantic_dict = semantic_ctx.to_dict() if semantic_ctx else None
+
+        resolver = CapabilityResolver(registry=registry)
+        resolution = resolver.resolve(gap, semantic_context=semantic_dict)
+
+        gap.suggested_action = resolution.action
+        if resolution.target:
+            gap.target_tool = resolution.target
+
         tracker = GapTracker()
         tracker.record_gap(gap)
+
+        if resolution.resolved:
+            tracker.mark_resolved(
+                gap.capability,
+                action=resolution.action,
+                target=resolution.target,
+                notes=resolution.notes,
+            )
+
+        print(f"[GAP] {gap.capability} → {resolution.action}"
+              + (f" via {resolution.target}" if resolution.target else "")
+              + (f" [{semantic_ctx.domain}/{semantic_ctx.primary_profile.platform if semantic_ctx.primary_profile else '?'}]" if semantic_ctx and semantic_ctx.domain else ""))
     except Exception:
-        # Never let gap tracking break chat.
         return
 
 
@@ -618,8 +674,20 @@ def _decision_tool_summary(registry) -> str:
             lines.append(f"- {tool.__class__.__name__}: {', '.join(caps)}")
     return "\n".join(lines) if lines else "- no tools loaded"
 
+# Cancellation flag for active agent runs
+_stop_requested = False
+
+@app.post("/chat/stop")
+async def stop_chat():
+    global _stop_requested
+    _stop_requested = True
+    return {"success": True, "message": "Stop requested"}
+
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
+    global _stop_requested
+    _stop_requested = False  # reset on each new request
     from core.input_validation import validate_text_input
     from dataclasses import asdict
     
@@ -829,34 +897,34 @@ async def chat(request: ChatRequest):
                 except Exception:
                     pass
 
-            # Use LLM to classify intent: multi-step task vs direct answer
-            intent_prompt = f"""Classify this user request:
-
-User: {request.message}
-
-Is this:
-A) A multi-step task requiring planning (e.g., "open google and search X and take screenshot")
-B) A simple direct request (e.g., "open google", "what is X?")
-
-Respond with ONLY 'A' or 'B'."""
-            
-            try:
-                intent_response = llm_client._call_llm(intent_prompt, temperature=0.1, max_tokens=10)
-                is_multi_step = 'A' in intent_response.strip().upper()
-            except:
-                is_multi_step = False
+            # Derive intent from skill selection — no extra LLM call needed
+            # Non-conversation skills with multi-word goals are treated as multi-step tasks
+            skill_cat = skill_selection.get("category") or ""
+            is_multi_step = (
+                autonomous_agent is not None
+                and skill_cat not in ("", "conversation")
+                and len(request.message.split()) >= 4
+            )
             
             # If multi-step task, use autonomous agent
             if is_multi_step and autonomous_agent:
                 try:
                     from core.autonomous_agent import AgentGoal
+                    import api.server as _srv
                     goal = AgentGoal(
                         goal_text=request.message,
                         success_criteria=[],
                         max_iterations=5,
                         require_approval=False
                     )
-                    result = autonomous_agent.achieve_goal(goal, session_id)
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: autonomous_agent.achieve_goal(
+                            goal, session_id,
+                            stop_check=lambda: _srv._stop_requested
+                        )
+                    )
 
                     # If the agent pauses for plan approval, surface the plan details to the UI and
                     # store it in session state so a later "go ahead" can execute the SAME plan.
@@ -892,7 +960,68 @@ Respond with ONLY 'A' or 'B'."""
                         )
                     
                     if result.get('success'):
-                        response_text = f"✓ {result.get('message', 'Task completed')}"
+                        final_state = result.get('final_state')
+                        step_outputs = []
+                        screenshot_components = []
+                        if final_state and hasattr(final_state, 'step_results'):
+                            for step_id, step_result in final_state.step_results.items():
+                                if hasattr(step_result, 'status') and str(step_result.status.value) == 'completed':
+                                    out = getattr(step_result, 'output', None)
+                                    if not out or not isinstance(out, dict):
+                                        continue
+                                    # Screenshots → components only, never text
+                                    if out.get('screenshot_b64'):
+                                        screenshot_components.append({
+                                            'type': 'screenshot',
+                                            'renderer': 'screenshot',
+                                            'src': f'data:image/png;base64,{out["screenshot_b64"]}',
+                                            'filepath': out.get('filepath', ''),
+                                            'alt': f'Screenshot from {step_id}',
+                                        })
+                                        continue  # skip text extraction for screenshot steps
+                                    # search_web: flatten results list into readable snippets
+                                    if out.get('results') and isinstance(out['results'], list):
+                                        snippets = []
+                                        for r in out['results'][:8]:
+                                            if isinstance(r, dict):
+                                                title = r.get('title', '')
+                                                snippet = r.get('snippet') or r.get('description') or r.get('content', '')
+                                                url = r.get('url') or r.get('link', '')
+                                                snippets.append(f"{title}: {snippet} ({url})")
+                                        if snippets:
+                                            step_outputs.append({"step": step_id, "search_results": "\n".join(snippets)})
+                                            continue
+                                    # navigate / fetch_url: use content or elements, strip HTML
+                                    for key in ('content', 'text', 'summary', 'result', 'elements', 'pages'):
+                                        val = out.get(key)
+                                        if val and str(val).strip():
+                                            text_val = str(val)
+                                            # Skip raw HTML — JS SPA pages have no useful content
+                                            if text_val.lstrip().startswith('<') and '<html' in text_val.lower():
+                                                continue
+                                            step_outputs.append({"step": step_id, key: text_val[:1500]})
+                                            break
+
+                        if step_outputs:
+                            print(f"[DEBUG] step_outputs for summary ({len(step_outputs)} steps): {[list(o.keys()) for o in step_outputs]}")
+                            # Extract the actual content value from each step output dict
+                            content_lines = []
+                            for o in step_outputs[:6]:
+                                for k, v in o.items():
+                                    if k != 'step':
+                                        content_lines.append(str(v)[:800])
+                            summary_prompt = (
+                                f"The user asked: {request.message}\n\n"
+                                f"Here are the results collected:\n"
+                                + "\n".join(f"- {line}" for line in content_lines)
+                                + "\n\nSummarize the results clearly and directly for the user. Include the actual data. Be concise but complete."
+                            )
+                            try:
+                                response_text = llm_client.generate_response(summary_prompt, [])
+                            except Exception:
+                                response_text = f"✓ {result.get('message', 'Task completed')}"
+                        else:
+                            response_text = f"✓ {result.get('message', 'Task completed')}"
                     else:
                         response_text = result.get('message', 'Task failed')
                     
@@ -904,6 +1033,13 @@ Respond with ONLY 'A' or 'B'."""
                     
                     if conversation_memory:
                         conversation_memory.save_message(session_id, "assistant", response_text)
+
+                    # Clear agent plan from UI now that response is ready
+                    try:
+                        from core.event_bus import get_event_bus
+                        get_event_bus().emit_sync("agent_plan_clear", {})
+                    except Exception:
+                        pass
                     
                     return ChatResponse(
                         response=response_text,
@@ -916,6 +1052,7 @@ Respond with ONLY 'A' or 'B'."""
                             "selected_category": skill_selection.get("category"),
                             "skill_confidence": skill_selection.get("confidence"),
                             "fallback_used": False,
+                            "components": screenshot_components if result.get('success') else [],
                         }
                     )
                 except Exception as e:
@@ -985,8 +1122,8 @@ Respond with ONLY 'A' or 'B'."""
                         request.message
                     )
                     
-                    # Select tools based on context
-                    tool_selector = ContextAwareToolSelector(registry, runtime.circuit_breaker)
+                    # Select tools based on context (pass skill_registry for usage scores)
+                    tool_selector = ContextAwareToolSelector(registry, runtime.circuit_breaker, skill_registry)
                     execution_context = tool_selector.select_tools(execution_context)
                     
                     # Extract allowed tools from execution context
@@ -1032,7 +1169,7 @@ Respond with ONLY 'A' or 'B'."""
                     # Refresh execution context for each round
                     if execution_context and round_index > 0:
                         # Refresh available tools (check circuit breaker again)
-                        tool_selector = ContextAwareToolSelector(registry, runtime.circuit_breaker)
+                        tool_selector = ContextAwareToolSelector(registry, runtime.circuit_breaker, skill_registry)
                         execution_context = tool_selector.select_tools(execution_context)
                         
                         # Reset retry count for new round
@@ -1091,6 +1228,7 @@ Respond with ONLY 'A' or 'B'."""
                         current_history,
                         executed_calls,
                         skill_selection,
+                        execution_context=execution_context,
                     )
                     print(
                         f"[DEBUG] Tool continuation round {round_index + 1}: "
@@ -1131,6 +1269,10 @@ Respond with ONLY 'A' or 'B'."""
                     if execution_context:
                         execution_context.mark_complete()
                         print(f"[DEBUG] Execution context: {execution_context.execution_time_seconds}s, {execution_context.retry_count} retries")
+                        # Surface verification warnings to UI
+                        verify_warnings = [w for w in getattr(execution_context, 'warnings', []) if '[VERIFY' in w]
+                        if verify_warnings:
+                            execution_result["verification_warnings"] = verify_warnings[:5]
                     
                     primary_result, primary_tool_name, primary_operation = _select_primary_result(
                         aggregated_results,
@@ -1236,6 +1378,7 @@ Example: "I found 5 log entries from the last hour" or "I listed 12 files in the
                             "tool_calling": True,
                             "components": components,
                             "ui_renderer": _selected_ui_renderer(skill_selection),
+                            "rounds_used": round_index + 1,
                         }
                 else:
                     error_msg = "; ".join(aggregated_errors) if aggregated_errors else "Execution failed"
@@ -1287,6 +1430,30 @@ Respond naturally as if you're explaining the problem to a user. Be concise (1-2
             if conversation_memory:
                 conversation_memory.save_message(session_id, "assistant", response_text)
 
+        # Feed execution results back to skill registry for usage-based scoring + trigger learning
+        try:
+            if skill_registry and isinstance(execution_result, dict):
+                import re as _re
+                _success = bool(execution_result.get("success"))
+                _skill_name = skill_selection.get("skill_name") if 'skill_selection' in dir() else None
+                # Record per-tool stats from tool_history — include real latency
+                for _call in (execution_result.get("tool_history") or []):
+                    _tname = _call.get("tool")
+                    if _tname:
+                        # execution_time is stored in seconds on ToolResult; convert to ms
+                        _latency_ms = float(_call.get("execution_time") or 0.0) * 1000
+                        skill_registry.record_tool_usage(
+                            _tname,
+                            bool(_call.get("success")),
+                            latency_ms=_latency_ms,
+                        )
+                # Learn triggers from successful skill executions
+                if _success and _skill_name and _skill_name != "conversation":
+                    _tokens = set(_re.findall(r"[a-z0-9_]+", request.message.lower()))
+                    skill_registry.learn_trigger(_skill_name, _tokens)
+        except Exception:
+            pass
+
         # Feed self-directed evolution signals (capability gaps) from failures or tool-less requests.
         try:
             execution_result.update({
@@ -1297,9 +1464,25 @@ Respond naturally as if you're explaining the problem to a user. Be concise (1-2
                 "ui_renderer": _selected_ui_renderer(skill_selection),
             })
             if isinstance(execution_result, dict):
+                # Attach Decision Engine score for UI visibility
+                try:
+                    from core.decision_engine import get_decision_engine
+                    _engine = get_decision_engine()
+                    _skill_scores = {skill_selection.get("skill_name", "unknown"): skill_selection.get("confidence", 0.0)} if skill_selection.get("skill_name") else None
+                    _de_result = _engine.score(skill_scores=_skill_scores)
+                    execution_result["decision"] = {
+                        "strategy": _de_result.best_strategy,
+                        "confidence": _de_result.confidence,
+                        "fallback": _de_result.fallback_plan,
+                        "scores": _de_result.component_scores,
+                        "reasoning": _de_result.reasoning,
+                    }
+                except Exception:
+                    pass
                 if execution_result.get("success") is False:
                     err_text = "; ".join(execution_result.get("errors", [])) if execution_result.get("errors") else execution_result.get("error", "")
                     _record_capability_gap(request.message, err_text, skill_selection)
+                    execution_result["gap_detected"] = True
                 elif execution_result.get("mode") == "conversation":
                     _record_capability_gap(request.message, "", skill_selection)
         except Exception:
@@ -1455,7 +1638,10 @@ async def websocket_endpoint(websocket: WebSocket):
         'loop_stopped': send_event,
         'iteration_started': send_event,
         'task_completed': send_event,
-        'pending_tool_added': send_event
+        'pending_tool_added': send_event,
+        'agent_plan': send_event,
+        'agent_step_update': send_event,
+        'agent_plan_clear': send_event,
     }
     
     for event_type, callback in callbacks.items():
