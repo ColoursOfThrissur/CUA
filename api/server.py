@@ -232,7 +232,7 @@ if __name__ == "__main__":
     import uvicorn
     import signal
 
-    def shutdown_handler(signum, frame):
+    def shutdown_handler(_signum, _frame):
         print("\nShutdown signal received...")
         print("Server shutting down...")
 

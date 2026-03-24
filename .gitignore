@@ -35,13 +35,21 @@ ui/.env.local
 
 # Output & Temporary
 output/
+temp/
 *.tmp
 *.bak
 *.exe
 .DS_Store
 
-# Sandbox
+# Sandbox & Test artifacts
 sandbox/
-
-# Audit
 audit/
+test_tmp/
+pytest_tmp/
+.pytest_tmp/
+checkpoints/
+workspace/
+
+# Root-level junk
+tmp_*.txt
+*_features.txt

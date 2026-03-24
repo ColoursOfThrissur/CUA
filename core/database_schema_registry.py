@@ -380,7 +380,7 @@ DATABASE_SCHEMAS = {
                 ]
             }
         }
-    }
+    },
     "metrics.db": {
         "description": "Hourly tool and system performance metrics",
         "tables": {

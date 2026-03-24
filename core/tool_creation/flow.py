@@ -582,7 +582,7 @@ class ToolCreationOrchestrator:
             except Exception as e:
                 logger.warning(f"Failed cleaning generated artifact {p}: {e}")
     
-    def _build_correction_prompt(self, tool_spec: dict, failed_code: str, sandbox_error: str, validation_error: str = None) -> str:
+    def _build_correction_prompt(self, tool_spec: dict, _failed_code: str, sandbox_error: str, validation_error: str = None) -> str:
         """Build targeted correction prompt based on specific errors"""
         parts = ["PREVIOUS ATTEMPT FAILED. Fix these specific issues:\n"]
 

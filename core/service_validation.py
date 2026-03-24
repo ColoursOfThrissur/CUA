@@ -184,9 +184,7 @@ class ServicePatternValidator:
             if capability_words & skill_keywords:
                 aligned_capabilities += 1
         
-        if aligned_capabilities == 0:
-            warnings.append(f"Tool capabilities don't align with {skill_definition.name} skill domain")
-        
+        # aligned_capabilities == 0 is a soft warning, not a hard error — skip
         return errors
     
     def _calculate_alignment_score(

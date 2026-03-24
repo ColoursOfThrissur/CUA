@@ -266,7 +266,7 @@ def truncate_for_history(executed_batch: List[Dict], limit: int = 1500) -> str:
     return "\n".join(parts)[:limit]
 
 
-def _build_wra_components(answer: str, raw_data: list) -> list:
+def _build_wra_components(_answer: str, raw_data: list) -> list:
     """Build clean UI components for WRA results — structured search results as table, skip raw HTML."""
     import ast
     from core.output_analyzer import OutputAnalyzer
