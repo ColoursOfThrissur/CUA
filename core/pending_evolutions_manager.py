@@ -11,6 +11,7 @@ class PendingEvolutionsManager:
     def __init__(self, storage_path: str = "data/pending_evolutions.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._tool_orchestrator = None  # injected after bootstrap
         self._ensure_storage()
     
     def _ensure_storage(self):
@@ -55,6 +56,10 @@ class PendingEvolutionsManager:
         tool_path = Path(evolution.get("tool_path") or evolution["proposal"]["analysis"]["tool_path"])
         tool_path.write_text(evolution["improved_code"])
 
+        # Invalidate orchestrator services cache so next execution gets fresh ToolServices
+        if self._tool_orchestrator:
+            self._tool_orchestrator.invalidate_cache(tool_name)
+
         try:
             from core.skills import SkillUpdater
 
@@ -65,26 +70,23 @@ class PendingEvolutionsManager:
         # Update evolution log with health_after
         evolution_id = evolution.get("evolution_id")
         if evolution_id:
-            from core.tool_evolution_logger import get_evolution_logger
-            from core.tool_quality_analyzer import ToolQualityAnalyzer
-            
-            # Calculate new health score
             try:
+                from core.tool_evolution_logger import get_evolution_logger
+                from core.tool_quality_analyzer import ToolQualityAnalyzer
                 analyzer = ToolQualityAnalyzer()
                 report = analyzer.analyze_tool(tool_name)
                 health_after = report.health_score if report else None
-                
-                # Log final status with health_after
                 evo_logger = get_evolution_logger()
-                evo_logger.log_run(
-                    tool_name=tool_name,
-                    user_prompt=None,
-                    status="approved",
-                    step="complete",
-                    health_after=health_after
-                )
+                # UPDATE the existing row rather than inserting a new one
+                with __import__('sqlite3').connect(str(evo_logger.db_path)) as conn:
+                    conn.execute(
+                        "UPDATE evolution_runs SET status=?, step=?, health_after=? WHERE id=?",
+                        ("approved", "complete", health_after, evolution_id)
+                    )
+                    conn.commit()
             except Exception as e:
-                print(f"Warning: Could not update health_after: {e}")
+                import logging as _log
+                _log.getLogger(__name__).warning(f"Could not update health_after: {e}")
         
         # Remove from pending list
         del evolutions[tool_name]

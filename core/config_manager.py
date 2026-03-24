@@ -35,13 +35,20 @@ class LLMConfig(BaseModel):
     code_model: str = "qwen"         # For code generation
     review_model: str = "mistral"    # For validation
     fallback_model: str = "qwen"     # Fallback if primary fails
-    
+
     default_model: str = "qwen"
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=100)
     max_retries: int = Field(default=3, ge=1, le=10)
     timeout_seconds: int = Field(default=120, ge=10)
     ollama_url: str = "http://localhost:11434"
+
+    # API-key provider support
+    # provider: "ollama" | "openai" | "gemini"
+    provider: str = "ollama"
+    api_key: str = ""
+    # Override base URL for OpenAI-compatible endpoints (e.g. Azure, local proxies)
+    base_url: str = ""
 
 class TimeoutConfig(BaseModel):
     sandbox_test: int = Field(default=30, ge=5)
@@ -137,7 +144,13 @@ class Config(BaseModel):
             config.security.enforce_brainstem_integrity = enforce_integrity.strip().lower() in {"1", "true", "yes", "on"}
         if ollama_url := os.getenv("OLLAMA_URL"):
             config.llm.ollama_url = ollama_url
-        
+        if provider := os.getenv("LLM_PROVIDER"):
+            config.llm.provider = provider
+        if api_key := os.getenv("LLM_API_KEY"):
+            config.llm.api_key = api_key
+        if base_url := os.getenv("LLM_BASE_URL"):
+            config.llm.base_url = base_url
+
         return config
 
 # Global config instance

@@ -5,8 +5,11 @@ SERVICE_METHODS = {
         'save(id, data)',
         'get(id)',
         'list(limit=10)',
+        'find(filter_fn=None, limit=100)',
+        'count()',
         'update(id, updates)',
         'delete(id)',
+        'exists(id)',
     ],
     'llm': [
         'generate(prompt, temperature=0.3, max_tokens=500)',
@@ -14,14 +17,19 @@ SERVICE_METHODS = {
     'http': [
         'get(url)',
         'post(url, data)',
+        'put(url, data)',
+        'delete(url)',
+        'request(method, url, data=None, headers=None)',
     ],
     'fs': [
         'read(path)',
         'write(path, content)',
+        'list(path)',
     ],
     'json': [
         'parse(text)',
         'stringify(data)',
+        'query(data, path)',
     ],
     'shell': [
         'execute(command)',
@@ -35,6 +43,8 @@ SERVICE_METHODS = {
     'time': [
         'now_utc()',
         'now_local()',
+        'now_utc_iso()',
+        'now_local_iso()',
     ],
     'ids': [
         'generate(prefix="")',
@@ -44,9 +54,20 @@ SERVICE_METHODS = {
         'open_browser()',
         'navigate(url)',
         'find_element(by, value)',
+        'find_elements(by, value)',
         'get_page_text()',
+        'get_page_source()',
+        'get_page_title()',
+        'get_current_url()',
         'take_screenshot(filename)',
+        'click(by, value)',
+        'type_text(by, value, text)',
+        'wait_for_element(by, value, timeout=10)',
+        'wait_for_page_load(timeout=15)',
+        'scroll(direction, amount=500)',
+        'execute_js(script)',
         'close()',
+        'is_available()',
     ],
     'credentials': [
         'get(key)',

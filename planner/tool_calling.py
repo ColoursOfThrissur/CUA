@@ -1,15 +1,38 @@
 """Native tool calling for Mistral and compatible models"""
 import json
+import re
 import requests
 from typing import Dict, List, Optional, Any, Tuple
 
 class ToolCallingClient:
     """LLM client with native function calling support"""
-    
+
     def __init__(self, ollama_url: str, model: str, registry):
         self.ollama_url = ollama_url
         self.model = model
         self.registry = registry
+
+        # Resolve provider from config so tool calling also routes correctly
+        try:
+            from core.config_manager import get_config
+            cfg = get_config()
+            self.provider = cfg.llm.provider
+            self._api_key = cfg.llm.api_key
+            self._base_url = cfg.llm.base_url
+        except Exception:
+            self.provider = "ollama"
+            self._api_key = ""
+            self._base_url = ""
+
+    def _get_api_provider(self):
+        """Build API provider instance on demand."""
+        if self.provider == "openai":
+            from planner.providers import OpenAIProvider
+            return OpenAIProvider(api_key=self._api_key, model=self.model, base_url=self._base_url or None)
+        if self.provider == "gemini":
+            from planner.providers import GeminiProvider
+            return GeminiProvider(api_key=self._api_key, model=self.model)
+        return None
     
     def call_with_tools(
         self,
@@ -24,7 +47,7 @@ class ToolCallingClient:
         """
         
         # Build tool definitions from registry
-        tools = self._build_tool_definitions(allowed_tools=allowed_tools)
+        tools = self._build_tool_definitions(allowed_tools=allowed_tools, user_message=user_message)
         
         # Debug: Check if ContextSummarizerTool is available
         context_summarizer_available = any(
@@ -97,26 +120,28 @@ When doing web research:
                 "tools": tools,
                 "stream": False
             }
-            
+
             # Debug: Log tool definitions being sent
-            print(f"[DEBUG] Sending {len(tools)} tool definitions to LLM")
+            print(f"[DEBUG] Sending {len(tools)} tool definitions to LLM (provider={self.provider})")
             if tools:
                 print(f"[DEBUG] First 3 tools: {[t['function']['name'] for t in tools[:3]]}")
-                # Log BenchmarkRunnerTool operations if present
                 benchmark_tools = [t for t in tools if 'BenchmarkRunnerTool' in t['function']['name']]
                 if benchmark_tools:
                     print(f"[DEBUG] BenchmarkRunnerTool operations: {[t['function']['name'] for t in benchmark_tools]}")
-            
-            response = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json=payload,
-                timeout=60
-            )
-            
-            if response.status_code != 200:
-                return False, None, f"HTTP {response.status_code}"
-            
-            result = response.json()
+
+            # Route to API provider or Ollama
+            api_provider = self._get_api_provider()
+            if api_provider is not None:
+                result = api_provider.chat_with_tools(messages=messages, tools=tools)
+            else:
+                response = requests.post(
+                    f"{self.ollama_url}/api/chat",
+                    json=payload,
+                    timeout=60
+                )
+                if response.status_code != 200:
+                    return False, None, f"HTTP {response.status_code}"
+                result = response.json()
             message = result.get("message", {})
             
             # Check if model wants to call tools
@@ -237,24 +262,61 @@ When doing web research:
         except Exception as e:
             return False, None, str(e)
     
-    def _build_tool_definitions(self, allowed_tools: Optional[List[str]] = None) -> List[Dict]:
+    # Maps category keyword-hint keys → tool class names for fallback filtering
+    _CATEGORY_TOOLS = {
+        "web":          {"WebAccessTool", "ContextSummarizerTool"},
+        "automation":   {"BrowserAutomationTool", "WebAccessTool"},
+        "computer":     {"FilesystemTool", "ShellTool"},
+        "development":  {"FilesystemTool", "ShellTool", "ContextSummarizerTool"},
+        "data":         {"HTTPTool", "JSONTool", "DatabaseQueryTool"},
+        "productivity": {"LocalCodeSnippetLibraryTool", "LocalRunNoteTool"},
+    }
+    # Always included regardless of category
+    _CORE_TOOLS = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool"}
+
+    _KEYWORD_HINTS = {
+        "web":          {"web", "website", "page", "url", "research", "summarize", "search", "google", "fetch", "scrape", "content", "information", "summary", "topic"},
+        "automation":   {"automate", "automation", "browser", "click", "form", "button", "screenshot", "navigate", "login", "selenium"},
+        "computer":     {"file", "files", "folder", "directory", "command", "shell", "move", "create", "list", "read", "write", "system"},
+        "development":  {"code", "repo", "bug", "feature", "refactor", "test", "implement", "function", "class", "debug", "analyze"},
+        "data":         {"api", "http", "json", "database", "query", "sql", "parse", "endpoint", "request", "response", "data"},
+        "productivity": {"snippet", "note", "notes", "save", "store", "library", "knowledge", "organize", "retrieve"},
+    }
+
+    def _infer_category_tools(self, user_message: str) -> Optional[List[str]]:
+        """Derive a tool allow-list from message keywords when no skill is matched."""
+        tokens = set(re.findall(r"[a-z0-9]+", (user_message or "").lower()))
+        best_cat, best_score = None, 0
+        for cat, hints in self._KEYWORD_HINTS.items():
+            score = len(tokens & hints)
+            if score > best_score:
+                best_cat, best_score = cat, score
+        if not best_cat or best_score == 0:
+            return None
+        allowed = self._CORE_TOOLS | self._CATEGORY_TOOLS.get(best_cat, set())
+        print(f"[DEBUG] Category fallback filter: '{best_cat}' (score={best_score}) → {sorted(allowed)}")
+        return list(allowed)
+
+    def _build_tool_definitions(self, allowed_tools: Optional[List[str]] = None, user_message: str = "") -> List[Dict]:
         """Build OpenAI-compatible tool definitions from registry"""
         tools = []
         
         if not self.registry:
             return tools
 
-        # If allowed_tools is specified, only build definitions for those tools
         if allowed_tools:
             print(f"[DEBUG] Building tool definitions for allowed tools only: {allowed_tools}")
-            tools_to_process = []
-            for tool in self.registry.tools:
-                if tool.__class__.__name__ in allowed_tools:
-                    tools_to_process.append(tool)
+            tools_to_process = [t for t in self.registry.tools if t.__class__.__name__ in allowed_tools]
             print(f"[DEBUG] Found {len(tools_to_process)} matching tools out of {len(self.registry.tools)} total")
         else:
-            print(f"[DEBUG] No tool filtering - building definitions for all {len(self.registry.tools)} tools")
-            tools_to_process = self.registry.tools
+            # No skill matched — derive category filter from message keywords
+            category_filter = self._infer_category_tools(user_message)
+            if category_filter:
+                tools_to_process = [t for t in self.registry.tools if t.__class__.__name__ in category_filter]
+                print(f"[DEBUG] Category-filtered tools: {len(tools_to_process)} of {len(self.registry.tools)}")
+            else:
+                print(f"[DEBUG] No filter applied - building definitions for all {len(self.registry.tools)} tools")
+                tools_to_process = self.registry.tools
 
         # Check if WebAccessTool is available (hides raw web tools)
         raw_web_tools_hidden = any(

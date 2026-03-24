@@ -56,8 +56,8 @@ class ServicePatternValidator:
             "risk_services": {"shell": "high", "fs": "medium"}
         },
         "data": {
-            "required": ["http", "json", "logging"],
-            "recommended": ["storage"],
+            "required": ["logging"],
+            "recommended": ["storage", "json", "http"],
             "forbidden": ["shell", "fs"],
             "risk_services": {"http": "medium"}
         },
@@ -185,7 +185,7 @@ class ServicePatternValidator:
                 aligned_capabilities += 1
         
         if aligned_capabilities == 0:
-            errors.append(f"Tool capabilities don't align with {skill_definition.name} skill domain")
+            warnings.append(f"Tool capabilities don't align with {skill_definition.name} skill domain")
         
         return errors
     

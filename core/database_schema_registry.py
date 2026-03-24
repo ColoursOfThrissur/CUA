@@ -93,7 +93,7 @@ DATABASE_SCHEMAS = {
     },
     
     "conversations.db": {
-        "description": "Chat conversation history",
+        "description": "Chat conversation history, sessions, and learned patterns",
         "tables": {
             "conversations": {
                 "columns": {
@@ -109,6 +109,46 @@ DATABASE_SCHEMAS = {
                     "SELECT * FROM conversations WHERE session_id=? ORDER BY timestamp",
                     "SELECT DISTINCT session_id FROM conversations ORDER BY timestamp DESC",
                     "SELECT role, content FROM conversations ORDER BY timestamp DESC LIMIT 10"
+                ]
+            },
+            "sessions": {
+                "columns": {
+                    "session_id": "TEXT PRIMARY KEY",
+                    "user_preferences": "TEXT - User preferences as JSON",
+                    "active_goal": "TEXT - Current active goal",
+                    "created_at": "TEXT - ISO format timestamp",
+                    "updated_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["session_id"],
+                "pk": "session_id",
+                "common_queries": [
+                    "SELECT * FROM sessions ORDER BY updated_at DESC",
+                    "SELECT * FROM sessions WHERE session_id=?"
+                ]
+            },
+            "execution_history": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "session_id": "TEXT - FK to sessions",
+                    "execution_id": "TEXT - Execution identifier",
+                    "timestamp": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["session_id"],
+                "common_queries": [
+                    "SELECT * FROM execution_history WHERE session_id=? ORDER BY timestamp DESC"
+                ]
+            },
+            "learned_patterns": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "pattern_type": "TEXT - Type of pattern (e.g. failed_attempts, successful_goals)",
+                    "pattern_data": "TEXT - Pattern data as JSON",
+                    "learned_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["pattern_type", "learned_at"],
+                "common_queries": [
+                    "SELECT * FROM learned_patterns ORDER BY learned_at DESC LIMIT 20",
+                    "SELECT * FROM learned_patterns WHERE pattern_type=? ORDER BY learned_at DESC"
                 ]
             }
         }
@@ -230,6 +270,22 @@ DATABASE_SCHEMAS = {
                     "SELECT risk_level, COUNT(*) FROM improvement_metrics GROUP BY risk_level",
                     "SELECT * FROM improvement_metrics ORDER BY timestamp DESC LIMIT 10"
                 ]
+            },
+            "attempt_terminal_states": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "timestamp": "REAL - Unix timestamp",
+                    "iteration": "INTEGER - Iteration number",
+                    "file_path": "TEXT - File path changed",
+                    "status": "TEXT - Terminal status",
+                    "generated": "INTEGER - Whether code was generated",
+                    "sandbox_passed": "INTEGER - Whether sandbox passed",
+                    "applied": "INTEGER - Whether change was applied"
+                },
+                "indexes": ["timestamp", "iteration"],
+                "common_queries": [
+                    "SELECT * FROM attempt_terminal_states ORDER BY timestamp DESC LIMIT 20"
+                ]
             }
         }
     },
@@ -254,6 +310,19 @@ DATABASE_SCHEMAS = {
                     "SELECT change_type, COUNT(*) FROM failures GROUP BY change_type",
                     "SELECT * FROM failures WHERE file_path LIKE ? ORDER BY timestamp DESC",
                     "SELECT failure_reason, COUNT(*) as count FROM failures GROUP BY failure_reason ORDER BY count DESC"
+                ]
+            },
+            "risk_weights": {
+                "columns": {
+                    "pattern": "TEXT PRIMARY KEY",
+                    "weight": "REAL - Risk weight for this pattern",
+                    "failure_count": "INTEGER - Number of failures with this pattern",
+                    "last_updated": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["pattern"],
+                "pk": "pattern",
+                "common_queries": [
+                    "SELECT * FROM risk_weights ORDER BY weight DESC"
                 ]
             }
         }
@@ -308,6 +377,67 @@ DATABASE_SCHEMAS = {
                     "SELECT * FROM plan_history WHERE plan_id=? ORDER BY iteration",
                     "SELECT status, COUNT(*) FROM plan_history GROUP BY status",
                     "SELECT * FROM plan_history ORDER BY timestamp DESC LIMIT 10"
+                ]
+            }
+        }
+    }
+    "metrics.db": {
+        "description": "Hourly tool and system performance metrics",
+        "tables": {
+            "tool_metrics_hourly": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "tool_name": "TEXT - Tool name",
+                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
+                    "total_executions": "INTEGER - Total executions in hour",
+                    "successes": "INTEGER - Successful executions",
+                    "failures": "INTEGER - Failed executions",
+                    "avg_duration_ms": "REAL - Average duration in ms",
+                    "p50_duration_ms": "REAL - Median duration",
+                    "p95_duration_ms": "REAL - 95th percentile duration",
+                    "p99_duration_ms": "REAL - 99th percentile duration",
+                    "error_rate_percent": "REAL - Error rate 0-100",
+                    "avg_output_size": "REAL - Average output size in bytes",
+                    "created_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["tool_name", "hour_timestamp"],
+                "common_queries": [
+                    "SELECT tool_name, SUM(total_executions), AVG(error_rate_percent) FROM tool_metrics_hourly GROUP BY tool_name ORDER BY SUM(total_executions) DESC",
+                    "SELECT * FROM tool_metrics_hourly WHERE tool_name=? ORDER BY hour_timestamp DESC LIMIT 24"
+                ]
+            },
+            "system_metrics_hourly": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
+                    "total_chat_requests": "INTEGER - Total chat requests",
+                    "total_tool_calls": "INTEGER - Total tool calls",
+                    "total_evolutions": "INTEGER - Total evolution runs",
+                    "evolution_success_rate": "REAL - Evolution success rate 0-1",
+                    "avg_response_time_ms": "REAL - Average response time",
+                    "unique_tools_used": "INTEGER - Number of distinct tools used",
+                    "created_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["hour_timestamp"],
+                "common_queries": [
+                    "SELECT * FROM system_metrics_hourly ORDER BY hour_timestamp DESC LIMIT 24"
+                ]
+            },
+            "auto_evolution_metrics": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
+                    "tools_analyzed": "INTEGER - Tools analyzed",
+                    "evolutions_triggered": "INTEGER - Evolutions triggered",
+                    "evolutions_pending": "INTEGER - Evolutions pending approval",
+                    "evolutions_approved": "INTEGER - Evolutions approved",
+                    "evolutions_rejected": "INTEGER - Evolutions rejected",
+                    "avg_health_improvement": "REAL - Average health score improvement",
+                    "created_at": "TEXT - ISO format timestamp"
+                },
+                "indexes": ["hour_timestamp"],
+                "common_queries": [
+                    "SELECT * FROM auto_evolution_metrics ORDER BY hour_timestamp DESC LIMIT 24"
                 ]
             }
         }

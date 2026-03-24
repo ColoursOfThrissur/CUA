@@ -2,7 +2,7 @@
 
 **Local autonomous agent platform for safe tool-based execution, with human approval gates, controlled self-improvement, and comprehensive observability.**
 
-> **Status (June 2026):** Production-Ready | ~100% Architecture Complete | All 7 Priorities Delivered
+> **Status (June 2026):** Production-Ready | Core Architecture Complete | 12 correctness/quality fixes applied across 8 components
 
 ---
 
@@ -23,6 +23,9 @@ CUA is a local autonomous agent that:
 - **Scores tool reputation** with 4-factor composite (success rate, recency, latency, volume)
 - **Stores credentials securely** with Fernet encryption, per-tool access scoping
 - **Learns from history** via strategic memory (Jaccard similarity, win-rate tracking, LRU eviction)
+- **Searches all memory at once** via UnifiedMemory facade (strategic plans + patterns + improvement history + conversation)
+- **Evolves surgically** — tool evolution scopes rewrites to `target_functions` only, leaving rest of file untouched
+- **Adapts confidence thresholds** per model — local models (Qwen/Mistral) use 0.35, cloud models (GPT/Claude/Gemini) use 0.5
 
 ---
 
@@ -61,9 +64,9 @@ User Request
     ↓
 [ContextAwareToolSelector] — reputation-weighted selection + circuit breaker health check
     ↓
-[StrategicMemory] — retrieve similar past plans (Jaccard similarity, win-rate filter)
+[UnifiedMemory] — search all 4 stores: StrategicMemory + MemorySystem patterns + ImprovementMemory + conversation
     ↓
-[TaskPlanner] — LLM plan generation with past-plan guidance injected into prompt
+[TaskPlanner] — LLM plan generation with unified MEMORY CONTEXT block injected into prompt
     ↓
 [ExecutionEngine] — parallel DAG execution:
     Wave 1: [step_1, step_2]  ← independent, run concurrently (ThreadPoolExecutor)
@@ -85,46 +88,58 @@ User Request
 
 ### Architecture Health
 
-| Component | Status | Score |
+| Component | Status | Notes |
 |-----------|--------|-------|
-| SkillExecutionContext (32 fields) | Complete | 100% |
-| Skill Selector (3-signal scoring) | Complete | 100% |
-| Tool Selection + Reputation Weighting | Complete | 100% |
-| ExecutionEngine + ToolOrchestrator | Complete | 100% |
-| Parallel Execution DAG (wave-based) | Complete | 100% |
-| Recovery Logic (fallback/retry/degrade) | Complete | 100% |
-| Capability Resolution Layer | Complete | 100% |
-| MCP Adapter (JSON-RPC 2.0) | Complete | 100% |
-| Auth/Credential Store (Fernet) | Complete | 100% |
-| Strategic Memory (Jaccard + win-rate) | Complete | 100% |
-| Output Validation | Complete — all paths (success + fallback + error) | 100% |
-| Multi-round Context Refresh | Complete | 100% |
-| Service Validation | Complete — creation + evolution pipelines | 100% |
-
-**Overall: ~100%**
+| SkillExecutionContext (32 fields) | Complete | |
+| Skill Selector (3-signal + LLM-first) | Solid | LLM fallback max_tokens=80; no stemming in `_tokenize`; no negative signal between skills |
+| Task Planner (LLM → DAG) | Solid | `tools_desc` can exceed Qwen ctx for 20+ tools; `unified_context` injected late in prompt; replan doesn't pass completed outputs |
+| Execution Engine (wave DAG) | Solid | Per-step timeout 120s; completed executions evicted (max 50); `resume_execution` ignores waves |
+| Tool Orchestrator | Solid | `_services_cache` never invalidated on tool reload; `inspect.signature` called on every execution (not cached) |
+| Circuit Breaker | Solid | `success_count` reset on CLOSED→OPEN fixed; cumulative failure count (no sliding window); not thread-safe under parallel execution |
+| Strategic Memory (Jaccard + win-rate) | Solid | Dirty flag + batch write; `min_win_rate` config-driven; no time decay |
+| UnifiedMemory (4-store facade) | Solid | Uses public `retrieve()` API; only searches failed improvements, not successful ones |
+| Capability Resolver (5-step chain) | Solid | `_MCP_CATALOGUE` / `_API_CATALOGUE` hardcoded in file; no feedback loop when `create_tool` succeeds |
+| Credential Store (Fernet) | Solid | Atomic write via tmp+replace; load errors logged; no `expires_at`/TTL |
+| Autonomous Agent (goal loop) | Solid | `failed_attempts` retrieved on retry iterations; web research outcomes recorded to strategic memory |
+| Parallel Execution DAG (wave-based) | Complete | |
+| Recovery Logic (fallback/retry/degrade) | Complete | |
+| MCP Adapter (JSON-RPC 2.0) | Complete | |
+| Output Validation (all paths) | Complete | |
+| Service Validation (creation + evolution) | Complete | |
+| Surgical Tool Evolution (target_functions) | Complete | |
+| Per-model Confidence Thresholds | Complete | |
+| Edit-Block Generation (aider-style) | Complete | Creation + evolution both use `<<<< ORIGINAL / ======= / >>>>` format with fallback |
 
 ### Verified Working
 - Skill-aware routing: web_research, computer_automation, code_workspace, conversation, browser_automation, data_operations, knowledge_management
 - Skill selector 3-signal scoring: keyword overlap + learned triggers + live tool health
 - Tool reputation 4-factor composite: 55% success, 20% recency, 15% latency, 10% volume ±5% trend
-- Parallel DAG execution: independent steps run concurrently via ThreadPoolExecutor (max 4 workers)
+- Parallel DAG execution: independent steps run concurrently via ThreadPoolExecutor (max 4 workers, 120s per-step timeout)
 - Capability resolution: local → MCP → API wrap → create_tool chain
 - MCP adapter: stdlib JSON-RPC 2.0, dynamic capability discovery via `tools/list`
-- Credential store: Fernet encryption, per-tool access scoping, graceful base64 fallback
-- Strategic memory: SHA1 fingerprinting, Jaccard retrieval, 200-record LRU eviction
+- Credential store: Fernet encryption, atomic writes, per-tool access scoping, graceful base64 fallback
+- Strategic memory: SHA1 fingerprinting, Jaccard retrieval, 200-record LRU eviction, config-driven `min_win_rate`
 - Conversational requests handled without tool routing (no false capability gaps)
-- `list_files` alias on FilesystemTool
-- BenchmarkRunnerTool aliases: `execute`, `run_suite`, `run`, `add_case`
-- Suggest tool cycling via `?skip=N` on `/improvement/tools/suggest`
-- Registry-aware tool suggestion (no duplicates)
-- Circuit breaker integration with context awareness
-- Tool creation with architecture contract enforcement
-- Tool evolution with execution context metrics
+- UnifiedMemory: 4-store Jaccard search via public APIs injected into TaskPlanner prompt
+- Surgical tool evolution: `target_functions` scopes rewrite to named methods only
+- Evolution analyzer injects top 3 recent failure messages from `tool_executions.db`
+- Tool creation confidence threshold is model-aware: 0.35 for Qwen/Mistral, 0.5 for GPT/Claude/Gemini
+- Multi-round tool calling: continuation rounds receive structured `[ok/err] tool.op: result_preview` blocks
+- Circuit breaker: correct CLOSED→OPEN→HALF_OPEN transitions, `success_count` reset on OPEN
+- Retry loop: `failed_attempts` patterns injected into planner on iteration 2+
+- Web research outcomes recorded to strategic memory (no longer bypassed)
+- Tool errors (`{"error": "..."}` dicts) correctly surface as failures, not silent successes
 
-### Known Gaps
-- Output validation only in success path (needs extension to fallback/error paths)
-- Multi-round context not fully refreshed between tool calling rounds
-- Service validation logic not implemented
+### Remaining Known Gaps
+
+- `CircuitBreaker`: not thread-safe — `failure_count` read-modify-write races under parallel execution (no lock)
+- `ToolOrchestrator._services_cache`: never invalidated when a tool is reloaded/evolved
+- `TaskPlanner`: `unified_context` injected after examples in prompt — should be closer to goal for Qwen attention
+- `TaskPlanner`: `tools_desc` can exceed Qwen context for 20+ tools — no token budget trimming
+- `CapabilityResolver`: `_MCP_CATALOGUE` and `_API_CATALOGUE` hardcoded — should be config-driven
+- `StrategicMemory`: no time decay on relevance scores — old patterns rank equal to recent ones
+- `CredentialStore`: no `expires_at`/TTL support for rotating API keys
+- `SkillSelector`: no stemming — "searching" doesn't match "search"
 
 ---
 
@@ -203,7 +218,7 @@ Natural language response (tool call JSON filtered out)
 ```
 Goal submitted
     ↓
-StrategicMemory.retrieve() → inject similar past plans into prompt
+UnifiedMemory.search_for_planning() → inject ranked MEMORY CONTEXT (4 stores) into prompt
     ↓
 TaskPlanner → multi-step plan (skill-aware, dependency graph)
     ↓
@@ -237,15 +252,16 @@ User: "Create a tool for X"
 ```
 
 Registry-aware: if tool name already exists, returns "already exists" and suggests evolution instead.
+Confidence threshold is model-aware: reads `min_confidence` from `config/model_capabilities.json` per model pattern (0.35 local, 0.5 cloud).
 
 ---
 
 ## Tool Evolution Flow
 
 ```
-1. Analyze (quality score 0-100)
-2. Propose (LLM reads evolution context, proposes minimal fix with action_type)
-3. Generate (respects action_type: fix_bug / add_capability / improve_logic / refactor)
+1. Analyze (quality score 0-100 + top 3 recent failures from tool_executions.db injected)
+2. Propose (LLM reads evolution context, proposes minimal fix with action_type + target_functions list)
+3. Generate (scopes rewrite to target_functions only; falls back to all handlers if not found)
 4. Check Dependencies (AST parse)
 5. Validate (enhanced AST + CUA architecture checks)
 6. Sandbox Test
@@ -465,6 +481,7 @@ CUA/
 │   ├── memory_system.py
 │   ├── tool_orchestrator.py
 │   ├── strategic_memory.py      # Jaccard plan retrieval + win-rate LRU
+│   ├── unified_memory.py        # 4-store search facade — singleton via get_unified_memory()
 │   ├── capability_resolver.py   # 3-step gap resolution chain
 │   ├── credential_store.py      # Fernet-encrypted credential store
 │   ├── gap_detector.py          # Capability gap detection
@@ -555,7 +572,7 @@ CUA/
 
 **Config Files:**
 - `config.yaml` — System configuration (includes `mcp_servers` list)
-- `config/model_capabilities.json` — Model routing config
+- `config/model_capabilities.json` — Model routing config: `strategy`, `max_lines`, `min_confidence` per model pattern
 - `requirements.txt` — Python dependencies
 - `ui/package.json` — Frontend dependencies
 

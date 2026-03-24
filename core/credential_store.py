@@ -139,17 +139,23 @@ class CredentialStore:
     # ------------------------------------------------------------------
 
     def _save(self) -> None:
+        import logging
+        _log = logging.getLogger(__name__)
         _STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(self._data).encode()
         if self._fernet:
             payload = self._fernet.encrypt(raw)
         else:
-            # Fallback: base64 obfuscation (not secure, but doesn't crash)
             import base64
             payload = base64.b64encode(raw)
-        _STORE_FILE.write_bytes(payload)
+        # Atomic write: write to .tmp then replace to avoid corruption on crash
+        tmp = _STORE_FILE.with_suffix(".tmp")
+        tmp.write_bytes(payload)
+        os.replace(tmp, _STORE_FILE)
 
     def _load(self) -> None:
+        import logging
+        _log = logging.getLogger(__name__)
         if not _STORE_FILE.exists():
             self._data = {}
             return
@@ -161,8 +167,9 @@ class CredentialStore:
                 import base64
                 raw = base64.b64decode(payload)
             self._data = json.loads(raw.decode())
-        except Exception:
-            # Corrupted or key mismatch — start fresh
+        except Exception as e:
+            # Log visibly — silent reset means lost credentials with no trace
+            _log.error(f"CredentialStore failed to load '{_STORE_FILE}': {e} — starting with empty store")
             self._data = {}
 
 

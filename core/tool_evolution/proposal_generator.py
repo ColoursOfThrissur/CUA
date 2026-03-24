@@ -16,26 +16,32 @@ class EvolutionProposalGenerator:
     def generate_proposal(self, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Generate improvement proposal from analysis."""
         
-        # Read evolution context files for guidance
-        evolution_context = self._read_evolution_context()
-        
         # Get service context from dependency checker
         service_context = self._build_service_context()
         
         # Format LLM issues and improvements
-        llm_issues_text = self._format_llm_issues(analysis.get('llm_issues', []))
-        llm_improvements_text = self._format_llm_improvements(analysis.get('llm_improvements', []))
+        llm_issues_text = self._format_llm_issues(analysis.get('llm_issues') or [])
+        llm_improvements_text = self._format_llm_improvements(analysis.get('llm_improvements') or [])
         
         # Add context priorities if available
         context_priorities_text = ""
         if analysis.get('context_priorities'):
             context_priorities_text = "\n\nEXECUTION CONTEXT PRIORITIES (from recent failures):\n" + "\n".join(analysis['context_priorities'])
         
+        # Limit code included in prompt based on health — HEALTHY tools don't need full code review
+        category = analysis.get('code_quality_category', 'UNKNOWN')
+        if category in ('WEAK', 'NEEDS_IMPROVEMENT'):
+            code_section = f"\nCurrent Code:\n```python\n{analysis['current_code'][:4000]}\n```"
+        elif analysis.get('user_prompt'):
+            code_section = f"\nCurrent Code (truncated):\n```python\n{analysis['current_code'][:2000]}\n```"
+        else:
+            code_section = ""  # HEALTHY with no user prompt — skip full code
+
         prompt = f"""Analyze this tool and propose ONLY necessary improvements.
 
 Tool: {analysis['tool_name']}
 Health Score: {analysis['health_score']:.1f}/100
-Code Quality: {analysis.get('code_quality_category', 'UNKNOWN')}
+Code Quality: {category}
 Success Rate: {analysis['success_rate']:.1%}
 {f"User Request: {analysis['user_prompt']}" if analysis.get('user_prompt') else ""}
 
@@ -45,89 +51,38 @@ LLM CODE ANALYSIS:
 SUGGESTED IMPROVEMENTS:
 {llm_improvements_text}
 {context_priorities_text}
+{code_section}
 
-Current Code:
-```python
-{analysis['current_code']}
-```
+AVAILABLE SERVICES (use self.services.X only): {service_context}
 
-EVOLUTION GUIDELINES:
-{evolution_context}
-
-AVAILABLE SERVICES (tools must use self.services.X with EXACT signatures below):
-{service_context}
-
-WARNING: DO NOT add parameters to service methods that are not listed above. These are the ONLY allowed parameters.
-
-CRITICAL DECISION RULES:
-1. If EXECUTION_CONTEXT_PRIORITIES exist → PRIORITIZE THOSE FIRST (real failures from production)
-2. If LLM_ISSUES contains HIGH severity bugs → FIX THEM (broken code, missing imports, undefined methods)
-3. If code_quality_category is WEAK or NEEDS_IMPROVEMENT → FIX CODE ISSUES
-4. If SUGGESTED_IMPROVEMENTS has HIGH priority items → ADD THE FIRST ONE (others will be done in next evolutions)
-5. If SUGGESTED_IMPROVEMENTS has MEDIUM priority items (and no HIGH) → ADD THE FIRST ONE
-6. If SUGGESTED_IMPROVEMENTS has LOW priority items (and no HIGH/MEDIUM) → ADD THE FIRST ONE
-7. If only runtime issues (low success rate) but code is HEALTHY with no bugs and no improvements → SKIP
-8. DO NOT fix "low success rate" by adding generic error handling if code already has proper error handling
-
-IMPORTANT: Implement ONE improvement at a time. After approval, the next evolution will pick the next improvement.
-
-IMPORTANT RULES:
-- ONLY fix issues that are actually broken or causing failures
-- DO NOT change working code for style preferences
-- DO NOT add generic "improve error handling" if error handling already exists
-- DO NOT refactor code that works correctly
-- DO NOT add operations that don't exist in original tool UNLESS in SUGGESTED_IMPROVEMENTS
-- Focus on HIGH severity bugs and clear architecture violations
-- Ignore LOW severity style suggestions
-- If code uses undefined methods, fix by using self.services.X instead
-- If code has missing imports, fix by using self.services.X instead of direct imports
-- DO NOT add parameters to service methods beyond what's listed in AVAILABLE SERVICES
-- Validate all service calls match available service methods above EXACTLY
-- Low success rate with HEALTHY code = external factors (network, browser), NOT code bugs
+RULES: Fix ONE issue. Prioritize: execution errors > HIGH bugs > WEAK code > improvements. If HEALTHY with no issues → skip.
 
 Generate improvement proposal as JSON:
 {{
-  "action_type": "fix_bug" | "add_capability" | "improve_logic" | "refactor",
-  "description": "What specific issue to fix or feature to add (ONE improvement only)",
-  "changes": ["Change 1", "Change 2"],
-  "expected_improvement": "Expected outcome",
+  "action_type": "fix_bug|add_capability|improve_logic|refactor",
+  "description": "One specific improvement",
+  "target_functions": ["_handle_method_name"],
+  "changes": ["Change 1"],
+  "expected_improvement": "Outcome",
   "confidence": 0.0-1.0,
   "risk_level": 0.0-1.0,
-  "justification": "Why this change is necessary",
-  "network_only": true | false,  // Set true if tool ONLY works with network/browser (no local operations)
-  "required_services": ["service_name"],
-  "required_libraries": ["library_name"],
-  "new_service_specs": {{
-    "service_name": {{
-      "description": "What this service should do",
-      "methods": ["method1(param1)", "method2()"]
-    }}
-  }}
+  "justification": "Why necessary",
+  "network_only": false,
+  "required_services": [],
+  "required_libraries": [],
+  "new_service_specs": {{}}
 }}
 
-ACTION_TYPE RULES:
-- "fix_bug": Fix broken code (undefined methods, wrong service calls, missing imports) - MODIFY existing handlers
-- "add_capability": Add NEW operation to tool (new handler method + register in capabilities) - CREATE new handler
-- "improve_logic": Enhance existing handler logic (better error handling, validation) - MODIFY existing handlers
-- "refactor": Restructure code for clarity/performance - MODIFY existing handlers
-
-CRITICAL: Pick ONLY ONE improvement from SUGGESTED_IMPROVEMENTS (the highest priority one).
-Other improvements will be implemented in subsequent evolutions after this one is approved.
-
-NOTE: Only include required_services/required_libraries/new_service_specs if adding NEW features that need them.
-For existing services, just use them - don't list in required_services.
-For NEW services not in AVAILABLE SERVICES, specify in new_service_specs with description and methods needed.
-
-If NO critical issues found AND no improvements suggested, return: {{"skip": true, "reason": "Tool is working correctly"}}
-
+target_functions: list the exact method names that need changing (e.g. ["_handle_search"]). Leave empty [] only for add_capability.
+If NO issues found: {{"skip": true, "reason": "Tool is working correctly"}}
 Return ONLY valid JSON."""
         
         try:
-            response = self.llm._call_llm(prompt, temperature=0.2, max_tokens=800, expect_json=True)
+            response = self.llm._call_llm(prompt, temperature=0.2, max_tokens=None, expect_json=True)
             proposal = self._parse_response(response)
             
             if not proposal:
-                logger.warning("Failed to parse proposal from LLM")
+                logger.warning(f"Failed to parse proposal from LLM. Raw response (first 500): {str(response)[:500]}")
                 return None
             
             # Check if should skip
@@ -137,7 +92,7 @@ Return ONLY valid JSON."""
             
             # Validate proposal structure
             if not self._validate_proposal(proposal):
-                logger.warning("Invalid proposal structure")
+                logger.warning(f"Invalid proposal structure. Keys present: {list(proposal.keys())}")
                 return None
             
             # Set default action_type if missing (for backward compatibility)
@@ -166,6 +121,7 @@ Return ONLY valid JSON."""
                     "domain": "general",
                     "outputs": [],
                     "artifact_types": [],
+                    "code": analysis.get("current_code", ""),
                 },
                 derive_skill_contract_for_tool(analysis.get("tool_name", "")),
             )
@@ -179,7 +135,8 @@ Return ONLY valid JSON."""
             return proposal
             
         except Exception as e:
-            logger.error(f"Proposal generation error: {e}")
+            import traceback
+            logger.error(f"Proposal generation error: {e}\n{traceback.format_exc()}")
             return None
     
     def _build_service_context(self) -> str:
@@ -232,63 +189,77 @@ ARCHITECTURE PATTERNS:
         """Validate proposal has required fields."""
         required = ['description', 'changes', 'expected_improvement', 'justification']
         has_required = all(field in proposal for field in required)
-        
+        if not has_required:
+            return False
+
+        # Ensure changes is a non-None list
+        if not isinstance(proposal.get('changes'), list):
+            proposal['changes'] = []
+
         # Validate action_type if present
         if 'action_type' in proposal:
             valid_actions = ['fix_bug', 'add_capability', 'improve_logic', 'refactor']
             if proposal.get('action_type') not in valid_actions:
                 return False
-        
-        # Validate new_service_specs structure if present
-        if 'new_service_specs' in proposal:
-            for svc_name, svc_spec in proposal['new_service_specs'].items():
+
+        # Validate new_service_specs structure if present — guard against null
+        new_service_specs = proposal.get('new_service_specs')
+        if new_service_specs is None:
+            proposal['new_service_specs'] = {}
+        elif isinstance(new_service_specs, dict):
+            for svc_name, svc_spec in new_service_specs.items():
                 if not isinstance(svc_spec, dict):
                     return False
                 if 'description' not in svc_spec or 'methods' not in svc_spec:
                     return False
-        
-        return has_required
+        else:
+            proposal['new_service_specs'] = {}
+
+        # Guard other list/dict fields that LLM may return as null
+        for field in ('required_services', 'required_libraries'):
+            if not isinstance(proposal.get(field), list):
+                proposal[field] = []
+
+        return True
     
     def _calculate_confidence(self, proposal: Dict, analysis: Dict) -> float:
         """Calculate confidence score for proposal."""
         confidence = 1.0
-        
+
         # Low if no specific changes
-        if not proposal.get('changes') or len(proposal['changes']) < 2:
+        changes = proposal.get('changes') or []
+        if not changes or len(changes) < 2:
             confidence -= 0.3
-        
+
         # Low if vague description
         if len(proposal.get('description', '').split()) < 5:
             confidence -= 0.2
-        
+
         # Low if health score is very bad (might need redesign)
         if analysis.get('health_score', 0) < 20:
             confidence -= 0.2
-        
+
         # Low if no user prompt and no clear issues
-        if not analysis.get('user_prompt') and len(analysis.get('issues', [])) == 0:
+        if not analysis.get('user_prompt') and len(analysis.get('issues') or []) == 0:
             confidence -= 0.3
-        
+
         return max(0.0, confidence)
     
     def _parse_response(self, response: str) -> Optional[Dict]:
         """Parse LLM response to extract proposal."""
+        if not response:
+            return None
         try:
-            # Try direct JSON parse
             return json.loads(response)
-        except:
-            # Try extracting JSON from markdown
+        except Exception:
             if "```json" in response:
                 start = response.find("```json") + 7
                 end = response.find("```", start)
-                json_str = response[start:end].strip()
-                return json.loads(json_str)
+                return json.loads(response[start:end].strip())
             elif "```" in response:
                 start = response.find("```") + 3
                 end = response.find("```", start)
-                json_str = response[start:end].strip()
-                return json.loads(json_str)
-            
+                return json.loads(response[start:end].strip())
             return None
     
     def _format_llm_issues(self, issues: list) -> str:

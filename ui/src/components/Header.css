@@ -267,7 +267,7 @@
 }
 
 .btn-auto-evolution {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, var(--accent-green), #059669);
   color: white;
   padding: 0.625rem 1rem;
   display: flex;
@@ -369,4 +369,264 @@
 .btn-label {
   font-size: 0.75rem;
   font-weight: 600;
+}
+
+/* ── LLM Settings Panel ─────────────────────────────────────── */
+.llm-settings-panel {
+  position: absolute;
+  top: 100%;
+  right: 1.5rem;
+  margin-top: 0.5rem;
+  width: 320px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+  z-index: 102;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.llm-settings-header {
+  padding: 0.875rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+  border-bottom: 1px solid var(--glass-border);
+  letter-spacing: 0.03em;
+}
+
+.llm-settings-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.llm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.llm-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.llm-optional {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.llm-badge-set {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.llm-select-wrap {
+  position: relative;
+}
+
+.llm-select {
+  width: 100%;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  background: rgba(26, 31, 58, 0.5);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  appearance: none;
+  transition: border-color var(--transition-normal);
+}
+
+.llm-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.15);
+}
+
+.llm-select-icon {
+  position: absolute;
+  right: 0.6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.llm-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.llm-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: rgba(26, 31, 58, 0.5);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  transition: border-color var(--transition-normal);
+}
+
+.llm-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.15);
+}
+
+.llm-input::placeholder {
+  color: var(--text-muted);
+}
+
+.llm-eye {
+  position: absolute;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.llm-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  background: rgba(74, 158, 255, 0.05);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(74, 158, 255, 0.1);
+}
+
+.llm-info-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.llm-info-val {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.llm-add-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  width: 100%;
+}
+
+.llm-add-toggle:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.llm-add-model {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(74, 158, 255, 0.04);
+  border: 1px solid rgba(74, 158, 255, 0.1);
+  border-radius: var(--radius-md);
+}
+
+.llm-btn-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.45rem;
+  background: rgba(74, 158, 255, 0.15);
+  border: 1px solid rgba(74, 158, 255, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--accent-blue);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.llm-btn-add:hover:not(:disabled) {
+  background: rgba(74, 158, 255, 0.25);
+}
+
+.llm-btn-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.llm-settings-footer {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--glass-border);
+}
+
+.llm-btn-cancel {
+  flex: 1;
+  padding: 0.55rem;
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.llm-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.llm-btn-save {
+  flex: 2;
+  padding: 0.55rem;
+  background: var(--accent-blue);
+  border: none;
+  border-radius: var(--radius-md);
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.llm-btn-save:hover:not(:disabled) {
+  background: #3a8eef;
+  box-shadow: var(--shadow-glow);
+}
+
+.llm-btn-save:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }

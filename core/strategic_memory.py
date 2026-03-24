@@ -21,16 +21,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
-import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 _STORE_FILE = Path("data/strategic_memory.json")
 _MAX_RECORDS = 200   # cap to avoid unbounded growth
 _MIN_SIMILARITY = 0.30  # Jaccard threshold for "similar enough"
+
+
+def _get_min_win_rate() -> float:
+    """Read min_win_rate from config.yaml, fall back to 0.5."""
+    try:
+        from core.config_manager import get_config_manager
+        return float(get_config_manager().get("strategic_memory.min_win_rate", 0.5))
+    except Exception:
+        return 0.5
 
 
 @dataclass
@@ -73,6 +82,7 @@ class StrategicMemory:
     def __init__(self, store_file: Path = _STORE_FILE):
         self._file = store_file
         self._records: Dict[str, PlanRecord] = {}
+        self._dirty = False
         self._load()
 
     # ------------------------------------------------------------------
@@ -111,23 +121,28 @@ class StrategicMemory:
             self._records[fp] = rec
 
         self._evict()
-        self._save()
+        self._dirty = True
+        self._flush()
 
     def retrieve(
         self,
         goal: str,
         skill_name: str = "",
         top_k: int = 3,
-        min_win_rate: float = 0.5,
+        min_win_rate: Optional[float] = None,
     ) -> List[PlanRecord]:
         """
         Return up to top_k records similar to *goal* that have a good win rate.
         Similarity = Jaccard on goal tokens.
+        min_win_rate defaults to config value (strategic_memory.min_win_rate) or 0.5.
         """
+        if min_win_rate is None:
+            min_win_rate = _get_min_win_rate()
         query_tokens = set(self._tokenize(goal))
         if not query_tokens:
             return []
 
+        now = datetime.now(timezone.utc)
         scored: List[tuple[float, PlanRecord]] = []
         for rec in self._records.values():
             if rec.win_rate() < min_win_rate:
@@ -138,13 +153,25 @@ class StrategicMemory:
             jaccard = len(query_tokens & rec_tokens) / len(query_tokens | rec_tokens)
             if jaccard < _MIN_SIMILARITY:
                 continue
-            # Slight boost for same skill
             if skill_name and rec.skill_name == skill_name:
                 jaccard = min(1.0, jaccard + 0.10)
-            scored.append((jaccard, rec))
+            score = jaccard * 0.7 + self._recency_weight(rec.last_used, now) * 0.3
+            scored.append((score, rec))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [rec for _, rec in scored[:top_k]]
+
+    @staticmethod
+    def _recency_weight(last_used: str, now: datetime, tau_days: float = 30.0) -> float:
+        """Exponential decay: 1.0 at t=0, ~0.37 at tau_days, ~0.14 at 2×tau_days."""
+        try:
+            lu = datetime.fromisoformat(last_used)
+            if lu.tzinfo is None:
+                lu = lu.replace(tzinfo=timezone.utc)
+            delta_days = (now - lu).total_seconds() / 86400.0
+            return math.exp(-delta_days / tau_days)
+        except Exception:
+            return 0.5
 
     def get_stats(self) -> Dict:
         total = len(self._records)
@@ -188,12 +215,19 @@ class StrategicMemory:
         counts = Counter(r.skill_name for r in self._records.values() if r.skill_name)
         return [{"skill": s, "count": c} for s, c in counts.most_common(n)]
 
+    def _flush(self) -> None:
+        """Write to disk only when dirty."""
+        if not self._dirty:
+            return
+        self._save()
+        self._dirty = False
+
     def _save(self) -> None:
         self._file.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         for fp, rec in self._records.items():
             d = asdict(rec)
-            d.pop("_duration_total", None)
+            d["_duration_total"] = rec._duration_total
             data[fp] = d
         self._file.write_text(json.dumps(data, indent=2))
 
@@ -203,9 +237,11 @@ class StrategicMemory:
         try:
             raw = json.loads(self._file.read_text())
             for fp, d in raw.items():
-                d.pop("_duration_total", None)
+                duration_total = d.pop("_duration_total", 0.0)
                 try:
-                    self._records[fp] = PlanRecord(**d)
+                    rec = PlanRecord(**d)
+                    rec._duration_total = duration_total
+                    self._records[fp] = rec
                 except Exception:
                     pass
         except Exception:

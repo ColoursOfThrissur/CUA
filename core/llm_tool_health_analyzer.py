@@ -30,9 +30,18 @@ class LLMToolHealthAnalyzer:
         if not force_refresh and tool_name in self.cache:
             return self.cache[tool_name]
         
+        # Find tool file - check experimental dir first, then registry
         tool_file = self.tools_dir / f"{tool_name}.py"
         if not tool_file.exists():
-            return {"error": "Tool file not found"}
+            try:
+                from core.tool_registry_manager import ToolRegistryManager
+                resolved = ToolRegistryManager().resolve_source_file(tool_name)
+                if resolved and resolved.exists():
+                    tool_file = resolved
+            except Exception:
+                pass
+        if not tool_file.exists():
+            return {"error": "Tool file not found", "issues": [], "improvements": [], "category": "UNKNOWN"}
         
         tool_code = tool_file.read_text()
         

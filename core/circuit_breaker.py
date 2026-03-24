@@ -1,9 +1,10 @@
 """Circuit Breaker for tool execution - prevents repeated calls to broken tools."""
 import time
 import logging
+from threading import Lock
 from typing import Dict, Optional
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,12 @@ class CircuitStats:
     last_success_time: float = 0
     state: CircuitState = CircuitState.CLOSED
     opened_at: float = 0
+    lock: Lock = field(default_factory=Lock, compare=False, repr=False)
 
 
 class CircuitBreaker:
-    """Circuit breaker pattern for tool execution"""
-    
+    """Circuit breaker pattern for tool execution — thread-safe per-tool locking."""
+
     def __init__(
         self,
         failure_threshold: int = 5,
@@ -39,22 +41,22 @@ class CircuitBreaker:
         self.success_threshold = success_threshold
         self.timeout = timeout
         self.half_open_timeout = half_open_timeout
-        
         self.circuits: Dict[str, CircuitStats] = {}
-    
+        self._registry_lock = Lock()  # guards circuits dict creation only
+
     def call(self, tool_name: str, func, *args, **kwargs):
-        """Execute function with circuit breaker protection"""
+        """Execute function with circuit breaker protection."""
         circuit = self._get_circuit(tool_name)
-        
-        # Check if circuit is open
-        if circuit.state == CircuitState.OPEN:
-            if time.time() - circuit.opened_at > self.timeout:
-                logger.info(f"Circuit {tool_name}: OPEN -> HALF_OPEN (timeout expired)")
-                circuit.state = CircuitState.HALF_OPEN
-            else:
-                raise CircuitBreakerError(f"Circuit breaker OPEN for {tool_name}")
-        
-        # Execute function
+
+        with circuit.lock:
+            if circuit.state == CircuitState.OPEN:
+                if time.time() - circuit.opened_at > self.timeout:
+                    logger.info(f"Circuit {tool_name}: OPEN -> HALF_OPEN (timeout expired)")
+                    circuit.state = CircuitState.HALF_OPEN
+                else:
+                    raise CircuitBreakerError(f"Circuit breaker OPEN for {tool_name}")
+
+        # Execute outside the lock — tool call can be slow
         try:
             result = func(*args, **kwargs)
             self._on_success(tool_name)
@@ -62,68 +64,81 @@ class CircuitBreaker:
         except Exception as e:
             self._on_failure(tool_name)
             raise e
-    
+
     def _get_circuit(self, tool_name: str) -> CircuitStats:
-        """Get or create circuit for tool"""
-        if tool_name not in self.circuits:
-            self.circuits[tool_name] = CircuitStats()
-        return self.circuits[tool_name]
-    
+        """Get or create circuit for tool — registry creation is locked."""
+        with self._registry_lock:
+            if tool_name not in self.circuits:
+                self.circuits[tool_name] = CircuitStats()
+            return self.circuits[tool_name]
+
     def _on_success(self, tool_name: str):
-        """Handle successful execution"""
+        """Handle successful execution."""
         circuit = self._get_circuit(tool_name)
-        circuit.success_count += 1
-        circuit.last_success_time = time.time()
-        
-        if circuit.state == CircuitState.HALF_OPEN:
-            if circuit.success_count >= self.success_threshold:
-                logger.info(f"Circuit {tool_name}: HALF_OPEN -> CLOSED (recovered)")
-                circuit.state = CircuitState.CLOSED
-                circuit.failure_count = 0
-                circuit.success_count = 0
-    
+        with circuit.lock:
+            circuit.success_count += 1
+            circuit.last_success_time = time.time()
+
+            if circuit.state == CircuitState.HALF_OPEN:
+                if circuit.success_count >= self.success_threshold:
+                    logger.info(f"Circuit {tool_name}: HALF_OPEN -> CLOSED (recovered)")
+                    circuit.state = CircuitState.CLOSED
+                    circuit.failure_count = 0
+                    circuit.success_count = 0
+
     def _on_failure(self, tool_name: str):
-        """Handle failed execution"""
+        """Handle failed execution."""
         circuit = self._get_circuit(tool_name)
-        circuit.failure_count += 1
-        circuit.last_failure_time = time.time()
-        
-        if circuit.state == CircuitState.HALF_OPEN:
-            logger.warning(f"Circuit {tool_name}: HALF_OPEN -> OPEN (still failing)")
-            circuit.state = CircuitState.OPEN
-            circuit.opened_at = time.time()
-            circuit.success_count = 0
-        elif circuit.failure_count >= self.failure_threshold:
-            logger.error(f"Circuit {tool_name}: CLOSED -> OPEN (threshold reached: {circuit.failure_count} failures)")
-            circuit.state = CircuitState.OPEN
-            circuit.opened_at = time.time()
-    
+        with circuit.lock:
+            circuit.failure_count += 1
+            circuit.last_failure_time = time.time()
+
+            if circuit.state == CircuitState.HALF_OPEN:
+                logger.warning(f"Circuit {tool_name}: HALF_OPEN -> OPEN (still failing)")
+                circuit.state = CircuitState.OPEN
+                circuit.opened_at = time.time()
+                circuit.success_count = 0
+            elif circuit.failure_count >= self.failure_threshold:
+                logger.error(f"Circuit {tool_name}: CLOSED -> OPEN (threshold reached: {circuit.failure_count} failures)")
+                circuit.state = CircuitState.OPEN
+                circuit.opened_at = time.time()
+                circuit.success_count = 0
+
     def get_state(self, tool_name: str) -> CircuitState:
-        """Get current circuit state"""
-        return self._get_circuit(tool_name).state
-    
-    def get_stats(self, tool_name: str) -> Dict:
-        """Get circuit statistics"""
+        """Get current circuit state."""
         circuit = self._get_circuit(tool_name)
-        return {
-            "state": circuit.state.value,
-            "failure_count": circuit.failure_count,
-            "success_count": circuit.success_count,
-            "last_failure": circuit.last_failure_time,
-            "last_success": circuit.last_success_time
-        }
-    
+        with circuit.lock:
+            return circuit.state
+
+    def get_stats(self, tool_name: str) -> Dict:
+        """Get circuit statistics."""
+        circuit = self._get_circuit(tool_name)
+        with circuit.lock:
+            return {
+                "state": circuit.state.value,
+                "failure_count": circuit.failure_count,
+                "success_count": circuit.success_count,
+                "last_failure": circuit.last_failure_time,
+                "last_success": circuit.last_success_time,
+            }
+
     def reset(self, tool_name: str):
-        """Manually reset circuit"""
-        if tool_name in self.circuits:
+        """Manually reset circuit."""
+        circuit = self._get_circuit(tool_name)
+        with circuit.lock:
             logger.info(f"Circuit {tool_name}: Manual reset")
-            self.circuits[tool_name] = CircuitStats()
-    
+            circuit.failure_count = 0
+            circuit.success_count = 0
+            circuit.state = CircuitState.CLOSED
+            circuit.opened_at = 0
+
     def get_all_open_circuits(self) -> list:
-        """Get list of all open circuits"""
+        """Get list of all open circuits."""
+        with self._registry_lock:
+            names = list(self.circuits.keys())
         return [
-            name for name, circuit in self.circuits.items()
-            if circuit.state == CircuitState.OPEN
+            name for name in names
+            if self.get_state(name) == CircuitState.OPEN
         ]
 
 

@@ -1,84 +1,132 @@
-# CUA Configuration File
-
-# Security Settings
 security:
   max_file_writes: 10
   max_file_size_mb: 1
   max_plan_steps: 20
   allowed_roots:
-    - "."
-    - "./output"
-    - "./workspace"
-    - "./temp"
+  - .
+  - ./output
+  - ./workspace
+  - ./temp
   blocked_paths:
-    - "C:\\Windows"
-    - "C:\\Program Files"
-    - "C:\\System32"
-    - "/etc"
-    - "/usr"
-    - "/bin"
-    - "/sbin"
-    - "/root"
-    - "~/.ssh"
-    - "~/.aws"
-    - "~/.config"
+  - C:\Windows
+  - C:\Program Files
+  - C:\System32
+  - /etc
+  - /usr
+  - /bin
+  - /sbin
+  - /root
+  - ~/.ssh
+  - ~/.aws
+  - ~/.config
   blocked_extensions:
-    - ".exe"
-    - ".bat"
-    - ".cmd"
-    - ".ps1"
-    - ".sh"
-    - ".dll"
-
-# LLM Model Settings
+  - .exe
+  - .bat
+  - .cmd
+  - .ps1
+  - .sh
+  - .dll
 llm:
-  # Single-model strategy: Use Qwen for everything (optimal for 12GB VRAM)
-  analysis_model: "qwen"         # Code analysis and reasoning
-  code_model: "qwen"             # Code generation
-  review_model: "qwen"           # Validation and review
-  fallback_model: "qwen"         # Fallback
-  
-  default_model: "qwen"
+  analysis_model: qwen
+  code_model: qwen
+  review_model: qwen
+  fallback_model: qwen
+  default_model: qwen
   temperature: 0.7
   max_tokens: 4096
   max_retries: 3
   timeout_seconds: 300
-  ollama_url: "http://localhost:11434"
-  
-  # Available models (Ollama)
+  ollama_url: http://localhost:11434
+  provider: ollama
+  api_key: ""  # set via environment variable OPENAI_API_KEY
+  base_url: ''
   models:
     qwen:
-      name: "qwen2.5-coder:14b"
+      name: qwen2.5-coder:14b
       context_length: 16384
-      description: "Qwen 2.5 Coder 14B - Optimized for code generation (Q4_K_M)"
-      strengths: ["code_generation", "syntax", "refactoring"]
-    
+      description: Qwen 2.5 Coder 14B - Optimized for code generation (Q4_K_M)
+      strengths:
+      - code_generation
+      - syntax
+      - refactoring
     mistral:
-      name: "mistral:7b"
+      name: mistral:7b
       context_length: 8192
-      description: "Mistral 7B - Fast reasoning and analysis"
-      strengths: ["reasoning", "analysis", "planning", "review"]
-    
+      description: Mistral 7B - Fast reasoning and analysis
+      strengths:
+      - reasoning
+      - analysis
+      - planning
+      - review
     phi:
-      name: "phi3:latest"
+      name: phi3:latest
       context_length: 2048
-      description: "Phi 3 - Lightweight for simple tasks"
-      strengths: ["simple_tasks", "fast_response"]
-
-# Timeout Settings
+      description: Phi 3 - Lightweight for simple tasks
+      strengths:
+      - simple_tasks
+      - fast_response
+    gpt-4o:
+      name: gpt-4o
+      context_length: 128000
+      description: OpenAI GPT-4o
+      strengths:
+      - reasoning
+      - code_generation
+      - planning
+    gpt-4-turbo:
+      name: gpt-4-turbo
+      context_length: 128000
+      description: OpenAI GPT-4 Turbo
+      strengths:
+      - reasoning
+      - code_generation
+      - planning
+    gpt-3.5-turbo:
+      name: gpt-3.5-turbo
+      context_length: 16385
+      description: OpenAI GPT-3.5 Turbo - fast and cheap
+      strengths:
+      - simple_tasks
+      - fast_response
+    gemini-1.5-pro:
+      name: gemini-1.5-pro
+      context_length: 1000000
+      description: Google Gemini 1.5 Pro
+      strengths:
+      - reasoning
+      - code_generation
+      - long_context
+    gemini-1.5-flash:
+      name: gemini-1.5-flash
+      context_length: 1000000
+      description: Google Gemini 1.5 Flash - fast and cheap
+      strengths:
+      - simple_tasks
+      - fast_response
+    gemini-2.5-flash:
+      name: gemini-2.5-flash
+      context_length: 1000000
+      description: Google Gemini 2.5 Flash
+      strengths:
+      - reasoning
+      - code_generation
+      - planning
+    chatgpt:
+      name: gpt-4o
+      context_length: 128000
+      description: ChatGPT GPT-4o
+      strengths:
+      - reasoning
+      - code_generation
 timeouts:
   sandbox_test: 30
   llm_request: 300
   health_check: 5
   startup_wait: 2
-
-# API Settings
 api:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
-  url: "http://localhost:8000"
-
-# Self-Improvement Settings
+  url: http://localhost:8000
 improvement:
   max_iterations: 1
   auto_approve_low_risk: true
@@ -91,22 +139,18 @@ improvement:
   max_logs_display: 50
   code_preview_chars: 3000
   protected_files:
-    - "core/immutable_brain_stem.py"
-    - "core/config_manager.py"
-    - "core/proposal_generator.py"
-    - "core/orchestrated_code_generator.py"
-    - "core/patch_generator.py"
-    - "core/change_classifier.py"
-    - "core/change_locator.py"
-    - "core/diff_generator.py"
-    - "api/server.py"
-    - "tools/test_tool.py"
-
-# Session Settings
+  - core/immutable_brain_stem.py
+  - core/config_manager.py
+  - core/proposal_generator.py
+  - core/orchestrated_code_generator.py
+  - core/patch_generator.py
+  - core/change_classifier.py
+  - core/change_locator.py
+  - core/diff_generator.py
+  - api/server.py
+  - tools/test_tool.py
 session:
   conversation_history_limit: 20
-
-# Database Paths
-db_plan_history: "data/plan_history.db"
-db_analytics: "data/analytics.db"
-db_conversations: "data/conversations.db"
+db_plan_history: data/plan_history.db
+db_analytics: data/analytics.db
+db_conversations: data/conversations.db

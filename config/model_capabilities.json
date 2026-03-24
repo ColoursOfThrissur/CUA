@@ -2,31 +2,49 @@
   "qwen": {
     "strategy": "multistage",
     "max_lines": 200,
+    "min_confidence": 0.35,
     "description": "Local Qwen models - multi-stage generation"
   },
   "qwen2.5": {
     "strategy": "multistage",
     "max_lines": 200,
+    "min_confidence": 0.35,
     "description": "Qwen 2.5 series"
   },
   "qwen-coder": {
     "strategy": "multistage",
     "max_lines": 200,
+    "min_confidence": 0.35,
     "description": "Qwen Coder variants"
   },
   "gpt-4": {
-    "strategy": "singleshot",
+    "strategy": "multistage",
     "max_lines": 800,
+    "min_confidence": 0.5,
     "description": "GPT-4 models"
   },
   "gpt-3.5": {
-    "strategy": "singleshot",
+    "strategy": "multistage",
     "max_lines": 500,
+    "min_confidence": 0.5,
     "description": "GPT-3.5 models"
   },
   "claude": {
-    "strategy": "singleshot",
+    "strategy": "multistage",
     "max_lines": 800,
+    "min_confidence": 0.5,
     "description": "Claude models"
+  },
+  "gemini": {
+    "strategy": "multistage",
+    "max_lines": 800,
+    "min_confidence": 0.5,
+    "description": "Google Gemini models"
+  },
+  "mistral": {
+    "strategy": "multistage",
+    "max_lines": 200,
+    "min_confidence": 0.35,
+    "description": "Mistral models"
   }
 }

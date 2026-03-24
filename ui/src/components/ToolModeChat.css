@@ -4,7 +4,7 @@
   align-items: center;
   height: 100%;
   padding: 20px;
-  background: var(--bg-primary);
+  /* background: var(--bg-primary); */
   overflow-y: auto;
 }
 

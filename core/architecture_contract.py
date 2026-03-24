@@ -99,42 +99,30 @@ def validate_service_alignment(spec: Dict[str, Any]) -> Tuple[bool, str]:
     """Validate that tool's service usage aligns with skill constraints."""
     target_skill = str(spec.get("target_skill") or "").strip()
     if not target_skill:
-        return True, ""  # No skill context, skip validation
-    
-    # Get skill definition
+        return True, ""
+
     try:
         from core.skills import SkillRegistry
         skill_registry = SkillRegistry()
         skill_registry.load_all()
         skill = skill_registry.get(target_skill)
         if not skill:
-            return True, ""  # Skill not found, skip validation
+            return True, ""
     except Exception:
-        return True, ""  # Registry error, skip validation
-    
-    # Check service usage against skill constraints
-    dependencies = spec.get("dependencies", [])
-    available_services = spec.get("available_services", [])
-    
-    # Development skill should prefer local services
-    if skill.category == "development":
-        forbidden_services = ["llm", "http"]
-        for service in available_services:
-            if service in forbidden_services:
-                return False, f"Development skill tools should not use {service} service (prefer local operations)"
-    
-    # Web research skill should use web services
-    if skill.category == "web":
-        required_services = ["http"]
-        has_web_service = any(svc in available_services for svc in required_services)
-        if not has_web_service:
-            return False, "Web research skill tools should use http or web-related services"
-    
-    # Source-backed verification requires storage
+        return True, ""
+
+    tool_code = spec.get("code", "")
+    if not tool_code:
+        return True, ""
+
+    # Only enforce source_backed verification for tools that explicitly fetch/retrieve sources.
+    # Processing tools (summarizers, extractors) in the same skill don't need to store sources.
     if skill.verification_mode == "source_backed":
-        if "storage" not in available_services:
+        fetcher_keywords = ("fetch_url", "search_web", "self.services.http", "self.services.browser")
+        is_fetcher = any(kw in tool_code for kw in fetcher_keywords)
+        if is_fetcher and "self.services.storage" not in tool_code:
             return False, "Source-backed verification requires storage service to persist sources"
-    
+
     return True, ""
 
 

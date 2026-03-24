@@ -25,9 +25,13 @@ class EvolutionValidator:
         
         # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
         # Extract class name for proper validation
+        self._last_syntax_error = None
         class_name = self._extract_class_name(improved_code)
         if not class_name:
-            return False, "Could not extract class name from improved code"
+            syntax_detail = getattr(self, '_last_syntax_error', None)
+            if syntax_detail:
+                return False, f"Syntax error in generated code: {syntax_detail}"
+            return False, "Could not extract class name from improved code (no class definition found)"
         
         is_valid, error = self.enhanced_validator.validate(improved_code, class_name)
         if not is_valid:
@@ -55,7 +59,7 @@ class EvolutionValidator:
                 return False, f"Service validation failed: {'; '.join(svc_result.errors)}"
 
         # 0.7. Validate skill alignment if execution_context provided
-        execution_context = proposal.get('analysis', {}).get('execution_context')
+        execution_context = proposal.get('analysis', {}).get('execution_context_data')
         if execution_context:
             skill_error = self._validate_skill_alignment(improved_code, execution_context)
             if skill_error:
@@ -108,7 +112,10 @@ class EvolutionValidator:
                 if isinstance(node, ast.ClassDef):
                     return node.name
             return ""
-        except:
+        except SyntaxError as e:
+            self._last_syntax_error = str(e)
+            return ""
+        except Exception:
             return ""
     
     def _extract_class_names(self, code: str) -> set:

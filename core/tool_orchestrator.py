@@ -60,6 +60,11 @@ class ToolOrchestrator:
             )
         return self._services_cache[tool_name]
 
+    def invalidate_cache(self, tool_name: str) -> None:
+        """Evict a tool's cached ToolServices — call after tool reload or evolution apply."""
+        self._services_cache.pop(tool_name, None)
+        logger.debug(f"[ORCHESTRATOR] Services cache invalidated for {tool_name}")
+
     def execute_tool_step(
         self,
         tool,
@@ -267,8 +272,8 @@ class ToolOrchestrator:
     def _execute_tool_compat(self, tool, operation: str, parameters: Dict[str, Any]):
         """Execute tool with compatibility across execute signatures."""
         params = parameters or {}
-        print(f"[ORCHESTRATOR] Executing {tool.__class__.__name__}.{operation} with params: {params}")
-        print(f"[ORCHESTRATOR] Tool has services: {hasattr(tool, 'services') and tool.services is not None}")
+        logger.debug(f"[ORCHESTRATOR] Executing {tool.__class__.__name__}.{operation} with params: {params}")
+        logger.debug(f"[ORCHESTRATOR] Tool has services: {hasattr(tool, 'services') and tool.services is not None}")
         
         if not hasattr(tool, "execute") and hasattr(tool, "execute_capability"):
             try:
@@ -333,7 +338,10 @@ class ToolOrchestrator:
                 if success:
                     error = None
                 return success, data, error
-            # Treat plain dict output as successful payload.
+            # Plain dict with an "error" key but no "success" key — treat as failure.
+            if "error" in result or "error_message" in result:
+                error_msg = result.get("error") or result.get("error_message")
+                return False, None, str(error_msg)
             return True, result, None
 
         return True, result, None
@@ -366,72 +374,3 @@ class ToolOrchestrator:
         if execution_context and verification.issues:
             for issue in verification.issues:
                 execution_context.warnings.append(f"[VERIFY:{issue.layer}] {issue.message}")
-
-    def _validate_output(self, data: Any, execution_context: Any) -> Optional[str]:
-        """Validate output against skill verification_mode (enhanced for all paths)."""
-        verification_mode = getattr(execution_context, 'verification_mode', None)
-        expected_output_types = getattr(execution_context, 'expected_output_types', [])
-        
-        if not verification_mode:
-            return None
-        
-        # Handle None/empty data (error scenarios)
-        if data is None:
-            if verification_mode in ["source_backed", "side_effect_observed"]:
-                return f"No output data for {verification_mode} verification mode"
-            return None
-        
-        if not isinstance(data, dict):
-            # For non-dict outputs, only validate if strict verification required
-            if verification_mode == "source_backed":
-                return "Output must be dict with 'sources' field for source_backed verification"
-            elif verification_mode == "side_effect_observed":
-                return "Output must be dict with 'file_path' or 'path' field for side_effect_observed verification"
-            return None
-        
-        # Validate based on verification mode
-        if verification_mode == "source_backed":
-            # For source_backed, we need either:
-            # 1. Direct sources field, OR
-            # 2. URL field (indicating content was fetched from a source)
-            has_sources = "sources" in data and data["sources"]
-            has_url = "url" in data and data["url"]
-            has_content = "summary" in data or "content" in data or "text" in data
-            
-            if not (has_sources or has_url):
-                return "Output missing 'sources' field or 'url' field for source_backed verification"
-            if not has_content:
-                return "Output missing 'summary', 'content', or 'text' field for source_backed verification"
-        
-        elif verification_mode == "side_effect_observed":
-            if "file_path" not in data and "path" not in data:
-                return "Output missing required 'file_path' or 'path' field for side_effect_observed verification"
-        
-        # Validate expected_output_types if specified
-        if expected_output_types:
-            output_keys = set(data.keys())
-            type_indicators = {
-                "research_summary": ["sources", "summary", "content", "text", "url"],
-                "page_summary": ["content", "url", "title", "summary", "text"],
-                "structured_extraction": ["extracted_data", "findings", "data", "content", "summary"],
-                "source_comparison": ["sources", "comparison", "analysis", "content"],
-                "file_list": ["files", "paths", "items"],
-                "execution_result": ["output", "result", "status"],
-                "code_summary": ["code", "analysis", "summary"],
-                "change_summary": ["changes", "diff", "modifications"],
-                "diff_result": ["diff", "patch", "changes"],
-                "validation_result": ["valid", "errors", "warnings"],
-                "test_result": ["passed", "failed", "tests", "results"]
-            }
-            
-            matched = False
-            for expected_type in expected_output_types:
-                indicators = type_indicators.get(expected_type, [])
-                if any(ind in output_keys for ind in indicators):
-                    matched = True
-                    break
-            
-            if not matched and expected_output_types:
-                return f"Output type doesn't match expected types: {expected_output_types}. Found keys: {list(output_keys)}"
-        
-        return None

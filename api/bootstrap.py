@@ -1,9 +1,10 @@
 """Application bootstrap helpers for router loading and runtime initialization."""
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-import asyncio
 
 CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
     "ContextSummarizerTool",
@@ -13,6 +14,8 @@ CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
     "LocalRunNoteTool",
     "BenchmarkRunnerTool",
 )
+
+_EXPERIMENTAL_LOAD_TIMEOUT = 5  # seconds per tool
 
 
 @dataclass
@@ -51,7 +54,41 @@ class RuntimeState:
     skill_selector: Any = None
     coordinated_autonomy_engine: Any = None
     circuit_breaker: Any = None
+    # Singleton managers (created once here, reused by routers)
+    quality_analyzer: Any = None
+    evolution_orchestrator: Any = None
+    pending_evolutions_manager: Any = None
+    pending_services_manager: Any = None
+    pending_skills_manager: Any = None
+    service_injector: Any = None
     init_error: Optional[str] = None
+    # Scheduler stop event for clean shutdown
+    _scheduler_stop: Any = field(default=None, repr=False)
+
+
+def _load_tool_with_timeout(tool_module_name: str, orchestrator, timeout: float) -> Any:
+    """Load an experimental tool in a thread with a timeout. Returns tool instance or None."""
+    result = [None]
+    exc = [None]
+
+    def _load():
+        try:
+            module = __import__(f"tools.experimental.{tool_module_name}", fromlist=[tool_module_name])
+            tool_cls = getattr(module, tool_module_name)
+            result[0] = tool_cls(orchestrator=orchestrator)
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_load, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        print(f"Warning: {tool_module_name} load timed out after {timeout}s — skipped")
+        return None
+    if exc[0]:
+        print(f"Warning: Could not load {tool_module_name}: {exc[0]}")
+        return None
+    return result[0]
 
 
 def load_router_bundle() -> RouterBundle:
@@ -102,35 +139,14 @@ def load_router_bundle() -> RouterBundle:
         return RouterBundle(
             routers_available=True,
             routers=[
-                update_router,
-                improvement_router,
-                settings_router,
-                scheduler_router,
-                task_manager_router,
-                pending_tools_router,
-                llm_logs_router,
-                tools_router,
-                libraries_router,
-                hybrid_router,
-                quality_router,
-                evolution_router,
-                observability_router,
-                observability_data_router,
-                cleanup_router,
-                tool_info_router,
-                tool_list_router,
-                tools_management_router,
-                metrics_router,
-                auto_evolution_router,
-                agent_router,
-                skills_router,
-                trace_router,
-                circuit_breaker_router,
-                session_router,
-                services_router,
-                pending_skills_router,
-                mcp_router,
-                credentials_router,
+                update_router, improvement_router, settings_router, scheduler_router,
+                task_manager_router, pending_tools_router, llm_logs_router, tools_router,
+                libraries_router, hybrid_router, quality_router, evolution_router,
+                observability_router, observability_data_router, cleanup_router,
+                tool_info_router, tool_list_router, tools_management_router, metrics_router,
+                auto_evolution_router, agent_router, skills_router, trace_router,
+                circuit_breaker_router, session_router, services_router,
+                pending_skills_router, mcp_router, credentials_router,
             ],
             refresh_runtime_registry_from_files=refresh_runtime_registry_from_files,
             setters={
@@ -203,6 +219,12 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from core.coordinated_autonomy_engine import CoordinatedAutonomyEngine
         from core.circuit_breaker import get_circuit_breaker
         from core.decision_engine import get_decision_engine
+        from core.tool_evolution.flow import ToolEvolutionOrchestrator
+        from core.pending_evolutions_manager import PendingEvolutionsManager
+        from core.tool_quality_analyzer import ToolQualityAnalyzer
+        from core.expansion_mode import ExpansionMode
+        from core.pending_services_manager import PendingServicesManager
+        from core.pending_skills_manager import PendingSkillsManager
 
         config = get_config()
         circuit_breaker = get_circuit_breaker()
@@ -213,24 +235,19 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         for tool in (FilesystemTool(), HTTPTool(), JSONTool(), ShellTool(), WebAccessTool(orchestrator=tool_orchestrator)):
             registry.register_tool(tool)
 
+        # Load experimental tools with per-tool timeout
         for tool_module_name in CURATED_EXPERIMENTAL_RUNTIME_TOOLS:
-            try:
-                module = __import__(f"tools.experimental.{tool_module_name}", fromlist=[tool_module_name])
-                tool_cls = getattr(module, tool_module_name)
-                registry.register_tool(tool_cls(orchestrator=tool_orchestrator))
-            except Exception as e:
-                print(f"Warning: Could not load {tool_module_name}: {e}")
+            tool = _load_tool_with_timeout(tool_module_name, tool_orchestrator, _EXPERIMENTAL_LOAD_TIMEOUT)
+            if tool:
+                registry.register_tool(tool)
 
-        # Load MCP adapter tools for each enabled MCP server
+        # Load MCP adapters (non-blocking: skip if unreachable)
         for mcp_server in (config.mcp_servers or []):
             if not mcp_server.enabled:
                 continue
             try:
                 from tools.experimental.MCPAdapterTool import MCPAdapterTool
-                adapter = MCPAdapterTool(
-                    server_name=mcp_server.name,
-                    server_url=mcp_server.url,
-                )
+                adapter = MCPAdapterTool(server_name=mcp_server.name, server_url=mcp_server.url)
                 if adapter.is_connected():
                     registry.register_tool(adapter)
                     print(f"MCP adapter loaded: {mcp_server.name} ({len(adapter._mcp_tools)} tools)")
@@ -246,7 +263,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         skill_registry = SkillRegistry()
         skill_registry.load_all()
         skill_selector = SkillSelector()
-        get_decision_engine(skill_registry=skill_registry)  # initialise singleton with registry
+        get_decision_engine(skill_registry=skill_registry)
         state_manager = StateManager()
         plan_validator = PlanValidator()
         logger = get_logger("cua_api")
@@ -258,14 +275,31 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
 
         orchestrator = UpdateOrchestrator(repo_path=".")
         improvement_loop = SelfImprovementLoop(
-            llm_client,
-            orchestrator,
+            llm_client, orchestrator,
             max_iterations=config.improvement.max_iterations,
             libraries_manager=libraries_manager,
             registry=registry,
         )
 
+        # Scheduler with stop event for clean shutdown
+        scheduler_stop = threading.Event()
         scheduler = ImprovementScheduler()
+
+        async def _run_scheduled_loop(max_iter: int, dry: bool):
+            improvement_loop.controller.max_iterations = max_iter
+            improvement_loop.dry_run = dry
+            improvement_loop.continuous_mode = False
+            await improvement_loop.start_loop()
+
+        scheduler.set_callback(
+            lambda max_iter, dry: asyncio.create_task(_run_scheduled_loop(max_iter, dry))
+        )
+        scheduler.start()
+
+        metrics_scheduler = get_metrics_scheduler()
+        metrics_scheduler.start()
+        logger.info("Metrics scheduler started")
+
         task_planner = TaskPlanner(llm_client, registry, skill_registry=skill_registry)
         execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator, task_planner=task_planner)
         memory_system = MemorySystem()
@@ -283,20 +317,25 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             registry=registry,
         )
 
-        async def _run_scheduled_loop(max_iter: int, dry: bool):
-            improvement_loop.controller.max_iterations = max_iter
-            improvement_loop.dry_run = dry
-            improvement_loop.continuous_mode = False
-            await improvement_loop.start_loop()
-
-        scheduler.set_callback(
-            lambda max_iter, dry: asyncio.create_task(_run_scheduled_loop(max_iter, dry))
+        # Build singleton managers once
+        quality_analyzer = ToolQualityAnalyzer()
+        expansion_mode = ExpansionMode(enabled=True)
+        evolution_orchestrator = ToolEvolutionOrchestrator(
+            quality_analyzer=quality_analyzer,
+            expansion_mode=expansion_mode,
+            llm_client=llm_client,
         )
-        scheduler.start()
+        pending_evolutions_manager = PendingEvolutionsManager()
+        pending_services_manager = PendingServicesManager()
+        pending_skills_manager = PendingSkillsManager()
 
-        metrics_scheduler = get_metrics_scheduler()
-        metrics_scheduler.start()
-        logger.info("Metrics scheduler started")
+        from core.service_injector import ServiceInjector
+        service_injector = ServiceInjector()
+
+        # Wire unified memory with live instances
+        from core.improvement_memory import ImprovementMemory
+        from core.unified_memory import get_unified_memory
+        get_unified_memory(memory_system=memory_system, improvement_memory=ImprovementMemory())
 
         runtime = RuntimeState(
             system_available=True,
@@ -324,6 +363,13 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             skill_selector=skill_selector,
             coordinated_autonomy_engine=coordinated_autonomy_engine,
             circuit_breaker=circuit_breaker,
+            quality_analyzer=quality_analyzer,
+            evolution_orchestrator=evolution_orchestrator,
+            pending_evolutions_manager=pending_evolutions_manager,
+            pending_services_manager=pending_services_manager,
+            pending_skills_manager=pending_skills_manager,
+            service_injector=service_injector,
+            _scheduler_stop=scheduler_stop,
         )
 
         if bundle and bundle.routers_available:
@@ -331,9 +377,9 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
 
         print("CUA system initialized successfully")
         return runtime
+
     except Exception as e:
         import traceback
-
         print(f"System initialization failed: {e}")
         traceback.print_exc()
         return RuntimeState(system_available=False, init_error=str(e))
@@ -343,27 +389,9 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     if not bundle.routers_available:
         return
 
-    from core.tool_evolution.flow import ToolEvolutionOrchestrator
-    from core.pending_evolutions_manager import PendingEvolutionsManager
-    from core.tool_quality_analyzer import ToolQualityAnalyzer
-    from core.expansion_mode import ExpansionMode
-    from core.pending_services_manager import PendingServicesManager
-    from core.service_injector import ServiceInjector
-    from core.pending_skills_manager import PendingSkillsManager
-
-    quality_analyzer = ToolQualityAnalyzer()
-    expansion_mode = ExpansionMode(enabled=True)
-    evolution_orchestrator = ToolEvolutionOrchestrator(
-        quality_analyzer=quality_analyzer,
-        expansion_mode=expansion_mode,
-        llm_client=runtime.llm_client,
-    )
-    pending_evolutions_manager = PendingEvolutionsManager()
-    pending_services_manager = PendingServicesManager()
-    service_injector = ServiceInjector()
-    pending_skills_manager = PendingSkillsManager()
-
-    bundle.setters["set_evolution_dependencies"](evolution_orchestrator, pending_evolutions_manager)
+    bundle.setters["set_evolution_dependencies"](runtime.evolution_orchestrator, runtime.pending_evolutions_manager)
+    # Inject orchestrator so approve_evolution can invalidate the services cache
+    runtime.pending_evolutions_manager._tool_orchestrator = runtime.tool_orchestrator
     bundle.setters["set_loop_instance"](runtime.improvement_loop)
     bundle.setters["set_llm_client"](runtime.llm_client)
     bundle.setters["set_scheduler"](runtime.scheduler)
@@ -377,14 +405,10 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     bundle.setters["set_tool_registrar_for_sync"](runtime.tool_registrar)
     bundle.setters["set_tool_orchestrator_for_sync"](runtime.tool_orchestrator)
     bundle.setters["set_libraries_manager"](runtime.libraries_manager)
-    bundle.setters["set_agent_dependencies"](
-        runtime.autonomous_agent,
-        runtime.memory_system,
-        runtime.execution_engine,
-    )
+    bundle.setters["set_agent_dependencies"](runtime.autonomous_agent, runtime.memory_system, runtime.execution_engine)
     bundle.setters["set_skill_registry"](runtime.skill_registry)
-    bundle.setters["set_services_dependencies"](pending_services_manager, service_injector)
-    bundle.setters["set_skills_dependencies"](pending_skills_manager, runtime.skill_registry)
+    bundle.setters["set_services_dependencies"](runtime.pending_services_manager, runtime.service_injector)
+    bundle.setters["set_skills_dependencies"](runtime.pending_skills_manager, runtime.skill_registry)
     bundle.setters["set_coordinated_engine"](runtime.coordinated_autonomy_engine)
     bundle.setters["set_mcp_registry"](runtime.registry)
     bundle.setters["set_skill_registry_for_cb"](runtime.skill_registry)

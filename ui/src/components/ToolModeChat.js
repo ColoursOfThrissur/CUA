@@ -21,15 +21,16 @@ function ToolModeChat({ onModeChange }) {
 
   const fetchSuggestion = async () => {
     setSuggesting(true);
+    const currentIndex = suggestionIndex;
     try {
-      const res = await fetch(`${API_URL}/improvement/tools/suggest?skip=${suggestionIndex}`);
+      const res = await fetch(`${API_URL}/improvement/tools/suggest?skip=${currentIndex}`);
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.detail || 'Failed to get suggestion');
         return;
       }
       setSuggestion(data);
-      setSuggestionIndex(prev => prev + 1);
+      setSuggestionIndex(currentIndex + 1);
     } catch (err) {
       toast.error('Error: ' + err.message);
     } finally {

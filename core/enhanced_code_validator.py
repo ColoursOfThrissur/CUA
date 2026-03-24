@@ -260,71 +260,64 @@ class EnhancedCodeValidator:
     def _check_service_usage(self, target_class: ast.ClassDef) -> Tuple[bool, str]:
         """Check that service methods are called correctly and detect missing services."""
         errors = []
-        
+
         for method in target_class.body:
             if not isinstance(method, ast.FunctionDef):
                 continue
-            
+
             for node in ast.walk(method):
                 if not isinstance(node, ast.Call):
                     continue
-                
-                # Check for self.services.service_name.method_name() pattern
-                if isinstance(node.func, ast.Attribute):
-                    if isinstance(node.func.value, ast.Attribute):
-                        if (isinstance(node.func.value.value, ast.Name) and 
-                            node.func.value.value.id == 'self' and 
-                            node.func.value.attr == 'services'):
-                            
-                            service_name = node.func.attr
-                            
-                            # Check if service exists in registry
-                            if service_name not in self.service_registry:
-                                # Unknown service - mark as missing
-                                line_num = node.lineno if hasattr(node, 'lineno') else 0
-                                self.missing_services.append({
-                                    'service_name': service_name,
-                                    'method_name': None,
-                                    'line': line_num,
-                                    'type': 'full_service'
-                                })
-                                errors.append(f"Unknown service: self.services.{service_name} (line {line_num})")
-                            continue
-                    
-                    # Check for self.services.service_name.method_name() - validate method exists
-                    if isinstance(node.func.value, ast.Attribute):
-                        if isinstance(node.func.value.value, ast.Attribute):
-                            if (isinstance(node.func.value.value.value, ast.Name) and
-                                node.func.value.value.value.id == 'self' and
-                                node.func.value.value.attr == 'services'):
-                                
-                                service_name = node.func.value.attr
-                                method_name = node.func.attr
-                                
-                                # Check if service exists
-                                if service_name in self.service_registry:
-                                    # Check if method exists in service
-                                    if method_name not in self.service_registry[service_name]:
-                                        line_num = node.lineno if hasattr(node, 'lineno') else 0
-                                        self.missing_services.append({
-                                            'service_name': service_name,
-                                            'method_name': method_name,
-                                            'line': line_num,
-                                            'type': 'method'
-                                        })
-                                        errors.append(f"Unknown method: self.services.{service_name}.{method_name}() (line {line_num})")
-                    
-                    # Check for direct self.service_method() that should be self.services.method()
-                    if isinstance(node.func.value, ast.Name) and node.func.value.id == 'self':
-                        method_name = node.func.attr
-                        
-                        # Check if this looks like a service method
-                        if method_name in self.available_services:
-                            return False, f"Method '{method.name}' calls 'self.{method_name}()' but should use 'self.services.{method_name}()'"
-        
+
+                func = node.func
+                if not isinstance(func, ast.Attribute):
+                    continue
+
+                # Pattern: self.services.<svc>.<method>(...)
+                if (
+                    isinstance(func.value, ast.Attribute)
+                    and isinstance(func.value.value, ast.Attribute)
+                    and isinstance(func.value.value.value, ast.Name)
+                    and func.value.value.value.id == 'self'
+                    and func.value.value.attr == 'services'
+                ):
+                    service_name = func.value.attr
+                    method_name = func.attr
+                    line_num = getattr(node, 'lineno', 0)
+
+                    if service_name not in self.service_registry:
+                        self.missing_services.append({'service_name': service_name, 'method_name': None, 'line': line_num, 'type': 'full_service'})
+                        errors.append(f"Unknown service: self.services.{service_name} (line {line_num})")
+                    else:
+                        allowed = self.service_registry[service_name]
+                        if allowed and method_name not in allowed:
+                            self.missing_services.append({'service_name': service_name, 'method_name': method_name, 'line': line_num, 'type': 'method'})
+                            errors.append(f"Unknown method: self.services.{service_name}.{method_name}() (line {line_num})")
+                    continue
+
+                # Pattern: self.services.<direct_method>(...)
+                if (
+                    isinstance(func.value, ast.Attribute)
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id == 'self'
+                    and func.value.attr == 'services'
+                ):
+                    # This is self.services.something() — only valid for direct methods
+                    direct_name = func.attr
+                    if direct_name in self.service_registry and self.service_registry[direct_name]:  # has sub-methods = nested service
+                        line_num = getattr(node, 'lineno', 0)
+                        errors.append(f"Invalid call self.services.{direct_name}(...) — use self.services.{direct_name}.<method>() (line {line_num})")
+                    continue
+
+                # Pattern: self.<method>() that should be self.services.<method>()
+                if isinstance(func.value, ast.Name) and func.value.id == 'self':
+                    method_name = func.attr
+                    if method_name in self.available_services:
+                        errors.append(f"Method '{method.name}' calls 'self.{method_name}()' but should use 'self.services.{method_name}()'")
+
         if errors:
             return False, "CUA validation failed:\n  " + "\n  ".join(f"[HIGH] {e}" for e in errors)
-        
+
         return True, ""
     
     def _get_parent_node(self, root, target):

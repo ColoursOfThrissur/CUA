@@ -65,9 +65,10 @@ class AutoEvolutionTrigger:
             try:
                 if self.triggers["interval"]["enabled"]:
                     hours = self.triggers["interval"]["hours"]
-                    logger.info(f"Interval trigger activated ({hours}h)")
-                    await self.orchestrator._scan_and_queue()
-                    await asyncio.sleep(hours * 3600)
+                    await asyncio.sleep(hours * 3600)  # wait first, then scan
+                    if self.running and self.triggers["interval"]["enabled"]:
+                        logger.info(f"Interval trigger activated ({hours}h)")
+                        await self.orchestrator._scan_and_queue()
                 else:
                     await asyncio.sleep(300)  # Check every 5 minutes
             except Exception as e:

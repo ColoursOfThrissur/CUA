@@ -245,6 +245,18 @@ function AppContent() {
     }
   };
 
+  const handleProviderSaved = async (newModel) => {
+    // Refresh model list and current model from backend after provider switch
+    try {
+      const res = await fetch(`${API_URL}/settings/models`);
+      const data = await res.json();
+      setAvailableModels(data.available_models || {});
+      setCurrentModel(data.current_model || newModel);
+    } catch (e) {
+      setCurrentModel(newModel);
+    }
+  };
+
   const handleModelChange = async (model) => {
     try {
       const response = await fetch(`${API_URL}/settings/model`, {
@@ -557,14 +569,6 @@ function AppContent() {
         return <SessionManagement onClose={() => setOverlayOpen(null)} />;
       case 'history':
         return <div style={{padding: '40px', textAlign: 'center', color: 'white'}}>Evolution History</div>;
-      case 'tasks':
-        return (
-          <TaskManagerPanel 
-            taskStatus={globalState.taskManager}
-            onAbortTask={handleAbortTask}
-            onViewStaging={handleViewStaging}
-          />
-        );
       default:
         return null;
     }
@@ -635,6 +639,8 @@ function AppContent() {
           theme={theme}
           onThemeToggle={handleThemeToggle}
           onClearCache={handleClearCache}
+          onToast={(type, msg) => toast[type]?.(msg)}
+          onProviderSaved={handleProviderSaved}
         />
         
         {activeMode === 'observability' ? (

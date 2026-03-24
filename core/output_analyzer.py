@@ -27,7 +27,8 @@ class OutputAnalyzer:
         if not data:
             return components
 
-        if preferred_renderer or summary or skill_name:
+        has_overview = bool(preferred_renderer or summary or skill_name)
+        if has_overview:
             components.append(
                 OutputAnalyzer._build_result_overview(
                     data=data,
@@ -43,8 +44,43 @@ class OutputAnalyzer:
         
         # Handle dict outputs
         if isinstance(data, dict):
-            # Check for web research outputs
-            if 'url' in data and ('content' in data or 'summary' in data or 'text' in data):
+            # File write/read result
+            if 'path' in data and ('bytes_written' in data or 'content' in data or 'size' in data):
+                content = data.get('content', '')
+                components.append({
+                    'type': 'file_result',
+                    'renderer': 'file_result',
+                    'path': data['path'],
+                    'bytes_written': data.get('bytes_written') or data.get('size'),
+                    'content': content[:3000] if isinstance(content, str) else None,
+                    'operation': operation,
+                })
+
+            # Tool/capability list (e.g. list_tools, status responses)
+            if 'tools' in data and isinstance(data['tools'], (list, dict)):
+                tools_raw = data['tools']
+                if isinstance(tools_raw, dict):
+                    tools_raw = [{'name': k, **v} if isinstance(v, dict) else {'name': k, 'info': str(v)} for k, v in tools_raw.items()]
+                components.append({
+                    'type': 'tool_list',
+                    'renderer': 'tool_list',
+                    'tools': tools_raw,
+                    'title': data.get('title', 'Tools'),
+                })
+
+            # Shell/command output
+            if 'output' in data and ('command' in data or 'exit_code' in data or operation in ('execute', 'run_script')):
+                components.append({
+                    'type': 'terminal_output',
+                    'renderer': 'terminal_output',
+                    'command': data.get('command', ''),
+                    'output': str(data['output'])[:4000],
+                    'exit_code': data.get('exit_code', 0),
+                    'error': data.get('error', ''),
+                })
+
+            # Check for web research outputs — skip if overview card already covers it
+            if not has_overview and 'url' in data and ('content' in data or 'summary' in data or 'text' in data):
                 components.append({
                     'type': 'web_content',
                     'renderer': 'web_content',
@@ -54,8 +90,8 @@ class OutputAnalyzer:
                     'summary': data.get('summary', ''),
                 })
             
-            # Check for summarized text content
-            if 'summary' in data or 'text' in data:
+            # Check for summarized text content — skip if overview card already covers it
+            if not has_overview and ('summary' in data or 'text' in data):
                 content = data.get('summary') or data.get('text')
                 if isinstance(content, str) and len(content) > 50:
                     components.append({
@@ -66,6 +102,47 @@ class OutputAnalyzer:
                         'source_url': data.get('url', ''),
                     })
             
+            # Structured browser content (get_structured_content)
+            if 'tables' in data and isinstance(data['tables'], list):
+                for tbl in data['tables'][:5]:
+                    if tbl.get('rows'):
+                        components.append({
+                            'type': 'table',
+                            'renderer': 'table',
+                            'data': tbl['rows'],
+                            'title': tbl.get('caption') or 'Table',
+                            'columns': tbl.get('headers') or OutputAnalyzer._extract_columns(tbl['rows']),
+                        })
+
+            # extract_links — render as table
+            if 'links' not in data and 'count' in data and isinstance(data.get('links'), list):
+                pass  # handled below
+            if isinstance(data.get('links'), list) and data['links'] and isinstance(data['links'][0], dict) and 'href' in data['links'][0]:
+                components.append({
+                    'type': 'table', 'renderer': 'table',
+                    'data': data['links'],
+                    'title': 'Links',
+                    'columns': ['text', 'href', 'title'],
+                })
+
+            # extract_lists — render each as a list component
+            if isinstance(data.get('lists'), list):
+                for lst in data['lists'][:5]:
+                    if lst.get('items'):
+                        components.append({
+                            'type': 'list', 'renderer': 'list',
+                            'items': lst['items'],
+                        })
+
+            # extract_article — render body as text_content
+            if 'body' in data and isinstance(data.get('body'), str) and len(data['body']) > 100:
+                components.append({
+                    'type': 'text_content', 'renderer': 'text_content',
+                    'content': data['body'],
+                    'title': data.get('title') or 'Article',
+                    'source_url': data.get('url', ''),
+                })
+
             if 'sources' in data and isinstance(data['sources'], list):
                 components.append({
                     'type': 'table',
@@ -194,14 +271,15 @@ class OutputAnalyzer:
                     'items': data
                 })
         
-        # Always add raw JSON as collapsible fallback
-        components.append({
-            'type': 'json',
-            'renderer': 'json',
-            'data': data,
-            'collapsed': True,
-            'title': 'Raw Data'
-        })
+        # Add raw JSON only when no overview card (avoids clutter for agent results)
+        if not has_overview:
+            components.append({
+                'type': 'json',
+                'renderer': 'json',
+                'data': data,
+                'collapsed': True,
+                'title': 'Raw Data'
+            })
         
         return components
 
@@ -240,7 +318,7 @@ class OutputAnalyzer:
             "type": "agent_result",
             "renderer": preferred_renderer or "agent_result",
             "title": title,
-            "summary": summary or "Task completed.",
+            "summary": "",  # already shown in message bubble
             "skill": skill_name,
             "category": category,
             "tool_name": tool_name,

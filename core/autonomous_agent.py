@@ -61,7 +61,14 @@ class AutonomousAgent:
             Result dict with success status, iterations, and final state
         """
         logger.info(f"[AGENT] Starting goal: '{goal.goal_text[:80]}'")
-        
+
+        # Reactive loop for web/browser tasks
+        skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
+        if skill_name in ("web_research", "browser_automation"):
+            from core.web_research_agent import WebResearchAgent
+            conv_history = (context or {}).get("conversation_history", [])
+            return WebResearchAgent(self.llm_client, self.executor.tool_registry if hasattr(self.executor, 'tool_registry') else None).run(goal.goal_text, session_id, conversation_history=conv_history)
+
         # Set active goal in memory
         self.memory.set_active_goal(session_id, goal.goal_text)
         
@@ -226,7 +233,7 @@ class AutonomousAgent:
         enhanced_context["conversation_summary"] = conv_summary
         enhanced_context["iteration"] = iteration
 
-        if self.skill_registry:
+        if self.skill_registry and not (context or {}).get("skill_context"):
             selection = self.skill_selector.select_skill(goal.goal_text, self.skill_registry, self.llm_client)
             if selection.matched and selection.skill_name:
                 skill = self.skill_registry.get(selection.skill_name)
@@ -255,6 +262,12 @@ class AutonomousAgent:
         similar_patterns = self.memory.get_patterns("successful_goals", limit=3)
         if similar_patterns:
             enhanced_context["similar_successful_approaches"] = similar_patterns
+
+        # Inject failed attempts so the planner avoids repeating the same mistakes
+        if iteration > 1:
+            failed_patterns = self.memory.get_patterns("failed_attempts", limit=3)
+            if failed_patterns:
+                enhanced_context["previously_failed_approaches"] = failed_patterns
         
         try:
             plan = self.planner.plan_task(goal.goal_text, enhanced_context)
@@ -320,7 +333,10 @@ class AutonomousAgent:
                     temperature=0.1,
                     expect_json=True
                 )
-                
+
+                if not response:
+                    return {"success": len(completed_steps) == len(state.step_results), "reason": "All steps completed"}
+
                 # Parse JSON response
                 import json
                 try:
@@ -367,9 +383,8 @@ class AutonomousAgent:
         # Get step results summary
         results_summary = []
         for step_id, result in state.step_results.items():
-            results_summary.append(
-                f"- {step_id}: {result.status.value} - Output: {str(result.output)[:200]}"
-            )
+            out = str(result.output)[:150] if result.output else "none"
+            results_summary.append(f"- {step_id}: {result.status.value} — {out}")
         
         return f"""Verify if the ENTIRE goal was achieved based on execution results.
 

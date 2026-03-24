@@ -96,7 +96,7 @@ class ToolExecutionLogger:
         
         # Store full output data (truncate if too large)
         output_json = None
-        if output_data:
+        if output_data is not None:
             output_str = json.dumps(output_data) if not isinstance(output_data, str) else output_data
             output_json = output_str[:10000] if len(output_str) > 10000 else output_str
         

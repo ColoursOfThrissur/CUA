@@ -46,11 +46,16 @@ class EvolutionQueue:
         self._load()
     
     def add(self, evolution: 'QueuedEvolution'):
-        """Add evolution to queue."""
-        if not self.is_queued(evolution.tool_name):
-            self.queue.append(evolution)
-            self._sort_queue()
-            self._save()
+        """Add evolution to queue. Upgrades priority if already queued with lower score."""
+        existing = next((e for e in self.queue if e.tool_name == evolution.tool_name), None)
+        if existing:
+            if evolution.priority_score > existing.priority_score:
+                self.queue.remove(existing)
+            else:
+                return
+        self.queue.append(evolution)
+        self._sort_queue()
+        self._save()
     
     def get_next(self) -> Optional['QueuedEvolution']:
         """Get next evolution from queue."""

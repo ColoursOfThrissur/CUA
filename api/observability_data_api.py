@@ -12,19 +12,46 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 
 @router.get("/observability/tables")
 async def get_tables():
-    """Get all available tables across databases"""
-    tables = [
-        {"db": "logs.db", "table": "logs", "label": "System Logs"},
-        {"db": "tool_executions.db", "table": "executions", "label": "Tool Executions"},
-        {"db": "tool_evolution.db", "table": "evolution_runs", "label": "Tool Evolution"},
-        {"db": "tool_creation.db", "table": "tool_creations", "label": "Tool Creation"},
-        {"db": "conversations.db", "table": "conversations", "label": "Conversations"},
-        {"db": "analytics.db", "table": "improvement_metrics", "label": "Analytics"},
-        {"db": "failure_patterns.db", "table": "failures", "label": "Failure Patterns"},
-        {"db": "improvement_memory.db", "table": "improvements", "label": "Improvements"},
-        {"db": "plan_history.db", "table": "plan_history", "label": "Plan History"},
+    """Get all available tables across databases, dynamically verified against disk."""
+    candidates = [
+        {"db": "logs.db",              "table": "logs",                    "label": "System Logs"},
+        {"db": "tool_executions.db",   "table": "executions",              "label": "Tool Executions"},
+        {"db": "tool_executions.db",   "table": "execution_context",       "label": "Execution Context"},
+        {"db": "tool_evolution.db",    "table": "evolution_runs",          "label": "Tool Evolution"},
+        {"db": "tool_evolution.db",    "table": "evolution_artifacts",     "label": "Evolution Artifacts"},
+        {"db": "tool_creation.db",     "table": "tool_creations",          "label": "Tool Creation"},
+        {"db": "tool_creation.db",     "table": "creation_artifacts",      "label": "Creation Artifacts"},
+        {"db": "conversations.db",     "table": "conversations",           "label": "Conversations"},
+        {"db": "conversations.db",     "table": "sessions",                "label": "Sessions"},
+        {"db": "conversations.db",     "table": "execution_history",       "label": "Execution History"},
+        {"db": "conversations.db",     "table": "learned_patterns",        "label": "Learned Patterns"},
+        {"db": "analytics.db",         "table": "improvement_metrics",     "label": "Improvement Metrics"},
+        {"db": "analytics.db",         "table": "attempt_terminal_states", "label": "Terminal States"},
+        {"db": "failure_patterns.db",  "table": "failures",                "label": "Failure Patterns"},
+        {"db": "failure_patterns.db",  "table": "risk_weights",            "label": "Risk Weights"},
+        {"db": "improvement_memory.db","table": "improvements",            "label": "Improvements"},
+        {"db": "plan_history.db",      "table": "plan_history",            "label": "Plan History"},
+        {"db": "metrics.db",           "table": "tool_metrics_hourly",     "label": "Tool Metrics (Hourly)"},
+        {"db": "metrics.db",           "table": "system_metrics_hourly",   "label": "System Metrics (Hourly)"},
+        {"db": "metrics.db",           "table": "auto_evolution_metrics",  "label": "Auto-Evolution Metrics"},
     ]
-    return {"tables": tables}
+    # Annotate with row counts and verify existence
+    import sqlite3
+    result = []
+    for entry in candidates:
+        db_path = DATA_DIR / entry["db"]
+        if not db_path.exists():
+            continue
+        try:
+            con = sqlite3.connect(str(db_path))
+            cur = con.cursor()
+            cur.execute(f"SELECT COUNT(*) FROM {entry['table']}")
+            count = cur.fetchone()[0]
+            con.close()
+            result.append({**entry, "row_count": count})
+        except Exception:
+            pass
+    return {"tables": result}
 
 @router.get("/observability/data/{db_name}/{table_name}")
 async def get_table_data(
@@ -50,8 +77,11 @@ async def get_table_data(
         
         # Get columns
         cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = [row[1] for row in cursor.fetchall()]
-        
+        col_info = cursor.fetchall()
+        columns = [row[1] for row in col_info]
+        has_id = "id" in columns
+        order_col = "id" if has_id else "rowid"
+
         # Build query
         query = f"SELECT * FROM {table_name} WHERE 1=1"
         params = []
@@ -75,7 +105,7 @@ async def get_table_data(
         total = cursor.fetchone()[0]
         
         # Get paginated data
-        query += f" ORDER BY id DESC LIMIT ? OFFSET ?"
+        query += f" ORDER BY {order_col} DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         
         cursor.execute(query, params)
@@ -100,7 +130,7 @@ async def get_row_detail(db_name: str, table_name: str, row_id: int):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        cursor.execute(f"SELECT * FROM {table_name} WHERE id = ?", [row_id])
+        cursor.execute(f"SELECT * FROM {table_name} WHERE rowid = ?", [row_id])
         row = cursor.fetchone()
         safe_close(conn)
         

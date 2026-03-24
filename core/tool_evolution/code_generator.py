@@ -71,7 +71,7 @@ class EvolutionCodeGenerator:
         
         # Fallback defaults if extraction fails
         nested = {
-            "storage": "save(id, data), get(id), list(limit=10), find(query=None, limit=10), count(query=None), update(id, updates), delete(id), exists(id)",
+            "storage": "save(id, data), get(id), list(limit=10), find(filter_fn=None, limit=100), count(), update(id, updates), delete(id), exists(id)",
             "llm": "generate(prompt, temperature=0.3, max_tokens=500)",
             "http": "get(url), post(url, data), put(url, data), delete(url), request(method, url, data=None, headers=None)",
             "fs": "read(path), write(path, content), list(path), exists(path), delete(path), mkdir(path)",
@@ -115,7 +115,7 @@ class EvolutionCodeGenerator:
         invalid: List[str] = []
 
         # Nested calls: self.services.<svc>.<method>(...)
-        for svc, method in re.findall(r"self\\.services\\.(\\w+)\\.(\\w+)\\(", code):
+        for svc, method in re.findall(r"self\.services\.(\w+)\.(\w+)\(", code):
             if svc not in nested_allow:
                 invalid.append(f"Unknown service self.services.{svc}")
                 continue
@@ -124,7 +124,7 @@ class EvolutionCodeGenerator:
                 invalid.append(f"Unknown method self.services.{svc}.{method}")
 
         # Direct calls: self.services.<method>(...)
-        for name in re.findall(r"self\\.services\\.(\\w+)\\(", code):
+        for name in re.findall(r"self\.services\.(\w+)\(", code):
             # Avoid double-counting nested (regex doesn't match nested anyway, but be defensive).
             if name in nested_allow and (nested_allow.get(name) and name not in direct_allow):
                 continue
@@ -151,21 +151,35 @@ class EvolutionCodeGenerator:
         sandbox_error: Optional[str] = None,
         validation_error: Optional[str] = None
     ) -> Optional[str]:
-        """Improve existing handlers (fix_bug/improve_logic/refactor)."""
+        """Improve existing handlers (fix_bug/improve_logic/refactor).
+        
+        If proposal includes target_functions, only those methods are rewritten —
+        surgical edit that keeps the rest of the file untouched (safe for Qwen).
+        """
         class_name = self._extract_class_name(current_code)
         if not class_name:
             return None
-        
+
         service_context = self._build_service_context()
         new_services_context = self._build_new_services_context(proposal)
-        
-        handlers = self._extract_handlers(current_code, class_name)
-        if not handlers:
+
+        all_handlers = self._extract_handlers(current_code, class_name)
+        if not all_handlers:
             logger.warning("No handlers found to improve")
             return current_code
-        
+
+        # Scope to target_functions when specified — avoids full-file regen
+        target = proposal.get("target_functions") or []
+        if target:
+            handlers_to_improve = {k: v for k, v in all_handlers.items() if k in target}
+            if not handlers_to_improve:
+                logger.warning(f"target_functions {target} not found in handlers {list(all_handlers)}, falling back to all")
+                handlers_to_improve = all_handlers
+        else:
+            handlers_to_improve = all_handlers
+
         improved_code = current_code
-        for handler_name, handler_code in handlers.items():
+        for handler_name, handler_code in handlers_to_improve.items():
             logger.info(f"Improving handler: {handler_name}")
             improved_handler = self._improve_single_handler(
                 handler_code, handler_name, proposal, class_name,
@@ -173,7 +187,7 @@ class EvolutionCodeGenerator:
             )
             if improved_handler:
                 improved_code = self._replace_handler(improved_code, handler_name, improved_handler, class_name)
-        
+
         return improved_code
     
     def _add_new_capability(
@@ -225,11 +239,12 @@ class EvolutionCodeGenerator:
     
     def _build_new_services_context(self, proposal: Dict[str, Any]) -> str:
         """Build context for new services."""
-        if not proposal.get('new_service_specs'):
+        new_service_specs = proposal.get('new_service_specs') or {}
+        if not new_service_specs:
             return ""
         
         context = "\n\nNEW SERVICES TO BE CREATED:\n"
-        for svc_name, svc_spec in proposal['new_service_specs'].items():
+        for svc_name, svc_spec in new_service_specs.items():
             context += f"- self.services.{svc_name}: {svc_spec['description']}\n"
             context += f"  Methods: {', '.join(svc_spec['methods'])}\n"
         return context
@@ -304,7 +319,7 @@ Return ONLY the method definition (no explanations)."""
         for attempt in range(2):
             attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
             try:
-                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=650, expect_json=False)
+                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=1500, expect_json=False)
                 handler = self._extract_python_code(response)
                 if not handler or f"def {expected_name}(" not in handler:
                     feedback = "Returned code did not include the required handler method definition with the exact name."
@@ -480,41 +495,66 @@ Return ONLY the method definition (no explanations)."""
     def _add_execute_routing(self, code: str, proposal: Dict[str, Any], class_name: str) -> str:
         """Add routing in execute() method for new operation."""
         operation_name = self._extract_operation_name(proposal)
-        
+
         try:
             lines = code.splitlines()
-            
-            # Find the raise ValueError line in execute method
-            tree = ast.parse(code)
-            class_node = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name), None)
-            if not class_node:
+
+            # Locate execute() method start using regex (avoids re-parsing modified code)
+            execute_start = None
+            for i, line in enumerate(lines):
+                if re.match(r'\s+def execute\s*\(', line):
+                    execute_start = i
+                    break
+
+            if execute_start is None:
+                logger.error("Failed to add execute routing: execute() method not found")
                 return code
-            
-            execute_node = next((n for n in class_node.body if isinstance(n, ast.FunctionDef) and n.name == 'execute'), None)
-            if not execute_node:
-                return code
-            
-            # Find line with "raise ValueError" within execute method
+
+            # Find raise ValueError within execute method that handles unknown operations
             raise_line_idx = None
-            for i in range(execute_node.lineno - 1, execute_node.end_lineno):
-                if i < len(lines) and 'raise ValueError' in lines[i]:
+            for i in range(execute_start + 1, len(lines)):
+                stripped = lines[i].lstrip()
+                # Stop if we hit a new method definition at class level (4-space indent)
+                if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
+                    break
+                # Match the "unsupported operation" raise — not parameter validation raises
+                if 'raise ValueError' in lines[i] and (
+                    'operation' in lines[i] or 'Unsupported' in lines[i] or 'Unknown' in lines[i]
+                ):
                     raise_line_idx = i
                     break
-            
+            # Fallback: any raise ValueError in execute if specific one not found
             if raise_line_idx is None:
+                for i in range(execute_start + 1, len(lines)):
+                    stripped = lines[i].lstrip()
+                    if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
+                        break
+                    if 'raise ValueError' in lines[i]:
+                        raise_line_idx = i
+                        break
+
+            # Fallback: insert before execute_capability / return / last line of execute
+            if raise_line_idx is None:
+                for i in range(execute_start + 1, len(lines)):
+                    stripped = lines[i].lstrip()
+                    if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
+                        break
+                    if 'execute_capability' in lines[i] or (stripped.startswith('return') and 'execute_capability' in lines[i]):
+                        raise_line_idx = i
+                        break
+
+            if raise_line_idx is None:
+                logger.error("Failed to add execute routing: raise ValueError not found in execute()")
                 return code
-            
-            # Check indentation of raise line
+
             raise_indent = len(lines[raise_line_idx]) - len(lines[raise_line_idx].lstrip())
-            
-            # Insert routing BEFORE raise line with same indentation as raise
             new_if = ' ' * raise_indent + f'if operation == "{operation_name}":'
             new_return = ' ' * (raise_indent + 4) + f'return self._handle_{operation_name}(**kwargs)'
-            
+
+            lines.insert(raise_line_idx, '')
+            lines.insert(raise_line_idx, new_return)
             lines.insert(raise_line_idx, new_if)
-            lines.insert(raise_line_idx + 1, new_return)
-            lines.insert(raise_line_idx + 2, '')  # Blank line before raise
-            
+
             return '\n'.join(lines) + '\n'
         except Exception as e:
             logger.error(f"Failed to add execute routing: {e}")
@@ -539,12 +579,7 @@ Return ONLY the method definition (no explanations)."""
         elif sandbox_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED WITH ERROR:\n{sandbox_error}\n\nFIX THE ERROR ABOVE.\n"
         
-        prompt = f"""TASK: Improve this handler method.
-
-CURRENT CODE:
-```python
-{handler_code}
-```
+        prompt = f"""TASK: Improve this handler method using the edit block format.
 
 IMPROVEMENT PROPOSAL:
 {proposal['description']}
@@ -555,31 +590,35 @@ CHANGES TO MAKE:
 AVAILABLE SERVICES (use self.services.X):
 {service_context}
 {error_context}
+Edit block format — output EXACTLY this structure, nothing else:
+<<<< ORIGINAL
+{handler_code}
+=======
+<your improved implementation here>
+>>>>
+
 CRITICAL REQUIREMENTS:
 - Keep method name: {handler_name}
 - Keep method signature unchanged
 - Preserve all parameters
 - ALWAYS use self.services.X - NEVER call self.X directly
-- Initialize cache/state in __init__ as self._cache (with underscore)
 - Only improve internal logic using AVAILABLE SERVICES above
-- DO NOT add parameters to service methods beyond what's listed
-- If using NEW SERVICES, they will be created - use exact method signatures shown
 - Add error handling if missing
 - Keep under 20 lines
 - Return plain dict (not ToolResult)
-- DO NOT add operations that don't exist in original tool
 - DO NOT reference undefined methods or uninitialized attributes
-- DO NOT add imports - use only self.services
-- Wrap network calls (http, browser) in try-except
-
-Return ONLY the improved method definition."""
+- DO NOT add imports"""
         
         feedback = ""
         for attempt in range(3):
             try:
                 attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
-                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=800, expect_json=False)
-                improved = self._extract_method_from_response(response, handler_name)
+                response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=1500, expect_json=False)
+
+                # Try edit block first, fall back to direct extraction
+                improved = self._parse_edit_block(response, handler_name)
+                if not improved:
+                    improved = self._extract_method_from_response(response, handler_name)
                 
                 if improved and self._validate_handler(improved, handler_name):
                     invalid = self._invalid_service_calls(improved)
@@ -588,7 +627,10 @@ Return ONLY the improved method definition."""
                         continue
                     return improved
 
-                feedback = "Returned code did not contain the exact method definition (name/signature)."
+                feedback = (
+                    f"Output did not contain a valid edit block or def {handler_name}.\n"
+                    f"Use the exact format:\n<<<< ORIGINAL\n{handler_code}\n=======\n<implementation>\n>>>>"
+                )
                 
             except Exception as e:
                 logger.warning(f"Handler improvement attempt {attempt + 1} failed: {e}")
@@ -596,6 +638,29 @@ Return ONLY the improved method definition."""
         
         return None
     
+    def _parse_edit_block(self, text: str, handler_name: str):
+        """Extract the UPDATED section from an aider-style edit block."""
+        if '```' in text:
+            text = self._extract_python_code(text)
+        
+        orig_pos = text.find('<<<< ORIGINAL')
+        # Accept 7-char (aider standard) or 4-char separator
+        sep_marker = '======='
+        sep_pos = text.find(sep_marker, orig_pos + 1 if orig_pos >= 0 else 0)
+        if sep_pos < 0:
+            sep_marker = '===='
+            sep_pos = text.find(sep_marker, orig_pos + 1 if orig_pos >= 0 else 0)
+        end_pos = text.find('>>>>', sep_pos + 1 if sep_pos >= 0 else 0)
+        
+        if orig_pos < 0 or sep_pos < 0 or end_pos < 0:
+            return None
+        
+        updated = text[sep_pos + len(sep_marker):end_pos].strip()
+        if not updated or f'def {handler_name}' not in updated:
+            return None
+        
+        return self._extract_method_from_response(updated, handler_name) or updated
+
     def _extract_class_name(self, code: str) -> Optional[str]:
         """Extract class name from code."""
         match = re.search(r'class\s+(\w+)', code)

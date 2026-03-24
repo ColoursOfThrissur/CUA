@@ -61,9 +61,41 @@ class WorkflowAutomationTool(BaseTool):
             examples=[{}],
             dependencies=["self.services.storage", "self.services.llm"],
         )
+
+        batch_capability = ToolCapability(
+            name="batch",
+            description="Execute multiple workflows in sequence and return all results.",
+            parameters=[
+                Parameter(name='workflows', type=ParameterType.LIST, description='List of workflow names to execute in sequence', required=True)
+            ],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(batch_capability, self._handle_batch)
         self.add_capability(approve_gate_capability, self._handle_approve_gate)
 
+    def _handle_batch(self, **kwargs) -> dict:
+        workflows = kwargs.get('workflows')
+        if not workflows:
+            return {'success': False, 'error': 'Missing required parameter: workflows'}
+        if not isinstance(workflows, list):
+            workflows = [workflows]
+        try:
+            results = []
+            for workflow_name in workflows:
+                result = self._handle_execute_workflow(workflow_name=workflow_name)
+                results.append({'workflow': workflow_name, 'result': result})
+            return {'success': True, 'results': results}
+        except Exception as e:
+            self.services.logging.error(f"Batch operation failed: {e}")
+            return {'success': False, 'error': str(e)}
+
     def execute(self, operation: str, **kwargs):
+        if operation == "batch":
+            return self._handle_batch(**kwargs)
+
         return self.execute_capability(operation, **kwargs)
 
     def _handle_define_workflow(self, **kwargs):

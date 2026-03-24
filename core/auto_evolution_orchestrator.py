@@ -63,7 +63,7 @@ class AutoEvolutionOrchestrator:
         await self._scan_and_queue()
         processed = 0
         failures = 0
-        limit = max_items if max_items is not None else self.config["max_concurrent"]
+        limit = max_items if max_items is not None else len(self.queue.queue)
         while processed < limit:
             evolution = self.queue.get_next()
             if not evolution:
@@ -204,7 +204,6 @@ class AutoEvolutionOrchestrator:
                 self.scan_progress["tool"] = tool_name
                 
                 self.logger.info(f"Analyzing {tool_name} ({self.scan_progress['current']}/{self.scan_progress['total']})")
-                self.logger.info(f"Checking if {tool_name} is already queued...")
                 self.logger.info(f"Checking if {tool_name} is already queued...")
                 
                 # Skip if already queued
@@ -463,12 +462,12 @@ class AutoEvolutionOrchestrator:
                     should_auto_approve,
                     execution_context
                 )
+                if isinstance(result, tuple):
+                    success, message = result
+                    result = {"success": success, "message": message}
                 tool_name_for_tests = evolution.tool_name
             
-            # evolve_tool returns (success, message) tuple
-            if isinstance(result, tuple):
-                success, message = result
-                result = {"success": success, "message": message}
+            # result is now always a dict
             
             if not result.get("success"):
                 broadcast_trace_sync(

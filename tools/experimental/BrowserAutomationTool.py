@@ -200,6 +200,74 @@ class BrowserAutomationTool(BaseTool):
         ), self._handle_navigate_history)
 
         self.add_capability(ToolCapability(
+            name="extract_tables",
+            description="Extract all HTML tables from the current page as structured data with headers and rows.",
+            parameters=[
+                Parameter("selector", ParameterType.STRING, "CSS selector to scope table search. Default: table", required=False),
+                Parameter("limit", ParameterType.INTEGER, "Max tables to extract. Default: 5", required=False),
+            ],
+            returns="List of tables, each with headers and rows arrays.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_extract_tables)
+
+        self.add_capability(ToolCapability(
+            name="get_structured_content",
+            description="Get structured page content: tables, headings, and clean text. Better than raw text for data extraction.",
+            parameters=[],
+            returns="Dict with tables list, headings list, and clean text.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_get_structured_content)
+
+        self.add_capability(ToolCapability(
+            name="extract_links",
+            description="Extract all links from the current page with their text and href. Useful for navigation, sitemaps, article lists.",
+            parameters=[
+                Parameter("selector", ParameterType.STRING, "CSS selector to scope link search. Default: a", required=False),
+                Parameter("limit", ParameterType.INTEGER, "Max links to return. Default: 50", required=False),
+                Parameter("filter_text", ParameterType.STRING, "Only return links whose text contains this string (case-insensitive)", required=False),
+            ],
+            returns="List of {text, href, title} dicts.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_extract_links)
+
+        self.add_capability(ToolCapability(
+            name="extract_lists",
+            description="Extract all bullet/numbered lists (ul/ol) from the page as structured arrays. Useful for rankings, features, summaries.",
+            parameters=[
+                Parameter("selector", ParameterType.STRING, "CSS selector to scope list search. Default: ul,ol", required=False),
+                Parameter("limit", ParameterType.INTEGER, "Max lists to return. Default: 10", required=False),
+            ],
+            returns="List of {items, ordered} dicts.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_extract_lists)
+
+        self.add_capability(ToolCapability(
+            name="extract_meta",
+            description="Extract page metadata: title, description, Open Graph tags, canonical URL, keywords. Useful for page summaries.",
+            parameters=[],
+            returns="Dict of meta fields.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_extract_meta)
+
+        self.add_capability(ToolCapability(
+            name="extract_article",
+            description="Extract the main article/content body from the page — strips nav, ads, footers. Returns clean readable text and any inline data.",
+            parameters=[],
+            returns="Dict with title, body text, publish date if found, and author if found.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_extract_article)
+
+        self.add_capability(ToolCapability(
+            name="get_interactive_elements",
+            description="Get a numbered list of all interactive elements on the page (links, buttons, inputs, selects). LLM can reference by index for click/fill actions.",
+            parameters=[
+                Parameter("limit", ParameterType.INTEGER, "Max elements to return. Default: 50", required=False),
+            ],
+            returns="List of {index, tag, text, type, href, placeholder} dicts plus a formatted string for LLM prompt injection.",
+            safety_level=SafetyLevel.LOW, examples=[{}], dependencies=[],
+        ), self._handle_get_interactive_elements)
+
+        self.add_capability(ToolCapability(
             name="hover_element",
             description="Hover the mouse over an element to trigger hover states or tooltips.",
             parameters=[
@@ -519,6 +587,243 @@ class BrowserAutomationTool(BaseTool):
             self.services.logging.error(f"navigate_history failed: {e}")
             return {"success": False, "error": str(e)}
 
+    def _handle_extract_tables(self, **kwargs) -> dict:
+        selector = kwargs.get("selector", "table")
+        limit = int(kwargs.get("limit") or 5)
+        try:
+            script = """
+            var tables = document.querySelectorAll(arguments[0]);
+            var result = [];
+            for (var t = 0; t < Math.min(tables.length, arguments[1]); t++) {
+                var table = tables[t];
+                var headers = [];
+                var rows = [];
+                var ths = table.querySelectorAll('thead th, thead td, tr:first-child th');
+                if (ths.length === 0) ths = table.querySelectorAll('tr:first-child td');
+                for (var h = 0; h < ths.length; h++) headers.push(ths[h].innerText.trim());
+                var trs = table.querySelectorAll('tbody tr, tr');
+                var start = (ths.length > 0 && table.querySelectorAll('thead').length === 0) ? 1 : 0;
+                for (var r = start; r < trs.length; r++) {
+                    var cells = trs[r].querySelectorAll('td, th');
+                    var row = [];
+                    for (var c = 0; c < cells.length; c++) row.push(cells[c].innerText.trim());
+                    if (row.some(function(v){ return v !== ''; })) rows.push(row);
+                }
+                if (rows.length > 0) result.push({headers: headers, rows: rows, caption: (table.caption ? table.caption.innerText.trim() : '')});
+            }
+            return result;
+            """
+            raw = self.services.browser.execute_js(script, selector, limit)
+            tables = []
+            for t in (raw or []):
+                headers = t.get("headers") or []
+                rows = t.get("rows") or []
+                # Convert rows to list-of-dicts if headers available
+                if headers:
+                    dicts = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in rows]
+                else:
+                    dicts = [{str(i): v for i, v in enumerate(row)} for row in rows]
+                tables.append({"caption": t.get("caption", ""), "headers": headers, "rows": dicts})
+            return {"success": True, "table_count": len(tables), "tables": tables}
+        except Exception as e:
+            self.services.logging.error(f"extract_tables failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_get_structured_content(self, **kwargs) -> dict:
+        try:
+            script = """
+            var result = {headings: [], tables: [], text: ''};
+            var hs = document.querySelectorAll('h1,h2,h3,h4');
+            for (var i = 0; i < Math.min(hs.length, 20); i++) {
+                var t = hs[i].innerText.trim();
+                if (t) result.headings.push({level: hs[i].tagName, text: t});
+            }
+            var tables = document.querySelectorAll('table');
+            for (var t = 0; t < Math.min(tables.length, 5); t++) {
+                var table = tables[t];
+                var headers = [];
+                var rows = [];
+                var ths = table.querySelectorAll('thead th, thead td, tr:first-child th');
+                if (ths.length === 0) ths = table.querySelectorAll('tr:first-child td');
+                for (var h = 0; h < ths.length; h++) headers.push(ths[h].innerText.trim());
+                var trs = table.querySelectorAll('tbody tr, tr');
+                var start = (ths.length > 0 && table.querySelectorAll('thead').length === 0) ? 1 : 0;
+                for (var r = start; r < Math.min(trs.length, 50); r++) {
+                    var cells = trs[r].querySelectorAll('td, th');
+                    var row = [];
+                    for (var c = 0; c < cells.length; c++) row.push(cells[c].innerText.trim());
+                    if (row.some(function(v){ return v !== ''; })) rows.push(row);
+                }
+                if (rows.length > 0) result.tables.push({headers: headers, rows: rows, caption: (table.caption ? table.caption.innerText.trim() : '')});
+            }
+            result.text = document.body.innerText.slice(0, 3000);
+            return result;
+            """
+            raw = self.services.browser.execute_js(script)
+            tables = []
+            for t in (raw.get("tables") or []):
+                headers = t.get("headers") or []
+                rows = t.get("rows") or []
+                dicts = [dict(zip(headers, row + [""] * max(0, len(headers) - len(row)))) for row in rows] if headers else [{str(i): v for i, v in enumerate(row)} for row in rows]
+                tables.append({"caption": t.get("caption", ""), "headers": headers, "rows": dicts})
+            return {
+                "success": True,
+                "url": self.services.browser.get_current_url(),
+                "title": self.services.browser.get_page_title(),
+                "headings": raw.get("headings", []),
+                "tables": tables,
+                "text": raw.get("text", ""),
+            }
+        except Exception as e:
+            self.services.logging.error(f"get_structured_content failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_extract_links(self, **kwargs) -> dict:
+        selector = kwargs.get("selector", "a")
+        limit = int(kwargs.get("limit") or 50)
+        filter_text = (kwargs.get("filter_text") or "").lower()
+        try:
+            script = """
+            var els = document.querySelectorAll(arguments[0]);
+            var result = [];
+            for (var i = 0; i < els.length && result.length < arguments[1]; i++) {
+                var el = els[i];
+                var href = el.href || el.getAttribute('href') || '';
+                var text = el.innerText.trim() || el.getAttribute('aria-label') || '';
+                if (!href || href.startsWith('javascript:') || href === '#') continue;
+                if (arguments[2] && text.toLowerCase().indexOf(arguments[2]) === -1) continue;
+                result.push({text: text, href: href, title: el.getAttribute('title') || ''});
+            }
+            return result;
+            """
+            links = self.services.browser.execute_js(script, selector, limit, filter_text) or []
+            return {"success": True, "count": len(links), "links": links}
+        except Exception as e:
+            self.services.logging.error(f"extract_links failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_extract_lists(self, **kwargs) -> dict:
+        selector = kwargs.get("selector", "ul,ol")
+        limit = int(kwargs.get("limit") or 10)
+        try:
+            script = """
+            var els = document.querySelectorAll(arguments[0]);
+            var result = [];
+            for (var i = 0; i < Math.min(els.length, arguments[1]); i++) {
+                var el = els[i];
+                var items = [];
+                var lis = el.querySelectorAll(':scope > li');
+                for (var j = 0; j < lis.length; j++) {
+                    var t = lis[j].innerText.trim();
+                    if (t) items.push(t);
+                }
+                if (items.length > 0) result.push({items: items, ordered: el.tagName === 'OL'});
+            }
+            return result;
+            """
+            lists = self.services.browser.execute_js(script, selector, limit) or []
+            return {"success": True, "count": len(lists), "lists": lists}
+        except Exception as e:
+            self.services.logging.error(f"extract_lists failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_extract_meta(self, **kwargs) -> dict:
+        try:
+            script = """
+            var m = {};
+            m.title = document.title || '';
+            m.url = window.location.href;
+            var desc = document.querySelector('meta[name="description"]');
+            m.description = desc ? desc.getAttribute('content') : '';
+            var kw = document.querySelector('meta[name="keywords"]');
+            m.keywords = kw ? kw.getAttribute('content') : '';
+            var canon = document.querySelector('link[rel="canonical"]');
+            m.canonical = canon ? canon.getAttribute('href') : '';
+            var ogTitle = document.querySelector('meta[property="og:title"]');
+            m.og_title = ogTitle ? ogTitle.getAttribute('content') : '';
+            var ogDesc = document.querySelector('meta[property="og:description"]');
+            m.og_description = ogDesc ? ogDesc.getAttribute('content') : '';
+            var ogImage = document.querySelector('meta[property="og:image"]');
+            m.og_image = ogImage ? ogImage.getAttribute('content') : '';
+            var ogType = document.querySelector('meta[property="og:type"]');
+            m.og_type = ogType ? ogType.getAttribute('content') : '';
+            return m;
+            """
+            meta = self.services.browser.execute_js(script) or {}
+            return {"success": True, **meta}
+        except Exception as e:
+            self.services.logging.error(f"extract_meta failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_extract_article(self, **kwargs) -> dict:
+        try:
+            script = """
+            var result = {title: '', body: '', author: '', date: ''};
+            result.title = document.title || '';
+            // Try common article selectors
+            var bodyEl = document.querySelector('article, [role="main"], main, .article-body, .post-content, .entry-content, #content, .content');
+            if (!bodyEl) bodyEl = document.body;
+            // Clone and strip noise
+            var clone = bodyEl.cloneNode(true);
+            var noise = clone.querySelectorAll('nav, header, footer, aside, .ad, .ads, .advertisement, .sidebar, .menu, .nav, script, style, iframe, .cookie, .popup, .modal, .share, .social');
+            for (var i = 0; i < noise.length; i++) noise[i].remove();
+            result.body = clone.innerText.trim().slice(0, 8000);
+            // Author
+            var authorEl = document.querySelector('[rel="author"], .author, .byline, [itemprop="author"]');
+            result.author = authorEl ? authorEl.innerText.trim() : '';
+            // Date
+            var dateEl = document.querySelector('time, [itemprop="datePublished"], .date, .published, .post-date');
+            result.date = dateEl ? (dateEl.getAttribute('datetime') || dateEl.innerText.trim()) : '';
+            return result;
+            """
+            article = self.services.browser.execute_js(script) or {}
+            return {"success": True, **article}
+        except Exception as e:
+            self.services.logging.error(f"extract_article failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _handle_get_interactive_elements(self, **kwargs) -> dict:
+        limit = int(kwargs.get("limit") or 50)
+        try:
+            script = """
+            var limit = arguments[0];
+            var seen = new Set();
+            var result = [];
+            var selectors = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [onclick], [tabindex]';
+            var els = document.querySelectorAll(selectors);
+            for (var i = 0; i < els.length && result.length < limit; i++) {
+                var el = els[i];
+                if (!el.offsetParent && el.tagName !== 'INPUT') continue;
+                var tag = el.tagName.toLowerCase();
+                var text = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').trim().slice(0, 80);
+                var href = el.getAttribute('href') || '';
+                var placeholder = el.getAttribute('placeholder') || '';
+                var type = el.getAttribute('type') || '';
+                var key = tag + '|' + text + '|' + href;
+                if (seen.has(key) || (!text && !href && !placeholder)) continue;
+                seen.add(key);
+                result.push({index: result.length + 1, tag: tag, text: text, type: type, href: href, placeholder: placeholder});
+            }
+            return result;
+            """
+            elements = self.services.browser.execute_js(script, limit) or []
+            # Build a compact string for LLM prompt injection
+            lines = []
+            for el in elements:
+                label = el.get("text") or el.get("placeholder") or el.get("href", "")[:40]
+                extra = f" [{el['type']}]" if el.get("type") else ""
+                extra += f" -> {el['href'][:60]}" if el.get("href") else ""
+                lines.append(f"[{el['index']}] <{el['tag']}>{extra} \"{label}\"")
+            return {
+                "success": True,
+                "count": len(elements),
+                "elements": elements,
+                "formatted": "\n".join(lines),
+            }
+        except Exception as e:
+            self.services.logging.error(f"get_interactive_elements failed: {e}")
+            return {"success": False, "error": str(e)}
+
     def _handle_hover_element(self, **kwargs) -> dict:
         selector = kwargs.get("selector")
         if not selector:
@@ -553,7 +858,14 @@ class BrowserAutomationTool(BaseTool):
             "switch_frame": self._handle_switch_frame,
             "keyboard_action": self._handle_keyboard_action,
             "navigate_history": self._handle_navigate_history,
+            "get_interactive_elements": self._handle_get_interactive_elements,
             "hover_element": self._handle_hover_element,
+            "extract_tables": self._handle_extract_tables,
+            "get_structured_content": self._handle_get_structured_content,
+            "extract_links": self._handle_extract_links,
+            "extract_lists": self._handle_extract_lists,
+            "extract_meta": self._handle_extract_meta,
+            "extract_article": self._handle_extract_article,
             # legacy aliases
             "open_and_navigate": self._handle_navigate,
             "get_page_content": lambda **kw: {"success": True, "content": self.services.browser.get_page_text()},

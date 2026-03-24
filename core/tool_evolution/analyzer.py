@@ -65,18 +65,20 @@ class ToolAnalyzer:
             if runtime_report.success_rate < 0.5:
                 health_score = min(health_score, 50.0)
             
-            # CRITICAL: Block evolution if tool is fundamentally broken
-            # Low success rate with healthy code = external factors (network, browser)
-            # But critically low success rate = broken tool regardless of code quality
-            if runtime_report.success_rate < 0.3 and runtime_report.usage_frequency > 5:
-                logger.error(f"Tool {tool_name} has critically low success rate ({runtime_report.success_rate:.1%}) - blocking evolution")
-                logger.error("Tool may need manual inspection or redesign, not automated evolution")
+            # Block evolution only if tool is HEALTHY but has critically low success rate
+            # (external factors like network/browser, not code bugs)
+            # Do NOT block WEAK/NEEDS_IMPROVEMENT tools — those need evolution most
+            if runtime_report.success_rate < 0.3 and runtime_report.usage_frequency > 5 and category == 'HEALTHY':
+                logger.warning(f"Tool {tool_name} has critically low success rate ({runtime_report.success_rate:.1%}) with healthy code — likely external factors, skipping evolution")
                 return None
             
             logger.info(f"Analysis complete: category={category}, health={health_score:.0f}")
             
             # Extract context-driven priorities if execution_context provided
             context_priorities = []
+            # Always inject recent DB failure patterns — more reliable than execution_context
+            for err in self._get_recent_failures(tool_name):
+                context_priorities.append(f"Recent failure: {err}")
             if execution_context:
                 # Prioritize errors from execution context
                 errors = getattr(execution_context, 'errors_encountered', [])
@@ -127,6 +129,33 @@ class ToolAnalyzer:
             logger.error(f"Analysis failed: {e}", exc_info=True)
             return None
     
+    def _get_recent_failures(self, tool_name: str) -> list:
+        """Query tool_executions.db for top 3 distinct recent error messages."""
+        try:
+            from core.sqlite_utils import safe_connect, safe_close
+            conn = safe_connect("data/tool_executions.db")
+            if not conn:
+                return []
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT error FROM executions
+                WHERE tool_name = ? AND success = 0 AND error IS NOT NULL
+                ORDER BY timestamp DESC LIMIT 10
+            """, (tool_name,))
+            rows = cursor.fetchall()
+            safe_close(conn)
+            seen, out = set(), []
+            for (err,) in rows:
+                key = err[:80]
+                if key not in seen:
+                    seen.add(key)
+                    out.append(err[:200])
+                if len(out) >= 3:
+                    break
+            return out
+        except Exception:
+            return []
+
     def _get_recommendation(self, category: str, runtime_report) -> str:
         """Get evolution recommendation based on LLM category and runtime."""
         if category == 'WEAK':

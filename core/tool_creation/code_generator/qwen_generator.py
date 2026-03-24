@@ -280,32 +280,36 @@ class QwenCodeGenerator(BaseCodeGenerator):
         # Build skill-specific guidance
         skill_guidance = self._build_skill_guidance(tool_spec)
         
-        prompt = f"""Implement handler: {handler_name}
+        # Extract just the stub body so the LLM only sees and outputs the handler, not the whole file
+        handler_stub = self._extract_handler_stub(code, handler_name)
+        op_spec = next((op for op in (prompt_spec.get("inputs") or []) if isinstance(op, dict) and self._safe_capability_name(op.get("operation")) == op_name), {})
+        params_desc = ", ".join(p.get("name", "") + ("(required)" if p.get("required") else "(optional)") for p in (op_spec.get("parameters") or []))
+
+        prompt = f"""Implement this Python method using the edit block format.
 
 SKILL CONTEXT:
 {skill_guidance}
 
-CURRENT CODE:
-```python
-{code}
-```
-
-IMPLEMENT: {handler_name}
 Operation: {op_name}
+Parameters: {params_desc or 'see kwargs'}
+
+Edit block format — output EXACTLY this structure, nothing else:
+<<<< ORIGINAL
+{handler_stub}
+=======
+<your implementation here>
+>>>>
 
 Hard requirements:
-- Keep imports, class name, __init__, register_capabilities(), and execute() unchanged.
-- Only modify the body of {handler_name}.
+- The UPDATED section must be a complete def {handler_name}(self, **kwargs): ... method.
 - Use ONLY self.services.* for external interactions.
-- Follow the skill domain guidelines above.
-- Return a plain dict from {handler_name} (not ToolResult).
-- DO NOT invent new service methods. Only call methods that exist in the ToolServices contract.
-- DO NOT use hardcoded URLs like example.com or api.example.com - use parameters.
+- Return a plain dict (not ToolResult). Include 'success' key.
+- Validate required inputs, return {{'success': False, 'error': '...'}} on bad input.
+- DO NOT invent new service methods. Only call methods in the contract.
+- DO NOT output imports, class definition, or other methods.
 
 Contract reference:
 {contract}
-
-Return complete updated code.
 """
         
         from core.tool_creation.validator import ToolValidator
@@ -317,31 +321,147 @@ Return complete updated code.
             full_prompt = f"{prompt}\n\n{feedback}" if feedback else prompt
             raw = self.llm_client._call_llm(full_prompt, temperature=0.15 if attempt == 0 else 0.05, expect_json=False)
             if not raw:
-                feedback = "Previous output was empty. Return complete Python code only."
+                feedback = "Previous output was empty. Return the edit block."
                 continue
 
-            candidate = self._extract_python_code(raw)
+            handler_code = self._parse_edit_block(raw, handler_name)
+            if not handler_code:
+                # Fall back to direct method extraction if LLM ignored the format
+                handler_code = self._extract_handler_method(raw, handler_name)
+            if not handler_code:
+                feedback = (
+                    f"Output did not contain a valid edit block or def {handler_name}.\n"
+                    f"Use the exact format:\n<<<< ORIGINAL\n{handler_stub}\n=======\n<implementation>\n>>>>"
+                )
+                continue
+
+            candidate = self._splice_handler_into_code(code, handler_name, handler_code)
             ok, err = validator.validate(candidate, tool_spec)
             if ok:
                 return candidate
 
-            # Retry only when the failure is likely due to hallucinated service methods or similar contract issues.
             err_text = str(err or "")
             if "Unknown method: self.services." in err_text or "CUA validation failed" in err_text:
                 feedback = (
                     "Previous output failed contract validation.\n"
                     f"Validation error:\n{err_text}\n\n"
-                    "Fix by using ONLY the allowed ToolServices methods listed in the contract reference. "
-                    "Do not call any other self.services.* methods.\n"
-                    "Return complete updated code.\n"
+                    "Fix by using ONLY the allowed ToolServices methods listed in the contract reference.\n"
+                    "Return only the method definition.\n"
                 )
                 continue
 
-            # Non-retryable / unrelated errors: let caller handle fallback.
             return None
 
         return None
     
+    def _parse_edit_block(self, text: str, handler_name: str) -> Optional[str]:
+        """Extract the UPDATED section from an aider-style edit block."""
+        # Strip markdown fences first
+        if '```' in text:
+            text = self._extract_python_code(text)
+        
+        orig_marker = '<<<< ORIGINAL'
+        end_marker = '>>>>'
+        # Accept both 7-char (aider standard) and 4-char separators
+        sep_marker = '======='
+        
+        orig_pos = text.find(orig_marker)
+        sep_pos = text.find(sep_marker, orig_pos + 1 if orig_pos >= 0 else 0)
+        if sep_pos < 0:
+            sep_marker = '===='
+            sep_pos = text.find(sep_marker, orig_pos + 1 if orig_pos >= 0 else 0)
+        end_pos = text.find(end_marker, sep_pos + 1 if sep_pos >= 0 else 0)
+        
+        if orig_pos < 0 or sep_pos < 0 or end_pos < 0:
+            return None
+        
+        updated = text[sep_pos + len(sep_marker):end_pos].strip()
+        if not updated or f'def {handler_name}' not in updated:
+            return None
+        
+        # Re-extract just the method in case there's trailing text
+        return self._extract_handler_method(updated, handler_name) or updated
+
+    def _extract_handler_stub(self, code: str, handler_name: str) -> str:
+        """Extract just the stub method lines for a given handler."""
+        lines = code.splitlines()
+        result = []
+        inside = False
+        base_indent = None
+        for line in lines:
+            if not inside:
+                stripped = line.lstrip()
+                if stripped.startswith(f"def {handler_name}("):
+                    inside = True
+                    base_indent = len(line) - len(stripped)
+                    result.append(line)
+            else:
+                current_indent = len(line) - len(line.lstrip()) if line.strip() else base_indent + 4
+                if line.strip() and current_indent <= base_indent:
+                    break
+                result.append(line)
+        return "\n".join(result) if result else f"    def {handler_name}(self, **kwargs):\n        pass"
+
+    def _extract_handler_method(self, text: str, handler_name: str) -> Optional[str]:
+        """Extract just the handler method from LLM output (strips markdown, class wrapper, etc)."""
+        # Strip markdown code fences
+        if '```python' in text:
+            text = text[text.find('```python') + 9:]
+            text = text[:text.find('```')] if '```' in text else text
+        elif '```' in text:
+            text = text[text.find('```') + 3:]
+            text = text[:text.find('```')] if '```' in text else text
+        text = text.strip()
+
+        lines = text.splitlines()
+        result = []
+        inside = False
+        base_indent = None
+        for line in lines:
+            if not inside:
+                stripped = line.lstrip()
+                if stripped.startswith(f"def {handler_name}("):
+                    inside = True
+                    base_indent = len(line) - len(stripped)
+                    result.append(line)
+            else:
+                current_indent = len(line) - len(line.lstrip()) if line.strip() else base_indent + 4
+                if line.strip() and current_indent <= base_indent:
+                    break
+                result.append(line)
+        return "\n".join(result) if result else None
+
+    def _splice_handler_into_code(self, code: str, handler_name: str, new_handler: str) -> str:
+        """Replace the stub handler in code with the new implementation."""
+        lines = code.splitlines()
+        result = []
+        inside = False
+        base_indent = None
+        skipping = False
+        for line in lines:
+            if not inside and not skipping:
+                stripped = line.lstrip()
+                if stripped.startswith(f"def {handler_name}("):
+                    inside = True
+                    base_indent = len(line) - len(stripped)
+                    # Inject new handler (re-indent to match original)
+                    for new_line in new_handler.splitlines():
+                        new_stripped = new_line.lstrip()
+                        new_indent = len(new_line) - len(new_stripped) if new_line.strip() else 0
+                        result.append(" " * (base_indent + new_indent) + new_stripped if new_line.strip() else "")
+                    skipping = True
+                else:
+                    result.append(line)
+            elif skipping:
+                current_indent = len(line) - len(line.lstrip()) if line.strip() else base_indent + 4
+                if line.strip() and current_indent <= base_indent:
+                    skipping = False
+                    inside = False
+                    result.append(line)
+            else:
+                result.append(line)
+        return "\n".join(result) + "\n"
+
     def _extract_python_code(self, text: str) -> str:
         """Extract Python code from LLM response"""
         if '```python' in text:
@@ -470,6 +590,15 @@ Return complete updated code.
                 "- Focus on local repository operations\n"
                 "- NO external API calls\n"
                 "- Example: read code files, analyze, write reports"
+            ),
+            "data": (
+                "Domain: Data Operations (in-memory transformation)\n"
+                "- Operate on data passed directly as parameters (list of dicts)\n"
+                "- Use self.services.json for serialization if needed\n"
+                "- Use self.services.storage to persist results if needed\n"
+                "- NO external HTTP calls unless the operation explicitly fetches data\n"
+                "- NO filesystem access\n"
+                "- Return transformed data directly in the result dict"
             ),
             "general": (
                 "Domain: General\n"

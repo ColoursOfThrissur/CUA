@@ -44,6 +44,17 @@ class EvolutionSandboxRunner:
             output_lines.append(f"⚠ Tool requires {len(new_service_specs)} new service(s): {', '.join(new_service_specs.keys())}")
             output_lines.append("  These services will need to be created before deployment")
         
+        # Auto-detect network_only if not explicitly set:
+        # if ALL capabilities involve network/browser patterns, treat as network-only
+        if not network_only:
+            network_patterns = ['http', 'url', 'browser', 'navigate', 'fetch', 'request', 'scrape', 'crawl', 'web']
+            cap_names = list(self._extract_capabilities(improved_code))
+            if cap_names and all(
+                any(p in cap.lower() for p in network_patterns) for cap in cap_names
+            ):
+                network_only = True
+                logger.info(f"Auto-detected network_only=True for {tool_name} based on capability names: {cap_names}")
+
         # Extract class name from code
         class_name = self._extract_class_name(improved_code)
         if not class_name:
@@ -295,6 +306,10 @@ class EvolutionSandboxRunner:
         """Extract class name from code."""
         match = re.search(r'class\s+(\w+)', code)
         return match.group(1) if match else None
+
+    def _extract_capabilities(self, code: str) -> list:
+        """Extract capability names from code."""
+        return re.findall(r"name=['\"]([\w_]+)['\"]", code)
     
     def _class_name(self, tool_name: str) -> str:
         """Convert tool_name to ClassName."""

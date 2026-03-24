@@ -61,6 +61,29 @@ class ToolCreationOrchestrator:
             step="gap_detection"
         )
         print(f"[FLOW] Creation ID: {creation_id}")
+
+        try:
+            return self._create_new_tool_inner(gap_description, llm_client, preferred_tool_name, skill_context, creation_id, creation_logger)
+        except Exception as e:
+            import traceback as _tb
+            creation_logger.update_creation(
+                creation_id, tool_name="unknown", status="failed",
+                step="unhandled_exception", error_message=f"{type(e).__name__}: {e}",
+            )
+            creation_logger.log_artifact(creation_id, "traceback", "unhandled_exception", _tb.format_exc())
+            logger.error(f"Unhandled exception in tool creation: {e}", exc_info=True)
+            broadcast_trace_sync("creation", f"Tool creation crashed: {e}", "error", {"stage": "unhandled_exception"})
+            raise
+
+    def _create_new_tool_inner(
+        self,
+        gap_description: str,
+        llm_client,
+        preferred_tool_name: Optional[str],
+        skill_context: Optional[dict],
+        creation_id: int,
+        creation_logger,
+    ) -> Tuple[bool, str]:
         
         # Step 1.5: Auto-detect or create skill if not provided
         if not skill_context and self.skill_aware_orchestrator:
@@ -185,9 +208,22 @@ class ToolCreationOrchestrator:
             })
             logger.warning(f"Tool requires missing services: {missing_services}")
         
-        # Check confidence score
+        # Check confidence score — threshold is model-aware (local models self-report lower)
         confidence = tool_spec.get('confidence', 1.0)
-        if confidence < 0.5:
+        _min_conf = 0.5
+        try:
+            import json as _json
+            _cap_path = Path("config/model_capabilities.json")
+            if _cap_path.exists():
+                _caps = _json.loads(_cap_path.read_text())
+                _model = str(getattr(llm_client, "model", "")).lower()
+                for _pat, _cfg in _caps.items():
+                    if _pat in _model:
+                        _min_conf = float(_cfg.get("min_confidence", 0.5))
+                        break
+        except Exception:
+            pass
+        if confidence < _min_conf:
             creation_logger.update_creation(
                 creation_id,
                 tool_name=tool_name,
@@ -195,7 +231,7 @@ class ToolCreationOrchestrator:
                 step="confidence_check",
                 error_message=f"Low confidence spec ({confidence:.2f})",
             )
-            return False, f"Low confidence spec ({confidence:.2f}) - gap description too vague"
+            return False, f"Low confidence spec ({confidence:.2f}) - gap description too vague (min={_min_conf})"
         
         # Log human review requirement
         if tool_spec.get('requires_human_review'):
@@ -549,35 +585,15 @@ class ToolCreationOrchestrator:
     def _build_correction_prompt(self, tool_spec: dict, failed_code: str, sandbox_error: str, validation_error: str = None) -> str:
         """Build targeted correction prompt based on specific errors"""
         parts = ["PREVIOUS ATTEMPT FAILED. Fix these specific issues:\n"]
-        
-        # Parse validation error for specific fixes
+
         if validation_error:
             parts.append(f"VALIDATION ERROR:\n{validation_error}\n")
-            
-            # Extract specific issues and suggest fixes
-            if "Missing method" in validation_error:
-                parts.append("FIX: Add the missing method to your class")
-            elif "signature" in validation_error.lower():
-                parts.append("FIX: Correct the method signature as shown in the error")
-            elif "Parameter" in validation_error:
-                parts.append("FIX: Ensure all Parameter() objects have: name, type, description, required")
-            elif "import" in validation_error.lower():
-                parts.append("FIX: Add the missing import statement at the top of the file")
-        
-        # Parse sandbox error for runtime issues
+
         if sandbox_error:
-            parts.append(f"\nSANDBOX ERROR:\n{sandbox_error}\n")
-            
-            if "AttributeError" in sandbox_error:
-                parts.append("FIX: Check that all attributes are initialized in __init__")
-            elif "TypeError" in sandbox_error:
-                parts.append("FIX: Check parameter types and method signatures")
-            elif "KeyError" in sandbox_error:
-                parts.append("FIX: Validate dictionary keys exist before accessing")
-            elif "ImportError" in sandbox_error or "ModuleNotFoundError" in sandbox_error:
-                parts.append("FIX: Use only available services via self.services")
-        
-        parts.append("\nREGENERATE the complete corrected code.")
+            # Always include raw error first so Qwen sees the exact traceback line
+            parts.append(f"SANDBOX ERROR (raw):\n{sandbox_error[:600]}\n")
+
+        parts.append("REGENERATE the complete corrected code.")
         return '\n'.join(parts)
 
     def _select_generator(self, llm_client):

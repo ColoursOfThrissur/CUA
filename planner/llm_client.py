@@ -1,11 +1,11 @@
 """
-LLM Client with strict schema enforcement
-Supports Mistral 7B via Ollama
+LLM Client with model-profile-aware token control and prompt formatting.
 """
 
 import json
 import requests
 import yaml
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from core.plan_schema import (
@@ -15,6 +15,95 @@ from core.plan_schema import (
     PLAN_JSON_SCHEMA,
     FEW_SHOT_EXAMPLES
 )
+
+@dataclass
+class ModelProfile:
+    """
+    Per-model-family configuration for token limits, prompt formatting,
+    and special instructions. Looked up by model name prefix at call time.
+    """
+    # Token budgets per call type
+    tokens_json: int        # structured JSON output (plans, specs)
+    tokens_code: int        # code generation
+    tokens_conv: int        # conversational responses
+    tokens_min: int         # hard floor — never go below this (thinking models need headroom)
+
+    # Prompt wrapping
+    prompt_template: str    # "{content}" | "<s>[INST] {content} [/INST]" | qwen chat format
+    json_suffix: str        # appended when expect_json=True
+    system_role: str        # "inline" (prepend to prompt) | "separate" (API handles it)
+
+    # Special instructions injected into every system prompt for this model
+    special_instructions: str = ""
+
+    def resolve_tokens(self, max_tokens: Optional[int], expect_json: bool, is_code: bool = False) -> int:
+        """Return the effective token limit, respecting the hard floor."""
+        if max_tokens:
+            return max(max_tokens, self.tokens_min)
+        base = self.tokens_json if expect_json else (self.tokens_code if is_code else self.tokens_conv)
+        return max(base, self.tokens_min)
+
+
+# --- Profile registry ---
+# Key = lowercase prefix of model name. First match wins.
+_MODEL_PROFILES: List[tuple] = [
+    # Gemini 2.5 thinking models — 65k output cap, give it full room
+    ("gemini-2.5", ModelProfile(
+        tokens_json=65536, tokens_code=65536, tokens_conv=8192, tokens_min=4096,
+        prompt_template="{content}", json_suffix="", system_role="separate",
+        special_instructions="Return only valid JSON when asked for JSON. No markdown fences.",
+    )),
+    # Gemini 1.x / other Gemini — 8k output cap on flash, 32k on pro; use 32k safe ceiling
+    ("gemini", ModelProfile(
+        tokens_json=32768, tokens_code=32768, tokens_conv=8192, tokens_min=2048,
+        prompt_template="{content}", json_suffix="", system_role="separate",
+        special_instructions="Return only valid JSON when asked for JSON. No markdown fences.",
+    )),
+    # OpenAI GPT-4o / GPT-4-turbo — 16k output cap
+    ("gpt-4", ModelProfile(
+        tokens_json=16384, tokens_code=16384, tokens_conv=4096, tokens_min=1024,
+        prompt_template="{content}", json_suffix="", system_role="separate",
+    )),
+    # OpenAI GPT-3.5 — 4k output cap
+    ("gpt-3.5", ModelProfile(
+        tokens_json=4096, tokens_code=4096, tokens_conv=2048, tokens_min=512,
+        prompt_template="{content}", json_suffix="", system_role="separate",
+    )),
+    # Qwen (Ollama) — chat template, JSON suffix
+    ("qwen", ModelProfile(
+        tokens_json=1500, tokens_code=3000, tokens_conv=600, tokens_min=256,
+        prompt_template="qwen_chat",  # special marker handled in _apply_profile_format
+        json_suffix="\n\nRespond with valid JSON only:",
+        system_role="inline",
+    )),
+    # Mistral (Ollama) — [INST] wrapping
+    ("mistral", ModelProfile(
+        tokens_json=1200, tokens_code=2000, tokens_conv=512, tokens_min=256,
+        prompt_template="<s>[INST] {content} [/INST]",
+        json_suffix="\n\n```json\n",
+        system_role="inline",
+    )),
+    # Phi (Ollama) — lightweight, small budgets
+    ("phi", ModelProfile(
+        tokens_json=800, tokens_code=1200, tokens_conv=400, tokens_min=128,
+        prompt_template="{content}", json_suffix="", system_role="inline",
+    )),
+    # Default fallback
+    ("_default", ModelProfile(
+        tokens_json=1500, tokens_code=2048, tokens_conv=800, tokens_min=256,
+        prompt_template="{content}", json_suffix="", system_role="inline",
+    )),
+]
+
+
+def _get_profile(model_name: str) -> ModelProfile:
+    """Return the ModelProfile for the given model name (prefix match)."""
+    lower = (model_name or "").lower()
+    for prefix, profile in _MODEL_PROFILES:
+        if prefix == "_default" or lower.startswith(prefix):
+            return profile
+    return _MODEL_PROFILES[-1][1]  # _default
+
 
 # Global LLM client instance
 _llm_client_instance = None
@@ -28,32 +117,55 @@ def get_llm_client(registry=None):
 
 class LLMClient:
     """LLM client with strict schema validation"""
-    
+
     def __init__(self, max_retries: int = None, model: str = None, ollama_url: str = None, config_path: str = "config.yaml", registry=None):
         from core.config_manager import get_config
         from core.llm_logger import LLMLogger
         config = get_config()
-        
+
         self.max_retries = max_retries or config.llm.max_retries
         self.schema = PLAN_JSON_SCHEMA
         self.ollama_url = ollama_url or config.llm.ollama_url
         self.validation_errors = []
         self.registry = registry
-        self.llm_logger = LLMLogger()  # Add logger
-        
+        self.llm_logger = LLMLogger()
+
         # Response cache for repeated prompts
         self._response_cache = {}
         self._cache_enabled = True
-        
+
         # Load config
         self.config = self._load_config(config_path)
         self.available_models = self.config.get('llm', {}).get('models', {})
-        
+
         # Set model from config or parameter
         default_model = model or self.config.get('llm', {}).get('default_model', 'mistral')
         self.model = self._get_model_name(default_model)
         self.timeout = config.llm.timeout_seconds
+
+        # Provider setup
+        self.provider = config.llm.provider  # "ollama" | "openai" | "gemini"
+        self._api_provider = self._build_api_provider(config)
     
+    def _build_api_provider(self, config):
+        """Instantiate the correct provider based on config.llm.provider."""
+        provider = (config.llm.provider or "ollama").lower()
+        api_key = config.llm.api_key or ""
+        base_url = config.llm.base_url or ""
+        if not api_key and provider in ("openai", "gemini"):
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                f"Provider '{provider}' selected but api_key is empty — falling back to Ollama."
+            )
+            return None
+        if provider == "openai":
+            from planner.providers import OpenAIProvider
+            return OpenAIProvider(api_key=api_key, model=self.model, base_url=base_url or None, timeout=self.timeout)
+        if provider == "gemini":
+            from planner.providers import GeminiProvider
+            return GeminiProvider(api_key=api_key, model=self.model, timeout=self.timeout)
+        return None  # ollama — handled inline
+
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file"""
         try:
@@ -68,7 +180,11 @@ class LLMClient:
     def _get_model_name(self, model_key: str) -> str:
         """Get full model name from config or use key directly"""
         if model_key in self.available_models:
-            return self.available_models[model_key].get('name', f"{model_key}:latest")
+            return self.available_models[model_key].get('name', model_key)
+        # Only append :latest for Ollama-style model names (not API model names like gemini-*, gpt-*)
+        _api_prefixes = ("gemini", "gpt", "claude", "text-", "dall-e")
+        if self.provider != "ollama" or any(model_key.startswith(p) for p in _api_prefixes):
+            return model_key
         return model_key if ':' in model_key else f"{model_key}:latest"
     
     def set_model(self, model_key: str) -> bool:
@@ -80,14 +196,18 @@ class LLMClient:
         """Get list of available models from config"""
         return self.available_models
     
-    def generate_plan(self, user_request: str) -> tuple[bool, Optional[ExecutionPlanSchema], Optional[str]]:
+    def generate_plan(self, user_request: str, preferred_tools: Optional[List[str]] = None) -> tuple[bool, Optional[ExecutionPlanSchema], Optional[str]]:
         """
         Generate execution plan from user request with retry loop
         Returns: (success, plan, error_message)
         """
-        
+        _CORE = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool", "ContextSummarizerTool"}
         self.validation_errors = []
         contracts = self._build_tool_contracts()
+        # Filter contracts to preferred tools + core tools when skill context available
+        if preferred_tools:
+            allowed = set(preferred_tools) | _CORE
+            contracts = {k: v for k, v in contracts.items() if k in allowed}
         tools_description = self._format_tool_contracts_for_prompt(contracts)
         planning_constraints = self._build_planning_constraints(user_request, contracts)
         
@@ -422,14 +542,15 @@ class LLMClient:
         """
         messages = []
         if conversation_history:
-            for msg in (conversation_history or [])[-3:]:
+            for msg in (conversation_history or [])[-8:]:
                 messages.append(msg)
         messages.append({"role": "user", "content": user_message})
 
         # Lean path: summary calls pass empty history — skip heavy system prompt
         if not conversation_history:
             context = self._format_chat_prompt("You are a helpful assistant. Answer concisely.", messages)
-            response = self._call_llm(context, temperature=0.7, max_tokens=400, expect_json=False)
+            conv_tokens = self._get_profile().tokens_conv
+            response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False)
             return response or "Task completed."
 
         # Full path: conversational turns need CUA context
@@ -444,95 +565,128 @@ class LLMClient:
             skills_info = "Skills unavailable"
 
         tool_names = ", ".join(t.__class__.__name__ for t in getattr(self.registry, 'tools', [])) if self.registry else "none"
+        profile = self._get_profile()
         system_msg = (
-            "You are CUA, a local autonomous agent.\n"
+            "You are CUA, a local autonomous agent built on a local LLM. "
+            "Never refer to yourself as Qwen, Mistral, or any underlying model. "
+            "You are CUA. When asked about your architecture or engine, describe CUA's systems.\n"
             f"Active tools: {tool_names}\n"
             f"Skills:\n{skills_info}\n"
             "Answer based only on your actual capabilities."
+            + (f"\n{profile.special_instructions}" if profile.special_instructions else "")
         )
         context = self._format_chat_prompt(system_msg, messages)
-        response = self._call_llm(context, temperature=0.7, max_tokens=400, expect_json=False)
+        conv_tokens = profile.tokens_conv
+        response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False)
         return response or "I'm here to help! Ask me anything or give me a task to execute."
     
+    def _get_profile(self) -> ModelProfile:
+        """Return the ModelProfile for the current model."""
+        return _get_profile(self.model)
+
     def _format_prompt(self, content: str, expect_json: bool = False) -> str:
-        """Format prompt based on model type"""
-        if 'qwen' in self.model.lower():
-            # Qwen: Plain format with explicit JSON instruction when needed
-            if expect_json:
-                return f"{content}\n\nRespond with valid JSON only:"
-            return content
-        elif 'mistral' in self.model.lower():
-            # Mistral uses instruction format
-            json_hint = "\n\n```json\n" if expect_json else ""
-            return f"<s>[INST] {content} [/INST]{json_hint}"
-        else:
-            # Default plain format
-            return content
-    
+        """Format a single-turn prompt using the model's profile."""
+        if self.provider != "ollama":
+            return content  # API providers handle formatting natively
+        profile = self._get_profile()
+        if profile.prompt_template == "qwen_chat":
+            # Qwen uses chat format even for single-turn
+            result = f"<|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n"
+            return result + (profile.json_suffix if expect_json else "")
+        formatted = profile.prompt_template.format(content=content)
+        return formatted + (profile.json_suffix if expect_json else "")
+
     def _format_chat_prompt(self, system: str, messages: List[Dict]) -> str:
-        """Format chat prompt based on model type"""
-        if 'qwen' in self.model.lower():
-            # Qwen: Use <|im_start|> format for better instruction following
+        """Format a multi-turn chat prompt using the model's profile."""
+        if self.provider != "ollama":
+            # API providers: flat concatenation, _call_llm sends as single user message
+            parts = [system] if system else []
+            for msg in messages:
+                parts.append(f"{msg.get('role','user').title()}: {msg.get('content','')}")
+            return "\n\n".join(parts)
+        profile = self._get_profile()
+        if profile.prompt_template == "qwen_chat":
             prompt = f"<|im_start|>system\n{system}<|im_end|>\n"
             for msg in messages:
-                role = msg.get('role', 'user')
-                content = msg.get('content', '')
-                prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-            prompt += "<|im_start|>assistant\n"
-            return prompt
-        elif 'mistral' in self.model.lower():
-            # Mistral instruction format
+                prompt += f"<|im_start|>{msg.get('role','user')}\n{msg.get('content','')}" \
+                          f"<|im_end|>\n"
+            return prompt + "<|im_start|>assistant\n"
+        if "[INST]" in profile.prompt_template:
             prompt = f"<s>[INST] {system} [/INST]</s>\n"
             for msg in messages:
-                role = msg.get('role', 'user')
-                content = msg.get('content', '')
-                if role == 'user':
-                    prompt += f"[INST] {content} [/INST]"
-                else:
-                    prompt += f" {content}</s>\n"
+                role, content = msg.get('role', 'user'), msg.get('content', '')
+                prompt += f"[INST] {content} [/INST]" if role == 'user' else f" {content}</s>\n"
             return prompt
-        else:
-            # Default plain format
-            prompt = f"{system}\n\n"
-            for msg in messages:
-                role = msg.get('role', 'user')
-                content = msg.get('content', '')
-                prompt += f"{role.title()}: {content}\n"
-            return prompt
+        # Generic fallback
+        prompt = f"{system}\n\n"
+        for msg in messages:
+            prompt += f"{msg.get('role','user').title()}: {msg.get('content','')}\n"
+        return prompt
     
     def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None) -> Optional[str]:
-        """Call Mistral 7B via Ollama with structured output enforcement and caching"""
-        
+        """Call LLM — routes to API provider (OpenAI/Gemini) or Ollama based on config."""
+
         from core.logging_system import get_logger
         import hashlib
         logger = get_logger("llm_client")
-        
-        # Generate cache key from prompt + params
+
+        # Cache (deterministic calls only)
         cache_key = None
-        if self._cache_enabled and temperature < 0.3:  # Only cache deterministic calls
+        if self._cache_enabled and temperature < 0.3:
             cache_key = hashlib.md5(f"{prompt}|{temperature}|{max_tokens}|{expect_json}".encode()).hexdigest()
             if cache_key in self._response_cache:
                 logger.debug(f"Cache hit for prompt (key={cache_key[:8]}...)")
                 return self._response_cache[cache_key]
-        
-        logger.debug(f"LLM call: model={self.model}, temp={temperature}, expect_json={expect_json}")
-        
+
+        logger.info(f"LLM call: provider={self.provider}, model={self.model}, temp={temperature}, expect_json={expect_json}, api_provider={'set' if self._api_provider else 'None'}")
+
+        # --- API provider path ---
+        if self._api_provider is not None:
+            try:
+                profile = self._get_profile()
+                resolved_tokens = profile.resolve_tokens(max_tokens, expect_json)
+                llm_response = self._api_provider.generate(
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=resolved_tokens,
+                    expect_json=expect_json,
+                )
+                if llm_response:
+                    self.llm_logger.log_interaction(
+                        prompt=prompt,
+                        response=llm_response,
+                        metadata={
+                            "model": self.model,
+                            "provider": self.provider,
+                            "temperature": temperature,
+                            "expect_json": expect_json,
+                            "status": "success",
+                        },
+                    )
+                    if cache_key:
+                        self._response_cache[cache_key] = llm_response
+                        if len(self._response_cache) > 100:
+                            self._response_cache.pop(next(iter(self._response_cache)))
+                return llm_response
+            except Exception as e:
+                self.llm_logger.log_error(f"API provider error: {str(e)}", {"model": self.model, "provider": self.provider})
+                return None
+
+        # --- Ollama path ---
         try:
-            # Token budget: plans ~600 tok, summaries ~300 tok, JSON ops ~400 tok
-            # Only tool-generation / evolution needs 2048+
-            default_predict = 800 if expect_json else 512
+            profile = self._get_profile()
+            num_predict = profile.resolve_tokens(max_tokens, expect_json)
             options = {
                 "temperature": temperature,
                 "top_p": 0.9,
                 "top_k": 40,
                 "repeat_penalty": 1.1,
-                "num_predict": max_tokens or default_predict,
-                "num_ctx": 8192 if expect_json else 4096,
+                "num_predict": num_predict,
+                "num_ctx": 12288,
                 "num_gpu": 99,
                 "num_thread": 8,
             }
-            
-            # Enforce JSON format for structured outputs
+
             payload = {
                 "model": self.model,
                 "prompt": prompt,
@@ -540,55 +694,43 @@ class LLMClient:
                 "options": options,
                 "keep_alive": "10m"
             }
-            
+
             if expect_json:
-                payload["format"] = "json"  # Ollama JSON mode
-            
+                payload["format"] = "json"
+
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json=payload,
                 timeout=timeout_override or self.timeout
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
                 llm_response = result.get("response", "")
-                
-                # CRITICAL: Detect truncated response
+
+                # Truncation detection (Ollama/local models only)
                 if llm_response and len(llm_response) > 100:
-                    # Check if response ends abruptly (not at natural boundary)
                     last_line = llm_response.strip().split('\n')[-1]
-                    
-                    # ONLY flag as truncated if it ends mid-code (not at closing fence)
-                    if last_line == '```':
-                        # This is a NORMAL code block ending - NOT truncated
-                        pass
-                    elif last_line.strip().startswith('```'):
-                        # Closing fence with language - also normal
+                    if last_line == '```' or last_line.strip().startswith('```'):
                         pass
                     else:
-                        # Check for actual truncation indicators
                         truncation_signs = [
-                            last_line.endswith(','),  # Ends with comma
-                            last_line.endswith('('),  # Unclosed paren
-                            last_line.endswith('['),  # Unclosed bracket
-                            last_line.endswith('{'),  # Unclosed brace
-                            last_line.rstrip().endswith('\\'),  # Line continuation
+                            last_line.endswith(','),
+                            last_line.endswith('('),
+                            last_line.endswith('['),
+                            last_line.endswith('{'),
+                            last_line.rstrip().endswith('\\'),
                         ]
-                        
                         if any(truncation_signs):
                             logger.error(f"Response truncated. Last line: '{last_line}'")
-                            logger.error(f"Response length: {len(llm_response)} chars, tokens: {result.get('eval_count', 0)}")
-                            logger.debug(f"Full response: {llm_response}")
-                            # Return None to trigger retry with error feedback
                             return None
-                
-                # Log interaction with detailed metadata
+
                 self.llm_logger.log_interaction(
-                    prompt=prompt,  # Full prompt for debugging
-                    response=llm_response,  # Full response
+                    prompt=prompt,
+                    response=llm_response,
                     metadata={
                         "model": self.model,
+                        "provider": "ollama",
                         "temperature": temperature,
                         "max_tokens": max_tokens or 2048,
                         "expect_json": expect_json,
@@ -597,20 +739,15 @@ class LLMClient:
                         "response_length": len(llm_response),
                         "tokens_generated": result.get('eval_count', 0),
                         "tokens_prompt": result.get('prompt_eval_count', 0),
-                        "prompt_ends_with": prompt[-100:] if len(prompt) > 100 else prompt,
-                        "response_ends_with": llm_response[-100:] if len(llm_response) > 100 else llm_response,
                         "cached": False
                     }
                 )
-                
-                # Cache response if enabled
+
                 if cache_key:
                     self._response_cache[cache_key] = llm_response
-                    # Limit cache size to 100 entries
                     if len(self._response_cache) > 100:
-                        # Remove oldest entry
                         self._response_cache.pop(next(iter(self._response_cache)))
-                
+
                 return llm_response
             else:
                 self.llm_logger.log_error(
@@ -618,28 +755,22 @@ class LLMClient:
                     {"model": self.model, "prompt_preview": prompt[:200]}
                 )
                 return None
-                
+
         except requests.exceptions.ConnectionError:
-            self.llm_logger.log_error(
-                "Connection failed - Ollama not available",
-                {"model": self.model}
-            )
+            self.llm_logger.log_error("Connection failed - Ollama not available", {"model": self.model})
             return None
         except Exception as e:
-            self.llm_logger.log_error(
-                f"Exception: {str(e)}",
-                {"model": self.model, "prompt_preview": prompt[:200]}
-            )
+            self.llm_logger.log_error(f"Exception: {str(e)}", {"model": self.model, "prompt_preview": prompt[:200]})
             return None
     
     def warmup_model(self):
-        """Warm up the model to keep it loaded in memory"""
+        """Warm up the model to keep it loaded in memory (Ollama only)."""
+        if self.provider != "ollama":
+            return True  # No-op for API providers
         from core.logging_system import get_logger
         logger = get_logger("llm_client")
-        
         try:
             logger.info(f"Warming up model: {self.model}")
-            # Send a minimal request to load the model
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json={
@@ -647,7 +778,7 @@ class LLMClient:
                     "prompt": "Hello",
                     "stream": False,
                     "options": {"num_predict": 1},
-                    "keep_alive": "30m"  # Keep loaded for 30 minutes
+                    "keep_alive": "30m"
                 },
                 timeout=60
             )
@@ -666,19 +797,16 @@ class LLMClient:
         self._response_cache.clear()
     
     def _unload_model(self):
-        """Unload model from memory immediately"""
+        """Unload model from memory immediately (Ollama only)."""
+        if self.provider != "ollama":
+            return  # No-op for API providers
         from core.logging_system import get_logger
         logger = get_logger("llm_client")
-        
         try:
             logger.info(f"Unloading model: {self.model}")
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": "",
-                    "keep_alive": 0
-                },
+                json={"model": self.model, "prompt": "", "keep_alive": 0},
                 timeout=5
             )
             if response.status_code == 200:
@@ -748,20 +876,20 @@ class LLMClient:
             except:
                 pass
         
-        # Strategy 4: Find JSON array by brackets
+        # Strategy 4: Find JSON object by braces (most common for plans)
         try:
-            start = response.find("[")
-            end = response.rfind("]")
+            start = response.find("{")
+            end = response.rfind("}")
             if start != -1 and end != -1 and end > start:
                 json_str = response[start:end+1]
                 return json.loads(json_str)
         except:
             pass
         
-        # Strategy 5: Find JSON object by braces
+        # Strategy 5: Find JSON array by brackets
         try:
-            start = response.find("{")
-            end = response.rfind("}")
+            start = response.find("[")
+            end = response.rfind("]")
             if start != -1 and end != -1 and end > start:
                 json_str = response[start:end+1]
                 return json.loads(json_str)

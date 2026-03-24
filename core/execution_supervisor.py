@@ -161,7 +161,7 @@ class ExecutionSupervisor:
 
     def _find_alt_tool(self, step: Any, state: Any) -> Optional[str]:
         """
-        Find an alternative tool that covers the same operation.
+        Find an alternative tool that covers the same operation with compatible parameters.
         Checks skill_context fallback_tools first, then registry.
         """
         # Check execution context fallback tools
@@ -174,12 +174,19 @@ class ExecutionSupervisor:
         if not self._registry:
             return None
 
-        # Look for another loaded tool that has the same operation
+        # Required param names from the failing step
+        required_params = set(step.parameters.keys())
+
+        # Look for another loaded tool that has the same operation AND compatible params
         for tool in getattr(self._registry, "tools", []):
             if tool.__class__.__name__ == step.tool_name:
                 continue
             caps = tool.get_capabilities() or {}
-            if step.operation in caps:
+            if step.operation not in caps:
+                continue
+            # Check that the alt tool accepts all params the step provides
+            alt_param_names = {p.name for p in caps[step.operation].parameters}
+            if required_params <= alt_param_names:
                 return tool.__class__.__name__
 
         return None

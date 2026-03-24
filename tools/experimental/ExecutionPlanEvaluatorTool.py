@@ -29,8 +29,8 @@ class ExecutionPlanEvaluatorTool(BaseTool):
     
     def _handle_evaluate_plan(self, **kwargs):
             plans = kwargs.get('plan', [])
-            if not isinstance(plans, list) or not plans:
-                raise ValueError("Plan(s) is required and must be a non-empty list")
+            if not isinstance(plans, list):
+                plans = [plans]
 
             evaluations = []
             for plan in plans:

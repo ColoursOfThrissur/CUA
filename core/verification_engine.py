@@ -169,16 +169,21 @@ class VerificationEngine:
                     notes=f"Cross-source disagreement: {'; '.join(e.message for e in cross_errors)}",
                 )
 
-        # Layer 4 — LLM (only for ambiguous warnings, not clean results)
+        # All layers passed
         warnings = [i for i in issues if i.severity == "warning"]
-        if warnings and self._llm:
-            layer4_result = self._layer_llm(data, tool_name, operation, warnings)
+
+        # Layer 4 — LLM (only for high-severity ambiguous warnings, not routine ones)
+        _TRIVIAL = {"empty list", "short", "truncated"}
+        serious_warnings = [
+            w for w in warnings
+            if not any(t in w.message.lower() for t in _TRIVIAL)
+        ]
+        if serious_warnings and self._llm:
+            layer4_result = self._layer_llm(data, tool_name, operation, serious_warnings)
             if layer4_result:
                 issues.extend(layer4_result.issues)
                 if not layer4_result.passed:
                     return layer4_result
-
-        # All layers passed
         confidence = max(0.5, 1.0 - 0.05 * len(warnings))
         return VerificationResult(
             verdict=VERDICT_ACCEPT,
@@ -284,17 +289,20 @@ class VerificationEngine:
         is_browser_op = operation in self._BROWSER_OPS or "browser" in tool_name.lower()
         is_web_fetch = operation in self._WEB_FETCH_OPS
 
-        # Login / auth wall — warning for browser ops and web fetches (nav menus contain "sign in")
-        # Only error if the page is EXCLUSIVELY a login wall (no real content alongside it)
+        # Login / auth wall — suppress entirely for browser ops with real content
+        # (nav menus always contain "sign in"; only flag bare login walls)
         if any(sig in text for sig in _LOGIN_SIGNALS):
-            # Check if there's actual content beyond the login signal
-            has_content = len(text) > 500  # real pages are much longer than a bare login wall
-            severity = "warning" if (is_browser_op or is_web_fetch or has_content) else "error"
-            issues.append(VerificationIssue(
-                layer="heuristic",
-                severity=severity,
-                message=f"{tool_name}.{operation}: output contains login/auth wall signals — result is likely a login page, not content",
-            ))
+            if is_browser_op and len(text) > 500:
+                pass  # real page — nav menus always have "sign in", not a login wall
+            elif is_web_fetch:
+                pass  # search/fetch results commonly contain "sign in" in nav
+            else:
+                severity = "warning" if len(text) > 500 else "error"
+                issues.append(VerificationIssue(
+                    layer="heuristic",
+                    severity=severity,
+                    message=f"{tool_name}.{operation}: output contains login/auth wall signals — result is likely a login page, not content",
+                ))
 
         # Error HTML
         if any(sig in text for sig in _ERROR_HTML_SIGNALS):

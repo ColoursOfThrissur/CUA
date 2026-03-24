@@ -148,8 +148,10 @@ async def trigger_scan():
     
     try:
         if not orchestrator:
-            orchestrator = AutoEvolutionOrchestrator()
+            from api.server import llm_client, registry
+            orchestrator = AutoEvolutionOrchestrator(llm_client, registry)
         
+        await orchestrator.ensure_initialized()
         # Clear queue before scanning
         orchestrator.queue.clear_queue()
         

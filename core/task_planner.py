@@ -56,7 +56,8 @@ class TaskPlanner:
         """
         logger.info(f"[PLANNER] Replanning {len(remaining_steps)} remaining steps for: '{original_goal[:60]}'")
 
-        available_tools = self._get_tool_capabilities()
+        skill_preferred = set((context or {}).get("skill_context", {}).get("preferred_tools", []))
+        available_tools = self._get_tool_capabilities(preferred_tools=skill_preferred or None)
         completed_summary = replan_context.get("completed_summary", {})
         failed_steps = replan_context.get("failed_steps", [])
         failed_errors = replan_context.get("failed_errors", {})
@@ -113,7 +114,9 @@ Return ONLY a JSON array of steps:
 Return ONLY valid JSON array, no explanation."""
 
         try:
-            response = self.llm_client._call_llm(prompt, temperature=0.3, max_tokens=1500)
+            response = self.llm_client._call_llm(prompt, temperature=0.3, max_tokens=None, expect_json=True)
+            if not response:
+                raise RuntimeError("LLM returned no response during replan")
             response = response.strip()
             if "```json" in response:
                 response = response[response.find("```json") + 7:response.rfind("```")].strip()
@@ -189,24 +192,36 @@ Return ONLY valid JSON array, no explanation."""
         logger.info(f"[PLANNER] Planning task: '{user_goal[:80]}'")
         
         # Get available tools and their capabilities
-        available_tools = self._get_tool_capabilities()
+        skill_preferred = set((context or {}).get("skill_context", {}).get("preferred_tools", []))
+        available_tools = self._get_tool_capabilities(preferred_tools=skill_preferred or None)
 
         # Retrieve similar past plans to bias the LLM
         skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
         past_plans = self.strategic_memory.retrieve(user_goal, skill_name=skill_name, top_k=3)
-        
+
+        # Unified memory search — enriches prompt with cross-store context
+        try:
+            from core.unified_memory import get_unified_memory
+            unified_context = get_unified_memory().search_for_planning(user_goal, skill_name)
+        except Exception:
+            unified_context = ""
+
         # Build planning prompt
-        prompt = self._build_planning_prompt(user_goal, available_tools, context, past_plans)
+        prompt = self._build_planning_prompt(user_goal, available_tools, context, past_plans, unified_context)
         
         # Get plan from LLM
         try:
             response = self.llm_client._call_llm(
                 prompt,
                 temperature=0.3,
-                max_tokens=2000,
+                max_tokens=None,  # let ModelProfile decide (tokens_json per model family)
                 expect_json=True
             )
-            
+
+            if not response:
+                raise RuntimeError("LLM returned no response — check provider config (api_key, model, connectivity)")
+
+            logger.info(f"[PLANNER] Raw response len={len(response)}, preview={response[:100]!r}")
             # Parse LLM response into structured plan
             plan_data = self._parse_plan_response(response)
             
@@ -220,8 +235,12 @@ Return ONLY valid JSON array, no explanation."""
             logger.error(f"Planning failed: {e}")
             raise RuntimeError(f"Failed to create execution plan: {e}")
     
-    def _get_tool_capabilities(self) -> Dict[str, List[Dict]]:
-        """Get all available tools and their capabilities from live registry."""
+    def _get_tool_capabilities(self, preferred_tools: Optional[set] = None) -> Dict[str, List[Dict]]:
+        """Get available tools and their capabilities from live registry.
+        
+        If preferred_tools is provided, only those tools (plus core tools) are returned.
+        """
+        _CORE = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool", "ContextSummarizerTool"}
         tools_info = {}
         
         # Force registry refresh to get latest tools
@@ -237,10 +256,14 @@ Return ONLY valid JSON array, no explanation."""
         raw_web_tools_hidden = any(
             tool.__class__.__name__ == "WebAccessTool" for tool in current_tools
         )
+
+        allowed = (set(preferred_tools) | _CORE) if preferred_tools else None
         
         for tool_instance in current_tools:
             tool_name = tool_instance.__class__.__name__
             if raw_web_tools_hidden and tool_name == "HTTPTool":
+                continue
+            if allowed and tool_name not in allowed:
                 continue
             capabilities = []
             tool_caps = tool_instance.get_capabilities() or {}
@@ -264,7 +287,7 @@ Return ONLY valid JSON array, no explanation."""
         
         return tools_info
     
-    def _build_planning_prompt(self, goal: str, tools: Dict, context: Optional[Dict], past_plans: list = None) -> str:
+    def _build_planning_prompt(self, goal: str, tools: Dict, context: Optional[Dict], past_plans: list = None, unified_context: str = "") -> str:
         """Build prompt for LLM to generate plan."""
         skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
         preferred = set((context or {}).get("skill_context", {}).get("preferred_tools", []))
@@ -291,11 +314,18 @@ Return ONLY valid JSON array, no explanation."""
         skill_guidance = self._build_skill_guidance(context)
         domain_guidance = self._build_domain_guidance(context)
         past_plans_str = self._build_past_plans_guidance(past_plans or [])
+        unified_str = unified_context.strip() if unified_context else "No additional memory context."
         examples = self._build_skill_examples(skill_name)
 
         return f"""You are a task planning AI. Break down the user's goal into executable steps using available tools.
 
 USER GOAL: {goal}
+
+MEMORY CONTEXT (past approaches for similar goals):
+{unified_str}
+
+PAST SUCCESSFUL APPROACHES:
+{past_plans_str}
 
 AVAILABLE TOOLS:
 {tools_desc}
@@ -304,9 +334,6 @@ CONTEXT: {context_str}
 
 SKILL GUIDANCE:
 {skill_guidance}
-
-PAST SUCCESSFUL APPROACHES:
-{past_plans_str}
 
 EXAMPLES FOR THIS SKILL:
 {examples}
@@ -374,9 +401,7 @@ Return ONLY valid JSON, no explanation."""
     def _build_skill_examples(self, skill_name: str) -> str:
         examples = {
             "web_research": [
-                'Goal: "pisces horoscope today" → search_web(query="Pisces horoscope today") → summarize_text(deps:[step_1])',
-                'Goal: "summarize wikipedia page on AI" → fetch_url(url="https://en.wikipedia.org/wiki/Artificial_intelligence") → summarize_text(deps:[step_1])',
-                'NOTE: horoscope/sports/live-data sites are JS SPAs — always use search_web, never fetch_url for those.',
+                '(web_research tasks are handled by the reactive WebResearchAgent — no DAG plan needed)',
             ],
             "browser_automation": [
                 'Goal: "go to google and search cats" → navigate(url="https://google.com") → fill_input(selector="input[name=q]", text="cats", deps:[step_1]) → click_element(selector="input[type=submit]", deps:[step_2])',

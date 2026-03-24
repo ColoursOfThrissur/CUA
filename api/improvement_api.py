@@ -1,6 +1,7 @@
 """
 Self-Improvement Loop API Endpoints
 """
+import json
 import logging
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
@@ -910,16 +911,17 @@ Return JSON only:
             from core.skills import SkillRegistry
             skill_reg = SkillRegistry()
             skill_reg.load_all()
-            for skill_name, skill in skill_reg.list_all():
+            for skill in skill_reg.list_all():
                 skill_domains[skill.category] = {
-                    "skill_name": skill_name,
+                    "skill_name": skill.name,
                     "preferred_tools": list(skill.preferred_tools),
                     "description": skill.description
                 }
         except Exception:
             pass
 
-        prompt = f"""You are helping CUA (a self-improving agent) decide what tool to create next.
+        skip_hint = f" (suggestion #{skip + 1} — pick a DIFFERENT tool than previous suggestions)" if skip > 0 else ""
+        prompt = f"""You are helping CUA (a self-improving agent) decide what tool to create next.{skip_hint}
 
 Goal: improve autonomy/automation with user approval gates.
 

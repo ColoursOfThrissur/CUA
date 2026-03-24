@@ -37,6 +37,10 @@ class CoordinatedAutonomyEngine:
         self.cycle_count = 0
         self.consecutive_low_value_cycles = 0
         self.paused_reason: Optional[str] = None
+        # Reuse managers — they are file-backed singletons
+        self._pending_tools_manager = PendingToolsManager()
+        self._pending_evolutions_manager = PendingEvolutionsManager()
+        self._quality_analyzer = ToolQualityAnalyzer()
         self.config = {
             "interval_seconds": 6 * 60 * 60,
             "improvement_iterations_per_cycle": 3,
@@ -218,30 +222,20 @@ class CoordinatedAutonomyEngine:
 
     def _collect_pending_counts(self) -> Dict[str, int]:
         try:
-            pending_tools = len(PendingToolsManager().get_pending_list())
+            pending_tools = len(self._pending_tools_manager.get_pending_list())
         except Exception:
             pending_tools = 0
         try:
-            pending_evolutions = len(PendingEvolutionsManager().get_all_pending())
+            pending_evolutions = len(self._pending_evolutions_manager.get_all_pending())
         except Exception:
             pending_evolutions = 0
-        return {
-            "pending_tools": pending_tools,
-            "pending_evolutions": pending_evolutions,
-        }
+        return {"pending_tools": pending_tools, "pending_evolutions": pending_evolutions}
 
     def _collect_quality_summary(self) -> Dict[str, Any]:
         try:
-            return ToolQualityAnalyzer().get_summary(days=7)
+            return self._quality_analyzer.get_summary(days=7)
         except Exception:
-            return {
-                "total_tools": 0,
-                "avg_health_score": 0.0,
-                "healthy_tools": 0,
-                "monitor_tools": 0,
-                "weak_tools": 0,
-                "quarantine_tools": 0,
-            }
+            return {"total_tools": 0, "avg_health_score": 0.0, "healthy_tools": 0, "monitor_tools": 0, "weak_tools": 0, "quarantine_tools": 0}
 
     def _evaluate_cycle_quality(
         self,

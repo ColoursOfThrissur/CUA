@@ -1,7 +1,6 @@
 """Execution Engine - Executes multi-step plans with state management."""
 import logging
 import time
-import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -201,8 +200,24 @@ class ExecutionEngine:
         finally:
             state.end_time = time.time()
             state.current_step = None
+            self._evict_executions()
         
         return state
+
+    _MAX_ACTIVE_EXECUTIONS = 50  # keep last N completed executions for inspection
+
+    def _evict_executions(self) -> None:
+        """Evict oldest completed executions to prevent unbounded memory growth."""
+        if len(self.active_executions) <= self._MAX_ACTIVE_EXECUTIONS:
+            return
+        finished = [
+            (eid, s) for eid, s in self.active_executions.items()
+            if s.status not in ("running", "paused")
+        ]
+        # Sort by end_time ascending — evict oldest first
+        finished.sort(key=lambda x: x[1].end_time or 0)
+        for eid, _ in finished[:len(finished) - self._MAX_ACTIVE_EXECUTIONS // 2]:
+            del self.active_executions[eid]
     
     def _apply_supervisor_decision(
         self,
@@ -260,11 +275,19 @@ class ExecutionEngine:
 
         if decision.action == DECISION_REPLAN and self.task_planner and remaining_after:
             try:
+                # Forward skill context so replan uses filtered tools
+                replan_ctx = decision.replan_context or {}
+                if skill_context and hasattr(skill_context, 'preferred_tools'):
+                    replan_ctx = dict(replan_ctx)
+                    replan_ctx.setdefault("skill_context", {
+                        "preferred_tools": list(skill_context.preferred_tools),
+                        "skill_name": getattr(skill_context, 'skill_name', ''),
+                    })
                 new_steps = self.task_planner.replan_remaining(
                     original_goal=plan.goal,
                     remaining_steps=remaining_after,
-                    replan_context=decision.replan_context or {},
-                    context=None,
+                    replan_context=replan_ctx,
+                    context=replan_ctx,
                 )
                 if new_steps:
                     # Register new steps in state
@@ -311,10 +334,11 @@ class ExecutionEngine:
 
         return waves
 
+    _STEP_TIMEOUT_S = 120  # max seconds a single parallel step may run
+
     def _execute_parallel(self, steps: List[TaskStep], state: ExecutionState, skill_context: Optional[Any]) -> Dict[str, StepResult]:
         """Execute a list of independent steps concurrently using a thread pool."""
         results: Dict[str, StepResult] = {}
-        # Use min(len(steps), 4) workers — keeps resource usage bounded
         with ThreadPoolExecutor(max_workers=min(len(steps), 4)) as executor:
             future_to_step = {
                 executor.submit(self._execute_step, step, state, skill_context): step
@@ -323,7 +347,14 @@ class ExecutionEngine:
             for future in as_completed(future_to_step):
                 step = future_to_step[future]
                 try:
-                    results[step.step_id] = future.result()
+                    results[step.step_id] = future.result(timeout=self._STEP_TIMEOUT_S)
+                except TimeoutError:
+                    logger.error(f"Parallel step {step.step_id} timed out after {self._STEP_TIMEOUT_S}s")
+                    results[step.step_id] = StepResult(
+                        step_id=step.step_id,
+                        status=StepStatus.FAILED,
+                        error=f"Step timed out after {self._STEP_TIMEOUT_S}s"
+                    )
                 except Exception as e:
                     logger.error(f"Parallel step {step.step_id} raised: {e}")
                     results[step.step_id] = StepResult(
@@ -448,42 +479,46 @@ class ExecutionEngine:
         return result
     
     def _resolve_parameters(self, params: Dict[str, Any], state: ExecutionState) -> Dict[str, Any]:
-        """Resolve parameters that reference previous step outputs with validation."""
+        """Resolve {{step_X}} references — pass actual objects, only stringify when needed."""
         import re
         resolved = {}
-        
+
         for key, value in params.items():
-            # Handle {{step_X}}, ${step_X}, $step.step_X formats
-            if isinstance(value, str):
-                # Check for {{step_X_output}}, {{step_X.field}}, ${step_X.field} formats
-                template_match = re.match(r'[\{\$]\{?(step_\d+)(?:[_\.]?(\w+))?\}?\}?', value)
-                if template_match:
-                    step_id = template_match.group(1)
-                    field = template_match.group(2)
-                    
-                    if step_id not in state.step_results:
-                        raise ValueError(f"Referenced step not found: {step_id}")
-                    
-                    step_result = state.step_results[step_id]
-                    if step_result.status != StepStatus.COMPLETED:
-                        raise ValueError(f"Referenced step not completed: {step_id} (status: {step_result.status.value})")
-                    
-                    output = step_result.output
-                    
-                    # Get field from output or use entire output
-                    if field and isinstance(output, dict) and field in output:
-                        resolved[key] = output[field]
-                    elif field in ['output', 'expected_output'] or not field:
-                        # Use entire output if 'output'/'expected_output' requested or no field specified
-                        resolved[key] = output
-                    elif isinstance(output, dict):
-                        raise ValueError(f"Field '{field}' not found in {step_id} output. Available: {list(output.keys())}")
-                    else:
-                        resolved[key] = output
-                    continue
-            
-            resolved[key] = value
-        
+            if not isinstance(value, str):
+                resolved[key] = value
+                continue
+
+            template_match = re.match(r'[\{\$]\{?(step_\d+)(?:[_\.]?(\w+))?\}?\}?', value)
+            if not template_match:
+                resolved[key] = value
+                continue
+
+            step_id = template_match.group(1)
+            field = template_match.group(2)
+
+            if step_id not in state.step_results:
+                raise ValueError(f"Referenced step not found: {step_id}")
+
+            step_result = state.step_results[step_id]
+            if step_result.status != StepStatus.COMPLETED:
+                raise ValueError(f"Referenced step not completed: {step_id} (status: {step_result.status.value})")
+
+            output = step_result.output
+
+            if field and isinstance(output, dict) and field in output:
+                resolved[key] = output[field]  # pass actual object, not stringified
+            elif field in ('output', 'expected_output') or not field:
+                resolved[key] = output
+            elif isinstance(output, dict):
+                for fallback_key in ('content', 'text', 'summary', 'results', 'data'):
+                    if fallback_key in output:
+                        resolved[key] = output[fallback_key]
+                        break
+                else:
+                    resolved[key] = output  # pass full dict, let tool handle it
+            else:
+                resolved[key] = output
+
         return resolved
     
     def _dependencies_met(self, step: TaskStep, state: ExecutionState) -> bool:

@@ -37,7 +37,7 @@ class SkillSelector:
 
         message_lower = message.lower()
 
-        # Fast path: direct conversation patterns
+        # Fast path: dead-obvious greetings/farewells only (no LLM needed)
         for pattern in self._CONVERSATION_PATTERNS:
             if re.match(pattern, message_lower):
                 skill = registry.get("conversation")
@@ -48,6 +48,13 @@ class SkillSelector:
                         fallback_mode="direct_response", candidate_skills=["conversation"]
                     )
 
+        # LLM-first: ask the LLM to classify before keyword scoring
+        if llm_client:
+            llm_result = self._llm_fallback(message, registry, llm_client, [], minimum_confidence=0.4)
+            if llm_result.matched:
+                return llm_result
+
+        # Keyword scoring fallback (LLM unavailable or low confidence)
         tokens = self._tokenize(message)
         scored = []
 
@@ -58,7 +65,7 @@ class SkillSelector:
         scored.sort(key=lambda x: x[1], reverse=True)
         candidates = [s.name for s, _ in scored[:3]]
 
-        # Re-rank via Decision Engine (blends tool reputation into skill scores)
+        # Re-rank via Decision Engine
         if scored:
             engine = get_decision_engine(registry if hasattr(registry, 'get_tool_reputation') else None)
             raw_scores = {s.name: sc for s, sc in scored}
@@ -66,22 +73,16 @@ class SkillSelector:
             scored = sorted([(s, adjusted.get(s.name, sc)) for s, sc in scored], key=lambda x: x[1], reverse=True)
 
         if not scored or scored[0][1] < 0.15:
-            return self._llm_fallback(message, registry, llm_client, candidates)
+            return SkillSelection(matched=False, reason="no_confident_skill_match",
+                                  fallback_mode="direct_tool_routing", candidate_skills=candidates)
 
         best_skill, confidence = scored[0]
-
-        # Too close to call — use LLM to break the tie
-        if len(scored) > 1 and abs(scored[0][1] - scored[1][1]) < 0.05:
-            llm_choice = self._llm_fallback(message, registry, llm_client, candidates, minimum_confidence=confidence)
-            if llm_choice.matched:
-                return llm_choice
-
         return SkillSelection(
             matched=True,
             skill_name=best_skill.name,
             category=best_skill.category,
             confidence=confidence,
-            reason="heuristic_match",
+            reason="keyword_match",
             fallback_mode=best_skill.fallback_strategy,
             candidate_skills=candidates,
         )
@@ -142,42 +143,40 @@ class SkillSelector:
                         confidence=0.8, reason="fallback_conversation_detection",
                         fallback_mode="direct_response", candidate_skills=candidates,
                     )
-            return SkillSelection(matched=False, reason="no_confident_skill_match",
+            return SkillSelection(matched=False, reason="no_llm_available",
                                   fallback_mode="direct_tool_routing", candidate_skills=candidates)
 
+        # Build compact skill summary from actual definitions
+        skill_lines = []
+        for s in registry.to_routing_context():
+            examples = ", ".join(f'"{e}"' for e in (s.get("trigger_examples") or [])[:3])
+            tools = ", ".join((s.get("preferred_tools") or [])[:3])
+            skill_lines.append(
+                f'- {s["name"]} ({s["category"]}): {s["description"]}'
+                + (f' | examples: {examples}' if examples else '')
+                + (f' | tools: {tools}' if tools else '')
+            )
+        skills_summary = "\n".join(skill_lines)
+
         prompt = (
-            "Select the best skill for the request. Return JSON only with keys "
-            '{"skill_name": string, "confidence": number, "reason": string}. '
-            "If no skill fits, return skill_name as empty string.\n"
-            "IMPORTANT: For greetings (hi, hello, thanks, bye) or simple questions, use 'conversation' skill.\n"
-            f"Request: {message}\n"
-            f"Skills: {registry.to_routing_context()}"
+            'Pick the best skill for this request. Return JSON only: {"skill_name": string, "confidence": 0.0-1.0}\n'
+            f'SKILLS:\n{skills_summary}\n'
+            f'REQUEST: "{message}"'
         )
         try:
-            raw = llm_client._call_llm(prompt, temperature=0.1, max_tokens=250, expect_json=True)
+            raw = llm_client._call_llm(prompt, temperature=0.1, max_tokens=80, expect_json=True)
             parsed = llm_client._extract_json(raw) if raw else None
             skill_name = str((parsed or {}).get("skill_name", "")).strip()
             confidence = float((parsed or {}).get("confidence", 0.0) or 0.0)
-            reason = str((parsed or {}).get("reason", "llm_selection")).strip()
             skill = registry.get(skill_name)
             if skill and confidence >= minimum_confidence:
                 return SkillSelection(
                     matched=True, skill_name=skill.name, category=skill.category,
-                    confidence=confidence, reason=f"llm_match:{reason}",
+                    confidence=confidence, reason="llm_primary",
                     fallback_mode=skill.fallback_strategy, candidate_skills=candidates,
                 )
         except Exception:
             pass
-
-        # Final safety net — only for pure conversational messages (greetings/thanks/bye)
-        if len(message.split()) <= 5 and any(w in message.lower() for w in ['hi', 'hello', 'hey', 'thanks', 'bye']):
-            skill = registry.get("conversation")
-            if skill:
-                return SkillSelection(
-                    matched=True, skill_name="conversation", category="conversation",
-                    confidence=0.7, reason="final_fallback_conversation",
-                    fallback_mode="direct_response", candidate_skills=candidates,
-                )
 
         return SkillSelection(matched=False, reason="no_confident_skill_match",
                               fallback_mode="direct_tool_routing", candidate_skills=candidates)
