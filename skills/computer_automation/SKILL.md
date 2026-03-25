@@ -84,3 +84,14 @@ If automation cannot proceed safely:
 ## Managed Workflow Updates
 ### BenchmarkRunnerTool (create_tool)
 - Prefer `BenchmarkRunnerTool` when the task needs: run_benchmark_suite, add_benchmark_case, remove_benchmark_case.
+- Updated `BenchmarkRunnerTool` for operations: new workflow support.
+
+### BenchmarkRunnerTool (evolve_tool, tool_evolution)
+- Reason: User request: Enhancement opportunity: Add batch processing support. Code quality: HEALTHY, Health: 50/100
+- Re-evaluate `BenchmarkRunnerTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### BenchmarkRunnerTool (evolve_tool, tool_evolution)
+- Reason: User request: Feature enhancements suggested (3 improvements). Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `BenchmarkRunnerTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.

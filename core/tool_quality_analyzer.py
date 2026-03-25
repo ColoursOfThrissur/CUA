@@ -32,12 +32,30 @@ class ToolQualityAnalyzer:
     def __init__(self):
         self.logger = get_execution_logger()
     
+    MIN_EXECUTIONS_TO_SCORE = 5
+
     def analyze_tool(self, tool_name: str, days: int = 7) -> ToolQualityReport:
         """Analyze quality of a single tool."""
         stats = self.logger.get_tool_stats(tool_name, days)
-        
+
         success_rate = stats["success_rate"]
         usage_frequency = stats["total_executions"]
+
+        # New tools with no execution history must not be scored — scoring them
+        # produces health=0 (QUARANTINE) which causes the auto-loop to thrash them.
+        if usage_frequency < self.MIN_EXECUTIONS_TO_SCORE:
+            return ToolQualityReport(
+                tool_name=tool_name,
+                success_rate=0.0,
+                usage_frequency=usage_frequency,
+                avg_execution_time_ms=0.0,
+                output_richness=0.0,
+                avg_risk_score=0.0,
+                health_score=0.0,
+                issues=[],
+                recommendation="NEW",
+                has_recent_errors=False,
+            )
         avg_time = stats["avg_time_ms"]
         avg_output = stats["avg_output_size"]
         avg_risk = stats.get("avg_risk_score", 0.0)
@@ -121,8 +139,9 @@ class ToolQualityAnalyzer:
         """Get tools that need improvement (used enough to have data)."""
         reports = self.analyze_all_tools(days)
         weak = [
-            r for r in reports 
-            if r.usage_frequency >= min_usage and r.recommendation in ["IMPROVE", "QUARANTINE"]
+            r for r in reports
+            if r.usage_frequency >= min_usage
+            and r.recommendation in ["IMPROVE", "QUARANTINE"]
         ]
         
         if exclude_pending:

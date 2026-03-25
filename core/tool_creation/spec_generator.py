@@ -33,12 +33,10 @@ class SpecGenerator:
             gap_type = skill_context.get("gap_type", "")
             suggested_action = skill_context.get("suggested_action", "")
             
-            # Allow skill routing issues if they can be resolved with self.services.X patterns
+            # Allow skill routing issues — treat as a normal tool creation request
             if gap_type == "no_matching_skill" and skill_context:
                 logger.info(f"Resolving skill routing issue with self.services.X patterns: {gap_description}")
-                # Add logic to include self.services.X dependencies
                 skill_context['required_tools'] = skill_context.get('required_tools', []) + ['routing_service']
-                return self._generate_tool_spec_with_services(gap_description, skill_context)
 
             # Reject other invalid gaps
             if gap_type in ["actionable_request_no_tool_call"]:
@@ -77,6 +75,7 @@ class SpecGenerator:
         ])
         
         skill_guidance = self._build_skill_guidance(skill_context)
+        existing_tools_section = self._build_existing_tools_section()
         
         # Build base prompt first
         prompt = f"""Propose a tool specification for: {gap_description}
@@ -84,6 +83,7 @@ class SpecGenerator:
 SKILL CONTEXT:
 {skill_guidance}
 
+{existing_tools_section}
 Return JSON with:
 - name: tool_name
 - domain: capability_domain
@@ -168,9 +168,9 @@ Example inputs format:
             if not isinstance(raw_inputs, list):
                 raw_inputs = []
             
-            # Calculate confidence BEFORE applying fallback
+            # Calculate confidence BEFORE applying fallback (threshold applied in flow.py)
             confidence = self._calculate_confidence(spec, raw_inputs, gap_description)
-            if confidence < 0.5:
+            if confidence < 0.3:
                 logger.warning(f"Low confidence spec ({confidence:.2f}) - rejecting")
                 return None
             
@@ -241,6 +241,17 @@ Example inputs format:
             spec['confidence'] = confidence
             spec['risk_level'] = risk_level
             spec['requires_human_review'] = confidence < 0.7 or risk_level > 0.6
+            
+            # Generate implementation sketches for each handler
+            # Second focused LLM call — spec prompt is already complex enough
+            try:
+                handler_sketches = self._generate_handler_sketches(inputs, dependencies, llm_client)
+                if handler_sketches:
+                    spec['handler_sketches'] = handler_sketches
+                    logger.info(f"Generated sketches for {len(handler_sketches)} handlers")
+            except Exception as e:
+                logger.warning(f"Handler sketch generation skipped: {e}")
+                spec['handler_sketches'] = {}
             
             # Create capability node
             from core.capability_graph import CapabilityNode
@@ -352,6 +363,27 @@ Example inputs format:
             cleaned = f"tool_{cleaned}"
         return cleaned
 
+    def _build_existing_tools_section(self) -> str:
+        """Build a compact list of already-registered tools so LLM avoids speccing duplicates."""
+        try:
+            from core.tool_registry_manager import ToolRegistryManager
+            registry = ToolRegistryManager()
+            tools = registry.list_tools() if hasattr(registry, 'list_tools') else []
+            if not tools:
+                # Fallback: scan tools/ directories
+                from pathlib import Path
+                names = []
+                for d in (Path('tools'), Path('tools/experimental')):
+                    if d.exists():
+                        names += [p.stem for p in d.glob('*.py') if not p.stem.startswith('_')]
+                tools = names
+            if not tools:
+                return ""
+            tool_list = ', '.join(sorted(set(str(t) for t in tools)))
+            return f"EXISTING TOOLS (do NOT duplicate these — propose something new):\n{tool_list}\n\n"
+        except Exception:
+            return ""
+
     def _build_skill_guidance(self, skill_context: Optional[dict]) -> str:
         """Build enriched skill guidance for tool generation.
         
@@ -461,6 +493,93 @@ Example inputs format:
         
         return "\n".join(guidance)
     
+    def _generate_handler_sketches(self, inputs: List[dict], dependencies: List[str], llm_client) -> dict:
+        """Generate pseudocode implementation sketches for each handler.
+
+        Separate focused LLM call so the spec prompt stays clean.
+        Returns dict of {handler_name: [step1, step2, ...]} or empty dict on failure.
+        """
+        if not inputs:
+            return {}
+
+        # Build service list from dependencies
+        from core.dependency_checker import DependencyChecker
+        service_specs = {
+            'storage': 'save(id, data), get(id), list(limit=10), update(id, updates), delete(id), exists(id)',
+            'llm': 'generate(prompt, temperature=0.3, max_tokens=500)',
+            'http': 'get(url), post(url, data), put(url, data), delete(url)',
+            'fs': 'read(path), write(path, content), list(path)',
+            'json': 'parse(text), stringify(data), query(data, path)',
+            'shell': 'execute(command)',
+            'logging': 'info(msg), warning(msg), error(msg)',
+            'time': 'now_utc_iso()',
+            'ids': 'generate(prefix), uuid()',
+        }
+        dep_names = [d.replace('self.services.', '').strip() for d in dependencies]
+        relevant_services = {
+            k: v for k, v in service_specs.items()
+            if k in dep_names or k in ('logging', 'ids')
+        }
+        services_text = '\n'.join(f'- self.services.{k}: {v}' for k, v in relevant_services.items())
+
+        # Build operations summary
+        ops_text = ''
+        for op in inputs:
+            if not isinstance(op, dict):
+                continue
+            op_name = op.get('operation', '')
+            params = op.get('parameters', [])
+            param_desc = ', '.join(
+                f"{p.get('name')} ({p.get('type','string')}, {'required' if p.get('required') else 'optional'})"
+                for p in params if isinstance(p, dict)
+            )
+            ops_text += f"- _handle_{op_name}({param_desc or 'no params'})\n"
+
+        prompt = f"""For each handler method below, write numbered pseudocode steps (plain English, not Python).
+Describe exactly: which services to call, what to validate, what to return.
+Keep each step to one sentence. Max 5 steps per handler.
+
+CRITICAL API RULES:
+- storage.save(id, data) — ALWAYS two arguments: unique string ID first, then data dict
+- storage.get(id) — ONE argument only, no default kwarg
+- storage.list(limit=N) — returns a list of all items
+- Every return MUST have 'success' key: {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
+- For filtering: specify exact field and comparison (e.g. 'keep items where query in item["description"]')
+
+Available services:
+{services_text}
+
+Handlers to sketch:
+{ops_text}
+
+Return JSON only:
+{{
+  "_handle_operation_name": [
+    "1. Get param_x from kwargs. Return {{'success': False, 'error': 'missing param_x'}} if missing.",
+    "2. Call self.services.storage.save(param_x, data_dict).",
+    "3. Return {{'success': True, 'data': result}}."
+  ]
+}}"""
+
+        try:
+            raw = llm_client._call_llm(prompt, temperature=0.1, max_tokens=1500, expect_json=True)
+            if not raw:
+                return {}
+            data = llm_client._extract_json(raw)
+            if not isinstance(data, dict):
+                return {}
+            # Normalize: ensure all values are lists of strings
+            result = {}
+            for handler_name, steps in data.items():
+                if isinstance(steps, list):
+                    result[handler_name] = [str(s) for s in steps if s]
+                elif isinstance(steps, str) and steps:
+                    result[handler_name] = [s.strip() for s in steps.splitlines() if s.strip()]
+            return result
+        except Exception as e:
+            logger.warning(f"Handler sketch LLM call failed: {e}")
+            return {}
+
     def _get_type_description(self, type_name: str) -> str:
         """Get human-readable description for parameter type."""
         descriptions = {

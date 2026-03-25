@@ -86,20 +86,17 @@ class LocalRunNoteTool(BaseTool):
         )
 
     def _handle_create(self, **kwargs):
-            note_id = kwargs.get('note_id') or ""
             text = kwargs.get('text')
+
+            if not text or not isinstance(text, str) or len(text.strip()) == 0:
+                return {'success': False, 'error': 'Invalid text input'}
+
+            if len(text) < 10:
+                return {'success': False, 'error': 'Text must be at least 10 characters long'}
+
+            note_id = kwargs.get('note_id') or self.services.ids.generate()
             tags = kwargs.get('tags', [])
             status = kwargs.get('status', 'active')
-
-            if not text:
-                raise ValueError("Missing required parameter: text")
-
-            if not note_id:
-                try:
-                    note_id = self.services.ids.generate()
-                except Exception as e:
-                    self.services.logging.error(f"Failed to generate ID: {e}")
-                    raise
 
             data = {
                 "note_id": note_id,
@@ -109,31 +106,35 @@ class LocalRunNoteTool(BaseTool):
             }
 
             try:
-                return self.services.storage.save(note_id, data)
+                result = self.services.storage.save(note_id, data)
+                return {'success': True, 'data': result}
             except Exception as e:
                 self.services.logging.error(f"Failed to save note: {e}")
-                raise
+                return {'success': False, 'error': str(e)}
 
     def _handle_get(self, **kwargs):
             note_id = kwargs.get('note_id')
             if not note_id:
-                raise ValueError("Missing required parameter: note_id")
+                self.services.logging.error("Missing required parameter: note_id")
+                return {"success": False, "error": "Missing required parameter: note_id"}
 
             try:
                 data = self.services.storage.get(note_id)
-                return data
-            except FileNotFoundError as e:
-                self.services.logging.error(f"Note with ID '{note_id}' not found.")
-                raise ValueError(f"Note with ID '{note_id}' does not exist.") from e
+                if data is None:
+                    return {"success": False, "error": f"Note '{note_id}' not found"}
+                return {"success": True, "data": data}
+            except Exception as e:
+                self.services.logging.error(f"Error retrieving note: {e}")
+                return {"success": False, "error": str(e)}
 
     def _handle_list(self, **kwargs):
             try:
                 limit = kwargs.get("limit", 10)
                 if not isinstance(limit, int) or limit < 1 or limit > 50:
-                    raise ValueError("Invalid limit value. Must be an integer between 1 and 50.")
+                    return {"status": "FAILURE", "message": "Invalid limit value. Must be an integer between 1 and 50."}
 
                 result = self.services.storage.list(limit=limit)
                 return {"data": result}
             except Exception as e:
                 self.services.logging.error(f"Error handling list: {e}")
-                raise
+                return {"status": "FAILURE", "message": str(e)}

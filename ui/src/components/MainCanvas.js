@@ -3,20 +3,16 @@ import ChatPanel from './ChatPanel';
 import FloatingActionBar from './FloatingActionBar';
 import EvolutionMode from './EvolutionMode';
 import ToolModeChat from './ToolModeChat';
+import AutonomyMode from './AutonomyMode';
 import './MainCanvas.css';
 
 function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange, skills, backendConnected, agentPlan }) {
   const renderContent = () => {
-    if (mode === 'tools') {
-      return <ToolModeChat key="tools" onModeChange={onModeChange} />;
-    }
-    
-    if (mode === 'evolution') {
-      return <EvolutionMode key="evolution" />;
-    }
-    
+    if (mode === 'tools') return <ToolModeChat key="tools" onModeChange={onModeChange} />;
+    if (mode === 'evolution') return <EvolutionMode key="evolution" />;
+    if (mode === 'autonomy') return <AutonomyMode key="autonomy" />;
     return (
-      <ChatPanel 
+      <ChatPanel
         key="chat"
         messages={messages}
         onSendMessage={onSendMessage}

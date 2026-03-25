@@ -111,6 +111,11 @@ class ToolValidator:
         if error:
             return False, self._format_error("Isinstance usage", error, code)
         
+        # Validate structural rules (execute delegation, return shape, call_tool usage)
+        error = self._validate_structural_rules(target_class)
+        if error:
+            return False, self._format_error("Structural rules", error, code)
+        
         return True, ""
     
     def _validate_execute_signature(self, execute_method: ast.FunctionDef) -> Optional[str]:
@@ -344,6 +349,61 @@ class ToolValidator:
         
         return None
     
+    def _validate_structural_rules(self, target_class: ast.ClassDef) -> Optional[str]:
+        """Validate structural rules that the evolution pipeline depends on."""
+        execute_method = next(
+            (m for m in target_class.body if isinstance(m, ast.FunctionDef) and m.name == 'execute'), None
+        )
+        if execute_method:
+            # Rule 1: execute() must delegate via execute_capability(), not manual if/elif
+            has_execute_capability = False
+            has_if_chain = False
+            for node in ast.walk(execute_method):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if (isinstance(func, ast.Attribute) and func.attr == 'execute_capability'
+                            and isinstance(func.value, ast.Name) and func.value.id == 'self'):
+                        has_execute_capability = True
+                if isinstance(node, ast.If):
+                    # Check if it's comparing 'operation'
+                    test = node.test
+                    if isinstance(test, ast.Compare):
+                        left = test.left
+                        if isinstance(left, ast.Name) and left.id == 'operation':
+                            has_if_chain = True
+            if has_if_chain and not has_execute_capability:
+                return ("execute() uses manual if/elif routing instead of "
+                        "self.execute_capability(operation, **kwargs). "
+                        "Remove the if/elif chain and use execute_capability() delegation.")
+
+        # Rule 5: call_tool must not target private methods
+        for method in target_class.body:
+            if not isinstance(method, ast.FunctionDef):
+                continue
+            for node in ast.walk(method):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                # self.services.call_tool(...)
+                if (isinstance(func, ast.Attribute) and func.attr == 'call_tool'
+                        and isinstance(func.value, ast.Attribute)
+                        and func.value.attr == 'services'):
+                    # Third positional arg or 'operation' keyword is the operation name
+                    op_arg = None
+                    if len(node.args) >= 2:
+                        op_arg = node.args[1]
+                    else:
+                        for kw in node.keywords:
+                            if kw.arg == 'operation':
+                                op_arg = kw.value
+                                break
+                    if op_arg and isinstance(op_arg, ast.Constant):
+                        op_name = str(op_arg.value)
+                        if op_name.startswith('_'):
+                            return (f"call_tool() targets private method '{op_name}'. "
+                                    "Only public capability names may be used with call_tool().")
+        return None
+
     def _validate_isinstance_usage(self, target_class: ast.ClassDef) -> Optional[str]:
         """Validate isinstance doesn't use ParameterType enums"""
         for method in [m for m in target_class.body if isinstance(m, ast.FunctionDef)]:
@@ -413,5 +473,5 @@ class ToolValidator:
         return suggestions.get(category, "Review the error and fix the code")
     
     def _class_name(self, tool_name: str) -> str:
-        """Convert tool_name to ClassName"""
-        return ''.join((part[:1].upper() + part[1:]) for part in tool_name.split('_') if part)
+        from core.tool_creation.code_generator.base import canonical_class_name
+        return canonical_class_name(tool_name)

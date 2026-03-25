@@ -73,17 +73,16 @@ class PendingEvolutionsManager:
             try:
                 from core.tool_evolution_logger import get_evolution_logger
                 from core.tool_quality_analyzer import ToolQualityAnalyzer
-                analyzer = ToolQualityAnalyzer()
-                report = analyzer.analyze_tool(tool_name)
-                health_after = report.health_score if report else None
-                evo_logger = get_evolution_logger()
-                # UPDATE the existing row rather than inserting a new one
-                with __import__('sqlite3').connect(str(evo_logger.db_path)) as conn:
+                from core.cua_db import get_conn as _get_conn
+                report = ToolQualityAnalyzer().analyze_tool(tool_name)
+                # Use measured score if available; fall back to health_before as baseline
+                # so the column is never NULL and health trajectory is always visible.
+                health_after = (report.health_score if report else None) or evolution.get("health_before")
+                with _get_conn() as conn:
                     conn.execute(
                         "UPDATE evolution_runs SET status=?, step=?, health_after=? WHERE id=?",
                         ("approved", "complete", health_after, evolution_id)
                     )
-                    conn.commit()
             except Exception as e:
                 import logging as _log
                 _log.getLogger(__name__).warning(f"Could not update health_after: {e}")
@@ -92,6 +91,12 @@ class PendingEvolutionsManager:
         del evolutions[tool_name]
         
         self._save(evolutions)
+
+        # Trim old backups — keep only the 3 most recent per tool
+        try:
+            self._trim_backups(tool_name)
+        except Exception:
+            pass
         
         return True
     
@@ -109,6 +114,19 @@ class PendingEvolutionsManager:
         
         return True
     
+    def _trim_backups(self, tool_name: str, keep: int = 3):
+        """Keep only the most recent `keep` backups for this tool."""
+        backup_dir = Path("data/tool_backups")
+        if not backup_dir.exists():
+            return
+        files = sorted(
+            backup_dir.glob(f"{tool_name}_*.bak"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        for old in files[keep:]:
+            old.unlink(missing_ok=True)
+
     def _load(self) -> Dict:
         """Load evolutions from storage."""
         try:

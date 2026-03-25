@@ -38,7 +38,7 @@ llm:
   timeout_seconds: 300
   ollama_url: http://localhost:11434
   provider: ollama
-  api_key: ""  # set via environment variable OPENAI_API_KEY
+  api_key: ''
   base_url: ''
   models:
     qwen:
@@ -154,3 +154,48 @@ session:
 db_plan_history: data/plan_history.db
 db_analytics: data/analytics.db
 db_conversations: data/conversations.db
+mcp_servers:
+- name: puppeteer
+  transport: stdio
+  command: mcp-server-puppeteer
+  enabled: true
+- name: filesystem
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-filesystem
+  enabled: true
+- name: git
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-git
+  enabled: false
+- name: sqlite
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-sqlite
+  enabled: false
+- name: fetch
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-fetch
+  enabled: false
+- name: memory
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-memory
+  enabled: true
+- name: brave-search
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-brave-search
+  env_key: BRAVE_API_KEY
+  enabled: false
+- name: github
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-github
+  env_key: GITHUB_PERSONAL_ACCESS_TOKEN
+  enabled: true
+- name: slack
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-slack
+  env_key: SLACK_BOT_TOKEN
+  enabled: false
+- name: gdrive
+  transport: stdio
+  command: npx -y @modelcontextprotocol/server-gdrive
+  env_key: GDRIVE_CLIENT_ID
+  enabled: true

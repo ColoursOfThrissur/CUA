@@ -1,31 +1,30 @@
 # CUA - Autonomous Agent System
 
-**Local autonomous agent platform for safe tool-based execution, with human approval gates, controlled self-improvement, and comprehensive observability.**
+**Local autonomous agent platform for safe tool-based execution, human approval gates, controlled self-improvement, and full observability.**
 
-> **Status (June 2026):** Production-Ready | Core Architecture Complete | 12 correctness/quality fixes applied across 8 components
+> **Status (June 2026):** Production-Ready | Autonomous loop fully wired | Single consolidated DB | 20+ correctness/quality fixes applied
 
 ---
 
 ## What CUA Does
 
-CUA is a local autonomous agent that:
-- **Plans & Executes** multi-step tasks with goal achievement and self-correction
+- **Plans & executes** multi-step tasks with goal achievement and self-correction
 - **Routes intelligently** via a skills system (7 skills, 3-signal scoring + LLM fallback)
 - **Calls tools natively** via function calling (20+ tools, reputation-weighted selection)
-- **Creates & evolves tools** through LLM-driven generation with validation pipelines
+- **Creates & evolves tools** through LLM-driven generation with 20-gate validation
 - **Manages dependencies** automatically (AST-based detection, pip install, service generation)
-- **Validates everything** via 20-gate AST + architectural validation
-- **Observes everything** via SQLite-based logging (13 databases)
+- **Observes everything** via a single consolidated SQLite database (`cua.db`, WAL mode)
 - **Self-improves** through a hybrid improvement engine with human approval gates
 - **Runs steps in parallel** via DAG-based wave execution (independent steps run concurrently)
-- **Resolves capability gaps** automatically (local → MCP → API wrap → create tool)
+- **Resolves capability gaps** automatically: local reroute → MCP → API wrap → create tool
+- **Closes the gap loop** — resolved gaps written to `cua.db`, never re-queued on next scan
 - **Connects to MCP servers** via stdlib JSON-RPC 2.0 adapter with dynamic capability discovery
 - **Scores tool reputation** with 4-factor composite (success rate, recency, latency, volume)
-- **Stores credentials securely** with Fernet encryption, per-tool access scoping
+- **Stores credentials securely** with Fernet encryption, per-tool access scoping, TTL support
 - **Learns from history** via strategic memory (Jaccard similarity, win-rate tracking, LRU eviction)
-- **Searches all memory at once** via UnifiedMemory facade (strategic plans + patterns + improvement history + conversation)
-- **Evolves surgically** — tool evolution scopes rewrites to `target_functions` only, leaving rest of file untouched
-- **Adapts confidence thresholds** per model — local models (Qwen/Mistral) use 0.35, cloud models (GPT/Claude/Gemini) use 0.5
+- **Searches all memory at once** via UnifiedMemory facade (strategic + patterns + improvements + conversation)
+- **Evolves surgically** — tool evolution scopes rewrites to `target_functions` only
+- **Adapts confidence thresholds** per model — local (Qwen/Mistral) 0.35, cloud (GPT/Claude/Gemini) 0.5
 
 ---
 
@@ -46,41 +45,67 @@ API docs: http://localhost:8000/docs
 
 ---
 
-## Architecture: SkillExecutionContext + Parallel DAG
-
-The system is built around **SkillExecutionContext** — a unified data structure carrying skill-aware execution guidance through the entire pipeline, with **parallel wave execution** for independent steps:
+## Architecture
 
 ```
 User Request
     ↓
 [Skill Selector] — 3-signal scoring: keyword overlap + learned triggers + tool health
     ↓
-[SkillExecutionContext] — 32 fields:
-    • Skill metadata: name, category, verification_mode, risk_level
-    • Tool guidance: preferred_tools, available_tools, fallback_tools
-    • I/O expectations: expected_input_types, expected_output_types
-    • Recovery: max_retries (from risk_level), retry_backoff
-    • Trace: step_history, errors_encountered, warnings
+[SkillExecutionContext] — 32 fields: skill metadata, tool guidance, I/O expectations, recovery, trace
     ↓
 [ContextAwareToolSelector] — reputation-weighted selection + circuit breaker health check
     ↓
-[UnifiedMemory] — search all 4 stores: StrategicMemory + MemorySystem patterns + ImprovementMemory + conversation
+[UnifiedMemory] — Jaccard search across 4 stores injected into planner prompt
     ↓
-[TaskPlanner] — LLM plan generation with unified MEMORY CONTEXT block injected into prompt
+[TaskPlanner] — LLM plan generation, token-budget trimmed tools_desc, memory context first
     ↓
-[ExecutionEngine] — parallel DAG execution:
-    Wave 1: [step_1, step_2]  ← independent, run concurrently (ThreadPoolExecutor)
-    Wave 2: [step_3]          ← depends on step_1 + step_2, runs after wave 1
-    Wave 3: [step_4, step_5]  ← independent of each other, run concurrently
+[ExecutionEngine] — parallel DAG wave execution (ThreadPoolExecutor, max 4 workers, 120s/step)
     ↓
-[ToolOrchestrator] — execute_tool_step(..., execution_context)
-    • On error: should_fallback()? → switch to fallback_tool
-    • On success: _validate_output_against_skill(result, context)
+[ToolOrchestrator] — execute with cached signatures, fallback on error, output validation
     ↓
-[CapabilityResolver] — gap detected? local → MCP → API wrap → create_tool
+[CapabilityResolver] — gap? reroute → MCP → API wrap → create_tool
     ↓
 [Response]
 ```
+
+---
+
+## Autonomous Loop
+
+The full self-improvement cycle runs via `CoordinatedAutonomyEngine`:
+
+```
+Chat failure → record_capability_gap (CapabilityMapper scans tools/ + tools/experimental/)
+    ↓ skip if already in resolved_gaps
+[GapTracker] — persist gap (requires ≥3 occurrences, confidence ≥0.7, not resolution_attempted)
+    ↓
+[CoordinatedAutonomyEngine.run_cycle]
+    1. BaselineHealthChecker — abort if system is broken
+    2. CapabilityResolver pass — reroute/MCP/API gaps marked resolved, skipped for CREATE
+    3. AutoEvolutionOrchestrator.run_cycle
+        a. ToolQualityAnalyzer — queue WEAK/NEEDS_IMPROVEMENT tools (min 5 uses)
+        b. LLM gap analysis over failures table in cua.db
+        c. Registry coverage check — skip CREATE if loaded tool already covers gap
+        d. Queue CREATE (max 1 new tool per scan by default)
+    4. SelfImprovementLoop — bounded improvement pass (max 3 iterations)
+    5. Quality gate — pause if consecutive low-value cycles
+    ↓
+[_process_evolution]
+    evolve_tool → pending approval → human approves → cache invalidated
+    create_tool → pending approval → on success → resolved_gaps written to cua.db
+                                                 → tracker.mark_resolved()
+    ↓
+Next cycle: gap already resolved, skipped at every gate
+```
+
+**Key guards:**
+- `enable_enhancements` defaults to `False` — healthy tools never auto-queued
+- `min_usage=5` — tools with fewer than 5 executions not analyzed
+- `detect_gap_from_task` requires ≥2 keyword hits — no single-word false positives
+- `get_actionable_gaps` excludes `resolution_attempted=True` gaps
+- LLM health cache TTL 24h — no redundant re-analysis within a day
+- `resolved_gaps` table prevents re-queuing already-solved capabilities
 
 ---
 
@@ -91,61 +116,40 @@ User Request
 | Component | Status | Notes |
 |-----------|--------|-------|
 | SkillExecutionContext (32 fields) | Complete | |
-| Skill Selector (3-signal + LLM-first) | Solid | LLM fallback max_tokens=80; no stemming in `_tokenize`; no negative signal between skills |
-| Task Planner (LLM → DAG) | Solid | `tools_desc` can exceed Qwen ctx for 20+ tools; `unified_context` injected late in prompt; replan doesn't pass completed outputs |
-| Execution Engine (wave DAG) | Solid | Per-step timeout 120s; completed executions evicted (max 50); `resume_execution` ignores waves |
-| Tool Orchestrator | Solid | `_services_cache` never invalidated on tool reload; `inspect.signature` called on every execution (not cached) |
-| Circuit Breaker | Solid | `success_count` reset on CLOSED→OPEN fixed; cumulative failure count (no sliding window); not thread-safe under parallel execution |
-| Strategic Memory (Jaccard + win-rate) | Solid | Dirty flag + batch write; `min_win_rate` config-driven; no time decay |
-| UnifiedMemory (4-store facade) | Solid | Uses public `retrieve()` API; only searches failed improvements, not successful ones |
-| Capability Resolver (5-step chain) | Solid | `_MCP_CATALOGUE` / `_API_CATALOGUE` hardcoded in file; no feedback loop when `create_tool` succeeds |
-| Credential Store (Fernet) | Solid | Atomic write via tmp+replace; load errors logged; no `expires_at`/TTL |
-| Autonomous Agent (goal loop) | Solid | `failed_attempts` retrieved on retry iterations; web research outcomes recorded to strategic memory |
-| Parallel Execution DAG (wave-based) | Complete | |
-| Recovery Logic (fallback/retry/degrade) | Complete | |
+| Skill Selector (3-signal + LLM fallback) | Solid | Suffix stemming added; runner-up penalised ±0.05 |
+| Task Planner (LLM → DAG) | Solid | Token budget trimming for tools_desc; memory context injected first |
+| Execution Engine (wave DAG) | Solid | resume_execution wave-aware; completed outputs passed to replan |
+| Tool Orchestrator | Solid | inspect.signature cached; services_cache invalidated on tool reload/approve |
+| Circuit Breaker | Solid | CLOSED→OPEN→HALF_OPEN correct; success_count reset on OPEN; lock added |
+| Strategic Memory | Solid | Dirty flag + batch write; config-driven min_win_rate; exponential recency decay |
+| UnifiedMemory (4-store facade) | Solid | Searches both failed and successful improvements |
+| Capability Resolver (5-step chain) | Solid | Config-driven catalogues; feedback loop writes to resolved_gaps |
+| Credential Store (Fernet) | Solid | Atomic writes; expires_at TTL support |
+| Gap Detector | Solid | ≥2 keyword hits required; CapabilityMapper scans both tool dirs |
+| Gap Tracker | Solid | resolution_attempted filter; mark_resolved after queuing |
+| Auto-Evolution Orchestrator | Solid | Registry coverage check before CREATE; failure scan reads cua.db |
+| Coordinated Autonomy Engine | Solid | CapabilityResolver pass before CREATE queue; quality gate |
+| Autonomous Loop (end-to-end) | Complete | Gap → resolve → create/evolve → resolved_gaps → skip on next scan |
+| Parallel Execution DAG | Complete | |
 | MCP Adapter (JSON-RPC 2.0) | Complete | |
-| Output Validation (all paths) | Complete | |
-| Service Validation (creation + evolution) | Complete | |
-| Surgical Tool Evolution (target_functions) | Complete | |
+| Surgical Tool Evolution | Complete | target_functions scopes rewrite |
 | Per-model Confidence Thresholds | Complete | |
-| Edit-Block Generation (aider-style) | Complete | Creation + evolution both use `<<<< ORIGINAL / ======= / >>>>` format with fallback |
-
-### Verified Working
-- Skill-aware routing: web_research, computer_automation, code_workspace, conversation, browser_automation, data_operations, knowledge_management
-- Skill selector 3-signal scoring: keyword overlap + learned triggers + live tool health
-- Tool reputation 4-factor composite: 55% success, 20% recency, 15% latency, 10% volume ±5% trend
-- Parallel DAG execution: independent steps run concurrently via ThreadPoolExecutor (max 4 workers, 120s per-step timeout)
-- Capability resolution: local → MCP → API wrap → create_tool chain
-- MCP adapter: stdlib JSON-RPC 2.0, dynamic capability discovery via `tools/list`
-- Credential store: Fernet encryption, atomic writes, per-tool access scoping, graceful base64 fallback
-- Strategic memory: SHA1 fingerprinting, Jaccard retrieval, 200-record LRU eviction, config-driven `min_win_rate`
-- Conversational requests handled without tool routing (no false capability gaps)
-- UnifiedMemory: 4-store Jaccard search via public APIs injected into TaskPlanner prompt
-- Surgical tool evolution: `target_functions` scopes rewrite to named methods only
-- Evolution analyzer injects top 3 recent failure messages from `tool_executions.db`
-- Tool creation confidence threshold is model-aware: 0.35 for Qwen/Mistral, 0.5 for GPT/Claude/Gemini
-- Multi-round tool calling: continuation rounds receive structured `[ok/err] tool.op: result_preview` blocks
-- Circuit breaker: correct CLOSED→OPEN→HALF_OPEN transitions, `success_count` reset on OPEN
-- Retry loop: `failed_attempts` patterns injected into planner on iteration 2+
-- Web research outcomes recorded to strategic memory (no longer bypassed)
-- Tool errors (`{"error": "..."}` dicts) correctly surface as failures, not silent successes
+| DB Consolidation (cua.db) | Complete | Single WAL-mode file, 21 tables, all loggers redirected |
+| Config Validator at startup | Complete | MCP URLs, LLM provider, port range checked |
 
 ### Remaining Known Gaps
 
-- `CircuitBreaker`: not thread-safe — `failure_count` read-modify-write races under parallel execution (no lock)
-- `ToolOrchestrator._services_cache`: never invalidated when a tool is reloaded/evolved
-- `TaskPlanner`: `unified_context` injected after examples in prompt — should be closer to goal for Qwen attention
-- `TaskPlanner`: `tools_desc` can exceed Qwen context for 20+ tools — no token budget trimming
-- `CapabilityResolver`: `_MCP_CATALOGUE` and `_API_CATALOGUE` hardcoded — should be config-driven
-- `StrategicMemory`: no time decay on relevance scores — old patterns rank equal to recent ones
-- `CredentialStore`: no `expires_at`/TTL support for rotating API keys
-- `SkillSelector`: no stemming — "searching" doesn't match "search"
+- `CircuitBreaker`: lock added but sliding window still not implemented — cumulative failure count only
+- `ImprovementMemory`: still writes to `data/improvement_memory.db` (not yet redirected to `cua.db`)
+- `CapabilityResolver`: `_MCP_CATALOGUE` / `_API_CATALOGUE` config override works but defaults are static
+- `SkillSelector`: no negative signal between competing skills (runner-up penalty is a partial fix)
+- `TaskPlanner`: replan on retry doesn't carry completed step outputs forward
 
 ---
 
 ## Skills System
 
-7 skills in `skills/` directory, each with `skill.json` + `SKILL.md`:
+7 skills in `skills/`, each with `skill.json` + `SKILL.md`:
 
 | Skill | Category | Preferred Tools | Verification |
 |-------|----------|-----------------|--------------|
@@ -157,116 +161,111 @@ User Request
 | `data_operations` | data | HTTPTool, JSONTool, DatabaseQueryTool | output_validation |
 | `knowledge_management` | productivity | LocalCodeSnippetLibraryTool, LocalRunNoteTool | output_validation |
 
-**Skill Selection Flow:**
-1. Simple greeting/farewell → early return (no skill needed)
-2. AutoSkillDetector: 3-signal scoring (keyword overlap +0.55, learned triggers +0.20, tool health +0.10)
+**Selection flow:**
+1. Simple greeting/farewell → early return
+2. AutoSkillDetector: keyword overlap + learned triggers + tool health
 3. LLM fallback if confidence < 0.35
-4. `conversation` skill → direct LLM response, no tool calling
-5. Other skills → SkillExecutionContext built → ContextAwareToolSelector (reputation-weighted) → ExecutionEngine
+4. `conversation` → direct LLM response
+5. Other → SkillExecutionContext → ContextAwareToolSelector → ExecutionEngine
 
 ---
 
 ## Tools
 
-### Core Tools (always loaded)
-- `FilesystemTool`: `read_file`, `write_file`, `list_directory`, `list_files`
-- `WebAccessTool`: `fetch_url`, `search_web`, `open_page`, `get_current_page`, `crawl_site`, `extract_links`, `extract_search_results`
-- `HTTPTool`: `get`, `post`, `put`, `delete` (domain allowlist enforced; hidden when WebAccessTool available)
-- `JSONTool`: `parse`, `stringify`, `query`
-- `ShellTool`: `execute` (command allowlist enforced)
+### Core (always loaded)
+- `FilesystemTool` — read_file, write_file, list_directory, list_files
+- `WebAccessTool` — fetch_url, search_web, open_page, crawl_site, extract_links, extract_search_results
+- `HTTPTool` — get, post, put, delete (domain allowlist; hidden when WebAccessTool available)
+- `JSONTool` — parse, stringify, query
+- `ShellTool` — execute (command allowlist)
 
-### Experimental Tools (loaded at runtime)
-- `ContextSummarizerTool`: `summarize_text`, `extract_key_points`, `sentiment_analysis`, `generate_json_output`
-- `DatabaseQueryTool`: `query_logs`, `analyze_tool_performance`, `find_failure_patterns`, `get_evolution_history`
-- `BrowserAutomationTool`: `open_and_navigate`, `take_screenshot`, `find_element`, `get_page_content`
-- `LocalCodeSnippetLibraryTool`: `save_snippet`, `get_snippet`, `search`, `list_popular`
-- `LocalRunNoteTool`: note management and persistence
-- `BenchmarkRunnerTool`: `run_benchmark_suite`, `add_benchmark_case`, `execute`, `run_suite`, `run`, `add_case`
-- `MCPAdapterTool`: `call_tool`, `list_tools`, `get_server_info` (one instance per configured MCP server)
+### Experimental (loaded at runtime)
+- `ContextSummarizerTool` — summarize_text, extract_key_points, sentiment_analysis, generate_json_output
+- `DatabaseQueryTool` — query_logs, analyze_tool_performance, find_failure_patterns, get_evolution_history
+- `BrowserAutomationTool` — open_and_navigate, take_screenshot, find_element, get_page_content
+- `LocalCodeSnippetLibraryTool` — save_snippet, get_snippet, search, list_popular
+- `LocalRunNoteTool` — note management and persistence
+- `BenchmarkRunnerTool` — run_benchmark_suite, add_benchmark_case, execute, run_suite
+- `MCPAdapterTool` — call_tool, list_tools, get_server_info (one instance per MCP server)
 
-### Additional Experimental (available, not loaded by default)
+### Available, not loaded by default
 - `WorkflowAutomationTool`, `ExecutionPlanEvaluatorTool`, `TaskBreakdownTool`
 - `UserApprovalGateTool`, `IntentClassifierTool`, `SystemIntrospectionTool`
-
----
-
-## Chat Request Flow
-
-```
-User Message
-    ↓
-Simple greeting? → Early return (no skill, no tools)
-    ↓
-AutoSkillDetector (3-signal scoring + LLM fallback)
-    ↓
-conversation skill? → LLM direct response
-    ↓
-Intent: multi-step (A) or simple (B)?
-    ↓
-[A] AutonomousAgent          [B] Native Tool Calling
-    TaskPlanner                   ToolCallingClient
-    ExecutionEngine               Multi-round (max 3)
-    Verify + Iterate              Output Analysis
-    ↓                             ↓
-Natural language response (tool call JSON filtered out)
-```
-
----
-
-## Autonomous Agent Flow
-
-```
-Goal submitted
-    ↓
-UnifiedMemory.search_for_planning() → inject ranked MEMORY CONTEXT (4 stores) into prompt
-    ↓
-TaskPlanner → multi-step plan (skill-aware, dependency graph)
-    ↓
-requires_approval? → surface plan to UI, wait for "go ahead"
-    ↓
-ExecutionEngine → parallel DAG execution:
-    _build_execution_waves() → group independent steps into waves
-    Wave N: independent steps → ThreadPoolExecutor (max 4 workers)
-    Wave N+1: dependent steps → run after wave N completes
-    • Resolves {{step_X}} parameter references
-    • Retries failed steps (max 3, skill-context backoff)
-    ↓
-LLM Verification → {"success": true/false, "missing_parts": [...]}
-    ↓
-Iterate (max 3) or complete → StrategicMemory.record() outcome
-```
+- `DataTransformationTool`, `DiffComparisonTool`
 
 ---
 
 ## Tool Creation Flow
 
 ```
-User: "Create a tool for X"
+User: "Create a tool for X"  (or autonomous gap triggers it)
     ↓
-1. Spec Generation (LLM + confidence scoring)
-2. Code Generation (Qwen multi-stage or GPT single-shot)
-3. Enhanced Validation (20 gates: AST, architecture, service usage)
-4. Dependency Check (AST-based: missing libs + services)
-5. Sandbox Test (isolated execution)
-6. Human Approval → activate
+1. Spec Generation — LLM + model-aware confidence threshold (0.35 local / 0.5 cloud)
+2. Code Generation — Qwen multi-stage or GPT single-shot
+3. Enhanced Validation — 20 AST + architecture gates
+4. Dependency Check — AST-based missing libs + services
+5. Sandbox Test — isolated execution
+6. Human Approval → activate + resolved_gaps updated
 ```
 
-Registry-aware: if tool name already exists, returns "already exists" and suggests evolution instead.
-Confidence threshold is model-aware: reads `min_confidence` from `config/model_capabilities.json` per model pattern (0.35 local, 0.5 cloud).
+Registry-aware: existing tool name → returns "already exists", redirects to evolution.
 
 ---
 
 ## Tool Evolution Flow
 
 ```
-1. Analyze (quality score 0-100 + top 3 recent failures from tool_executions.db injected)
-2. Propose (LLM reads evolution context, proposes minimal fix with action_type + target_functions list)
-3. Generate (scopes rewrite to target_functions only; falls back to all handlers if not found)
-4. Check Dependencies (AST parse)
-5. Validate (enhanced AST + CUA architecture checks)
+1. Analyze — quality score 0-100 + top 3 recent failures from cua.db injected
+2. Propose — LLM proposes minimal fix with action_type + target_functions list
+3. Generate — scopes rewrite to target_functions only
+4. Check Dependencies — AST parse
+5. Validate — 20-gate AST + CUA architecture checks
 6. Sandbox Test
-7. Human Approval → apply + remove from pending
+7. Human Approval → apply + services_cache invalidated
 ```
+
+---
+
+## Validation Gates (20)
+
+AST syntax · Required methods · Execute signature · Capability registration · Parameter validation · Import validation · No mutable defaults · No relative paths · No undefined helpers · Orchestrator parameter check · Tool name assignment · Contract compliance · Undefined method detection · Uninitialized attribute detection · Code truncation detection · Service usage pattern validation · Service method existence · Capability-spec parameter matching · Hardcoded value detection · Return type validation
+
+**Blocked in generated tool code (AST-enforced):**
+- `subprocess.*` — all variants (run, call, Popen, check_output, check_call)
+- `os.system`, `os.popen`, `os.execv*`, `os.spawn*`
+- `eval`, `exec`, `compile`, `__import__`
+- `import subprocess` / `from subprocess import *` — blocked at import level
+- `import pty`, `import pexpect`, `import fabric`, `import paramiko`
+
+All shell access must go through `self.services.shell.execute()` which enforces the command allowlist.
+
+---
+
+## Observability — Single Database
+
+All data lives in `data/cua.db` (WAL mode, single writer lock):
+
+| Table | Contents |
+|-------|----------|
+| `logs` | All service logs |
+| `executions` | Tool execution history + timing |
+| `execution_context` | Per-execution service/LLM call metadata |
+| `evolution_runs` | Evolution attempts + health delta |
+| `evolution_artifacts` | Per-step evolution artifacts |
+| `tool_creations` | Tool creation attempts |
+| `creation_artifacts` | Per-step creation artifacts |
+| `conversations` | Chat messages |
+| `sessions` | Session state |
+| `learned_patterns` | Skill trigger patterns |
+| `failures` | Failed changes + error patterns |
+| `risk_weights` | Risk scorer pattern weights |
+| `improvements` | Improvement attempt outcomes |
+| `plan_history` | Execution plan history |
+| `improvement_metrics` | Self-improvement iteration metrics |
+| `tool_metrics_hourly` | Per-tool hourly performance |
+| `system_metrics_hourly` | System-wide hourly metrics |
+| `auto_evolution_metrics` | Auto-evolution scan metrics |
+| `resolved_gaps` | Capability gaps resolved (feedback loop) |
 
 ---
 
@@ -285,49 +284,23 @@ APPROVED → SandboxRunner → AtomicApplier → AuditLogger
 
 ---
 
-## Validation Gates (20)
+## Safety Features
 
-1. AST syntax
-2. Required methods (`register_capabilities`, `execute`)
-3. Execute signature
-4. Capability registration
-5. Parameter validation
-6. Import validation
-7. No mutable defaults
-8. No relative paths
-9. No undefined helpers
-10. Orchestrator parameter check
-11. Tool name assignment
-12. Contract compliance
-13. Undefined method detection
-14. Uninitialized attribute detection
-15. Code truncation detection
-16. Service usage pattern validation
-17. Service method existence (via service_registry)
-18. Capability-spec parameter matching
-19. Hardcoded value detection
-20. Return type validation (dict, not ToolResult)
-
----
-
-## Observability (13 SQLite Databases)
-
-| Database | Contents |
-|----------|----------|
-| `logs.db` | System logs |
-| `tool_executions.db` | Execution history with timing |
-| `tool_evolution.db` | Evolution attempts + steps |
-| `tool_creation.db` | Tool generation logs |
-| `tool_creation_logs.db` | Creation tracking |
-| `tool_execution_logs.db` | Detailed execution logs |
-| `chat_history.db` | Chat storage |
-| `conversations.db` | Sessions, messages, learned_patterns |
-| `analytics.db` | Improvement metrics |
-| `failure_patterns.db` | Failed changes + error patterns |
-| `improvement_memory.db` | Successful improvements |
-| `plan_history.db` | Execution plan history |
-| `llm_logs.db` / `llm_interactions.db` | LLM call tracking |
-| `metrics.db` | System metrics |
+- Sandbox testing for all generated code
+- Human approval gates for evolution, creation, and risky updates
+- Risk scoring before any self-modification
+- Protected files blocked from modification (`immutable_brain_stem`)
+- 20-gate AST + architectural validation
+- Circuit breaker per tool with reputation scoring
+- Rollback support (backups before changes)
+- Service pattern enforcement (`self.services.X` only)
+- Idempotency checking (no duplicate changes)
+- Input size limit (50KB max on /chat)
+- Correlation context on all requests
+- Fernet-encrypted credential store (per-tool scoping, TTL support)
+- MCP server connections validated before capability registration
+- Config validator at startup (MCP URLs, LLM provider, port range)
+- Gap detection requires ≥2 keyword hits + ≥3 occurrences + confidence ≥0.7
 
 ---
 
@@ -369,7 +342,7 @@ self.services.has_capability(capability_name)
 
 ### Core
 - `POST /chat` — skill-aware routing + tool calling + autonomous agent
-- `GET /health` — health + `system_available`
+- `GET /health` — health + system_available
 - `GET /status` — sessions, tools, capabilities, skills
 - `POST /cache/clear` — clear sessions + caches
 
@@ -387,8 +360,7 @@ self.services.has_capability(capability_name)
 ### Self-Improvement
 - `POST /improvement/start`, `POST /improvement/start-continuous`, `POST /improvement/stop`
 - `POST /improvement/approve`, `GET /improvement/status`, `GET /improvement/logs`
-- `GET /improvement/tools/suggest?skip=N` — cycles through suggestions
-- `POST /improvement/tools/create`
+- `GET /improvement/tools/suggest?skip=N`, `POST /improvement/tools/create`
 - `GET /improvement/history`, `GET /improvement/analytics`, `GET /improvement/previews`
 - `POST /improvement/rollback/{plan_id}`
 
@@ -398,9 +370,12 @@ self.services.has_capability(capability_name)
 - `POST /evolution/test/{tool_name}`, `GET /evolution/conversation/{tool_name}`
 - `POST /evolution/resolve-dependencies/{tool_name}`
 
-### Auto-Evolution
+### Auto-Evolution + Coordinated Autonomy
 - `POST /auto-evolution/start`, `POST /auto-evolution/stop`, `GET /auto-evolution/status`
 - `POST /auto-evolution/config`, `GET /auto-evolution/queue`, `POST /auto-evolution/trigger-scan`
+- `POST /auto-evolution/coordinated/start`, `POST /auto-evolution/coordinated/stop`
+- `POST /auto-evolution/coordinated/run-cycle`, `GET /auto-evolution/coordinated/status`
+- `POST /auto-evolution/coordinated/config`
 
 ### Pending Approvals
 - `GET /pending-tools/list`, `POST /pending-tools/{tool_id}/approve`, `POST /pending-tools/{tool_id}/reject`
@@ -421,7 +396,6 @@ self.services.has_capability(capability_name)
 - `GET /observability/tables`, `GET /observability/data/{db_name}/{table_name}`
 - `GET /observability/detail/{db_name}/{table_name}/{row_id}`
 - `GET /observability/filters/{db_name}/{table_name}/{column}`
-- `POST /observability/cleanup`, `POST /observability/refresh`
 
 ### Tools Management
 - `GET /tools-management/summary`, `GET /tools-management/list`
@@ -430,7 +404,7 @@ self.services.has_capability(capability_name)
 
 ### Circuit Breaker + Reputation
 - `GET /circuit-breaker/status`
-- `GET /circuit-breaker/reputation` — composite reputation scores for all tools
+- `GET /circuit-breaker/reputation` — composite scores for all tools
 - `GET /circuit-breaker/tool/{name}` — per-tool status + reputation
 
 ### MCP
@@ -438,17 +412,14 @@ self.services.has_capability(capability_name)
 - `GET /mcp/tools` — all discovered MCP capabilities
 
 ### Credentials
-- `GET /credentials/list` — list credential keys (values never returned)
-- `POST /credentials/set` — store encrypted credential
-- `DELETE /credentials/{key}` — remove credential
-- `GET /credentials/{key}/exists` — check existence
-- `PATCH /credentials/{key}/scope` — update allowed tools
+- `GET /credentials/list`, `POST /credentials/set`, `DELETE /credentials/{key}`
+- `GET /credentials/{key}/exists`, `PATCH /credentials/{key}/scope`
 
-### Strategic Memory
+### Strategic Memory + Tasks
 - `GET /agent/strategic-memory` — stats + top 10 patterns by win-rate
-
-### Other
 - `GET /tasks/active`, `GET /tasks/history`, `POST /tasks/{parent_id}/abort`
+
+### Settings
 - `GET /settings/models`, `POST /settings/model`, `POST /settings/reload-config`
 
 ---
@@ -457,78 +428,67 @@ self.services.has_capability(capability_name)
 
 ```
 CUA/
-├── api/                    # FastAPI routers (30+ files)
-│   ├── server.py           # Main server + /chat endpoint
-│   ├── bootstrap.py        # Runtime init + router wiring
-│   ├── mcp_api.py          # MCP status + tools endpoints
-│   ├── credentials_api.py  # Credential CRUD endpoints
-│   ├── agent_api.py        # Strategic memory endpoint
-│   └── *_api.py            # Feature routers
+├── api/                         # FastAPI routers (30+ files)
+│   ├── server.py                # Main server + /chat endpoint
+│   ├── bootstrap.py             # Runtime init + router wiring
+│   ├── chat_helpers.py          # Chat handler, gap recording, tool execution
+│   └── *_api.py                 # Feature routers
 │
-├── core/                   # Core logic (80+ modules)
-│   ├── skills/             # Skill system
-│   │   ├── models.py       # SkillDefinition, SkillSelection
-│   │   ├── registry.py     # In-memory skill registry + ToolReputation
-│   │   ├── selector.py     # 3-signal skill scoring + LLM fallback
-│   │   ├── execution_context.py  # SkillExecutionContext (32 fields)
-│   │   ├── context_hydrator.py   # Skill → execution context
-│   │   └── tool_selector.py      # ContextAwareToolSelector (reputation-weighted)
-│   ├── tool_creation/      # 6-step creation pipeline
-│   ├── tool_evolution/     # 6-step evolution pipeline
+├── core/                        # Core logic (80+ modules)
+│   ├── skills/                  # Skill system
+│   │   ├── selector.py          # 3-signal scoring + LLM fallback + stemming
+│   │   ├── execution_context.py # SkillExecutionContext (32 fields)
+│   │   ├── context_hydrator.py  # Skill → execution context
+│   │   └── tool_selector.py     # ContextAwareToolSelector (reputation-weighted)
+│   ├── tool_creation/           # 6-step creation pipeline
+│   ├── tool_evolution/          # 6-step evolution pipeline
 │   ├── autonomous_agent.py
-│   ├── task_planner.py
-│   ├── execution_engine.py      # Parallel DAG wave execution
-│   ├── memory_system.py
-│   ├── tool_orchestrator.py
-│   ├── strategic_memory.py      # Jaccard plan retrieval + win-rate LRU
-│   ├── unified_memory.py        # 4-store search facade — singleton via get_unified_memory()
-│   ├── capability_resolver.py   # 3-step gap resolution chain
-│   ├── credential_store.py      # Fernet-encrypted credential store
-│   ├── gap_detector.py          # Capability gap detection
-│   ├── gap_tracker.py           # Gap persistence + resolution tracking
-│   ├── auto_skill_detection.py  # AutoSkillDetector
-│   ├── circuit_breaker.py
-│   ├── config_manager.py        # Config + MCPServerConfig
-│   └── enhanced_code_validator.py
+│   ├── task_planner.py          # Token-budget trimming, memory context first
+│   ├── execution_engine.py      # Parallel DAG wave execution, wave-aware resume
+│   ├── tool_orchestrator.py     # Cached signatures, services_cache invalidation
+│   ├── strategic_memory.py      # Jaccard + win-rate + recency decay
+│   ├── unified_memory.py        # 4-store search facade
+│   ├── capability_resolver.py   # 5-step resolution chain, config-driven catalogues
+│   ├── capability_mapper.py     # Scans tools/ + tools/experimental/
+│   ├── gap_detector.py          # ≥2 keyword hits, LLM gap analysis
+│   ├── gap_tracker.py           # Persistence, resolution_attempted filter
+│   ├── auto_evolution_orchestrator.py  # Scan + queue, cua.db failure read
+│   ├── coordinated_autonomy_engine.py  # Full cycle: health → resolve → evolve → improve
+│   ├── credential_store.py      # Fernet encryption, TTL support
+│   ├── circuit_breaker.py       # Thread-safe, CLOSED→OPEN→HALF_OPEN
+│   ├── cua_db.py                # Single WAL-mode SQLite, 21 tables
+│   └── config_manager.py        # Config + startup validator
 │
-├── core/services/
-│   └── credential_service.py    # Per-tool scoped credential access
-│
-├── tools/                  # Tool implementations
+├── tools/                       # Tool implementations
 │   ├── enhanced_filesystem_tool.py
 │   ├── web_access_tool.py
 │   ├── http_tool.py
 │   ├── json_tool.py
 │   ├── shell_tool.py
-│   └── experimental/       # 15 experimental tools
-│       └── MCPAdapterTool.py    # JSON-RPC 2.0 MCP client
+│   └── experimental/            # 15 experimental tools
 │
-├── skills/                 # Skill definitions (7 skills)
-│   ├── web_research/
-│   ├── computer_automation/
-│   ├── code_workspace/
-│   ├── conversation/
-│   ├── browser_automation/
-│   ├── data_operations/
-│   └── knowledge_management/
+├── skills/                      # Skill definitions (7 skills)
 │
 ├── planner/
 │   ├── llm_client.py
-│   └── tool_calling.py     # Native function calling
+│   └── tool_calling.py          # Native function calling, multi-round
 │
-├── updater/                # Self-improvement update pipeline
-│   ├── orchestrator.py     # Full update pipeline
+├── updater/                     # Self-improvement update pipeline
+│   ├── orchestrator.py
 │   ├── risk_scorer.py
 │   ├── sandbox_runner.py
 │   ├── update_gate.py
 │   ├── atomic_applier.py
 │   └── audit_logger.py
 │
-├── ui/src/components/      # React UI (50+ components)
+├── ui/src/components/           # React UI (50+ components)
 │
-└── data/                   # SQLite databases + JSON state
-    ├── strategic_memory.json
-    └── credentials.enc
+└── data/
+    ├── cua.db                   # Single consolidated database (WAL)
+    ├── capability_gaps.json     # Gap tracker state
+    ├── strategic_memory.json    # Strategic memory state
+    ├── credentials.enc          # Encrypted credential store
+    └── pending_*.json           # Pending approval queues
 ```
 
 ---
@@ -537,27 +497,10 @@ CUA/
 
 1. **Chat** — conversational interface, native tool calling, agentic responses
 2. **Tools Mode** — tool creation, capability spec, sandbox testing, approval workflow
-3. **Evolution Mode** — tool selection, evolution workflow, pending approvals, capability gaps, auto-evolution panel, pending services
-4. **Tools Management** — health dashboard, search/filter, LLM analysis, code viewer
-5. **Observability** — full-page database viewer, paginated data, row details, filters
-
----
-
-## Safety Features
-
-- Sandbox testing for all generated code
-- Human approval gates for evolution, creation, and risky updates
-- Risk scoring (files changed + diff size) before any self-modification
-- Protected files blocked from modification (immutable_brain_stem)
-- AST + architectural validation (20 gates)
-- Circuit breaker per tool (failure protection) with reputation scoring
-- Rollback support (backups before changes)
-- Service pattern enforcement (`self.services.X` only)
-- Idempotency checking (no duplicate changes)
-- Input size limit (10MB max on /chat)
-- Correlation context on all requests
-- Fernet-encrypted credential store (per-tool access scoping)
-- MCP server connections validated before capability registration
+3. **Evolution Mode** — tool selection, evolution workflow, pending approvals, capability gaps, auto-evolution, pending services
+4. **Autonomy Mode** — Agent Cockpit: live cycle pipeline, thought stream (WS), gap kanban, cycle history, start/stop/run-cycle controls, pending approvals banner, evolution queue strip
+5. **Tools Management** — health dashboard, search/filter, LLM analysis, code viewer
+6. **Observability** — full-page database viewer, paginated data, row details, column filters
 
 ---
 
@@ -569,10 +512,11 @@ CUA/
 - `CORS_ALLOW_ORIGINS` — Allowed origins (default: http://localhost:3000)
 - `REACT_APP_API_URL` — Frontend → backend URL
 - `REACT_APP_WS_URL` — Frontend WebSocket URL
+- `CUA_RELOAD_MODE` — Set to `1` to disable coordinated autonomy (use with uvicorn --reload)
 
 **Config Files:**
-- `config.yaml` — System configuration (includes `mcp_servers` list)
-- `config/model_capabilities.json` — Model routing config: `strategy`, `max_lines`, `min_confidence` per model pattern
+- `config.yaml` — System config: MCP servers, capability_resolver catalogues, improvement settings
+- `config/model_capabilities.json` — Per-model: strategy, max_lines, min_confidence
 - `requirements.txt` — Python dependencies
 - `ui/package.json` — Frontend dependencies
 
@@ -584,9 +528,8 @@ CUA/
 pytest -q
 ```
 
-On Windows, `tmpdir` and `cacheprovider` are disabled in `pytest.ini`. A local `tmp_path` fixture is provided in `tests/conftest.py`.
+On Windows, `tmpdir` and `cacheprovider` are disabled in `pytest.ini`. A local `tmp_path` fixture is in `tests/conftest.py`.
 
-Test structure:
 - `tests/unit/` — unit tests per component
 - `tests/integration/` — full pipeline tests
 - `tests/smoke/` — boot + approval flow
@@ -596,35 +539,98 @@ Test structure:
 
 ## Reliability Notes
 
-- SQLite databases are best-effort — if locked/readonly, system logs a warning and continues
-- Tool creation is registry-aware — existing tool names return "already exists" and redirect to evolution
-- Service calls are validated — only allowed `self.services.*` APIs pass validation
-- Scaffold-first fallback — if full generation fails, a safe scaffold is created and queued for evolution
-- Auto-evolution config keys: `enable_enhancements`, `max_new_tools_per_scan`
-- Parallel execution is thread-safe — `_execute_step` reads shared state but never mutates it mid-wave
-- Credential store falls back to base64 obfuscation if `cryptography` package is not installed
+- `cua.db` is the single source of truth — WAL mode, module-level write lock, best-effort (logs warning and continues on lock)
+- Tool creation is registry-aware — existing names redirect to evolution
+- Service calls validated — only `self.services.*` APIs pass the 20-gate validator
+- Scaffold-first fallback — if full generation fails, a safe scaffold is queued for evolution
+- Parallel execution is thread-safe — `_execute_step` reads shared state, never mutates mid-wave
+- Credential store falls back to base64 obfuscation if `cryptography` is not installed
+- Coordinated autonomy is blocked in reload mode (`CUA_RELOAD_MODE=1`) to prevent concurrent cycle conflicts
+
+---
+
+## Security Model
+
+**Shell access** — `ShellTool` enforces a command allowlist. Generated tool code cannot bypass this:
+- `subprocess.*`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*` → blocked by AST validator
+- `eval`, `exec`, `compile`, `__import__` → blocked by AST validator
+- `import subprocess` / `from subprocess import *` → blocked at import statement level
+- `import pty`, `import pexpect`, `import fabric`, `import paramiko` → blocked at import level
+- All shell access in tool code must use `self.services.shell.execute(command)` which routes through the allowlist
+
+**Human approval gates** — no generated code runs without explicit approval:
+- Tool creation → `pending_tools` queue → human approves → registered
+- Tool evolution → `pending_evolutions` queue → human approves → applied
+- Self-improvement patches → `UpdateGate` → PENDING → human approves → `AtomicApplier`
+
+**Sandbox isolation** — all generated code is executed in an isolated sandbox before queuing for approval.
+
+**Protected files** — `immutable_brain_stem` blocks modification of core system files regardless of what the LLM proposes.
+
+**Input limits** — `/chat` enforces a 50KB max payload. Correlation IDs on all requests for audit tracing.
+
+**Credential isolation** — Fernet-encrypted store with per-tool access scoping. A tool can only read credentials it was explicitly granted access to.
+
+---
+
+## Failure Handling Model
+
+```
+Tool execution fails
+    ↓
+CircuitBreaker records failure (CLOSED → OPEN after threshold)
+    ↓
+ToolOrchestrator fallback: retry with next-best tool by reputation score
+    ↓
+ExecutionEngine: step marked failed, replan triggered
+    ↓
+TaskPlanner replan: completed step outputs passed forward, failed step retried with context
+    ↓
+If gap detected: GapDetector → GapTracker (≥3 occurrences, conf ≥0.7)
+    ↓
+Next autonomy cycle: CapabilityResolver → reroute/MCP/API/create_tool
+```
+
+**Per-tool circuit breaker states:** `CLOSED` (normal) → `OPEN` (failing, skip tool) → `HALF_OPEN` (probe recovery)
+
+**Evolution failures** — if code generation fails all 3 retries, a safe scaffold is queued instead. The original tool is never modified until human approval.
+
+---
+
+## Autonomy Guarantees
+
+| Guarantee | Mechanism |
+|-----------|----------|
+| No infinite tool creation | `max_new_tools_per_scan=1` + registry coverage check before CREATE |
+| No duplicate gaps | `resolved_gaps` table + `resolution_attempted` filter in `GapTracker` |
+| No runaway evolution | `enable_enhancements=False` — only WEAK/NEEDS_IMPROVEMENT tools queued |
+| No low-usage tool churn | `min_usage=5` — tools with <5 executions never analyzed |
+| No false-positive gaps | ≥2 keyword hits + ≥3 occurrences + confidence ≥0.7 required |
+| No unapproved code runs | Every create/evolve/improve goes through human approval gate |
+| No permanent pause on idle | `pause_on_low_value=False` — idle cycles (nothing to improve) are normal |
+| Bounded improvement passes | `improvement_iterations_per_cycle=3` hard cap per cycle |
+| Bounded evolution per cycle | `max_evolutions_per_cycle=2` hard cap per cycle |
 
 ---
 
 ## Contributing
 
-When adding features:
-1. Pass SkillExecutionContext where execution happens
+1. Pass `SkillExecutionContext` where execution happens
 2. Track steps: `execution_context.add_step()`
 3. Track errors: `execution_context.add_error()`
 4. New services → add to `core/tool_services.py` + `AVAILABLE_SERVICES` in `core/dependency_checker.py`
-5. New databases → add schema to `core/database_schema_registry.py`
+5. New DB tables → add schema to `core/cua_db.py` (`_create_all_tables`) + `core/database_schema_registry.py`
 6. New MCP servers → add `MCPServerConfig` entry to `config.yaml` under `mcp_servers`
-7. Parallel-safe tools → ensure no shared mutable state; `_execute_step` is called from threads
+7. Parallel-safe tools → no shared mutable state; `_execute_step` is called from threads
 
 ---
 
 ## Documentation
 
-- `docs/OBSERVABILITY.md` — full observability system guide
-- `docs/AUTO_EVOLUTION_IMPLEMENTATION.md` — auto-evolution guide
 - `docs/ARCHITECTURE.md` — architecture deep-dive
 - `docs/SYSTEM_ARCHITECTURE.md` — system architecture
+- `docs/OBSERVABILITY.md` — observability system guide
+- `docs/AUTO_EVOLUTION_IMPLEMENTATION.md` — auto-evolution guide
 - API reference: http://localhost:8000/docs
 
 ---

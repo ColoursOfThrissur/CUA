@@ -46,7 +46,7 @@ async def broadcast_trace(trace_type: str, message: str, status: str = "in_progr
             "type": trace_type,
             "message": message,
             "status": status,
-            "timestamp": asyncio.get_event_loop().time() if asyncio.get_event_loop() else 0,
+            "timestamp": asyncio.get_running_loop().time(),
             "details": details or {},
         }
     except Exception as e:
@@ -81,26 +81,22 @@ async def broadcast_trace(trace_type: str, message: str, status: str = "in_progr
 
 
 def broadcast_trace_sync(trace_type: str, message: str, status: str = "in_progress", details: dict | None = None):
-    """Synchronous wrapper for broadcast_trace - safe for calling from sync code."""
+    """Synchronous wrapper for broadcast_trace - safe for calling from sync or async code."""
     if not active_connections:
         return
-    
-    import threading
-    
-    def _broadcast():
-        try:
-            # Try to get existing event loop
+    try:
+        loop = asyncio.get_running_loop()
+        # Already in async context — schedule without blocking
+        loop.create_task(broadcast_trace(trace_type, message, status, details))
+    except RuntimeError:
+        # No running loop — run in a new one (sync caller from thread)
+        import threading
+        def _run():
+            new_loop = asyncio.new_event_loop()
             try:
-                loop = asyncio.get_running_loop()
-                # If we're here, we're in an async context - schedule the coroutine
-                asyncio.create_task(broadcast_trace(trace_type, message, status, details))
-            except RuntimeError:
-                # No running loop in this thread, create one
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(broadcast_trace(trace_type, message, status, details))
-                finally:
-                    loop.close()
-        except Exception as e:
-            logger.warning(f"broadcast_trace_sync error: {e}")
+                new_loop.run_until_complete(broadcast_trace(trace_type, message, status, details))
+            except Exception as e:
+                logger.warning(f"broadcast_trace_sync error: {e}")
+            finally:
+                new_loop.close()
+        threading.Thread(target=_run, daemon=True).start()

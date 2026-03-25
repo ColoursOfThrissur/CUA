@@ -279,29 +279,78 @@ class ToolCreationOrchestrator:
         
         creation_logger.log_artifact(creation_id, "code", "code_generation", filled_code)
         
-        # Step 5: Validate generated code
+        # Step 5: Check and resolve dependencies BEFORE validation
+        # (avoids running 20 AST gates on code with unresolved imports)
+        from core.dependency_checker import DependencyChecker
+        from core.dependency_resolver import DependencyResolver
+
+        dep_checker = DependencyChecker()
+        dep_report = dep_checker.check_code(filled_code)
+
+        if dep_report.has_missing():
+            logger.info(f"Found missing dependencies: libs={dep_report.missing_libraries}, services={dep_report.missing_services}")
+            creation_logger.log_artifact(creation_id, "dependencies", "dependency_check", {
+                "missing_libraries": dep_report.missing_libraries,
+                "missing_services": dep_report.missing_services,
+                "pending_services": dep_report.pending_services
+            })
+
+            dep_resolver = DependencyResolver(llm_client=llm_client)
+
+            for lib in dep_report.missing_libraries:
+                logger.info(f"Installing library: {lib}")
+                success, msg = dep_resolver.install_library(lib)
+                if success:
+                    logger.info(f"Installed {lib}: {msg}")
+                else:
+                    logger.warning(f"Failed to install {lib}: {msg}")
+                    creation_logger.update_creation(
+                        creation_id, tool_name=tool_name, status="failed",
+                        step="dependency_resolution",
+                        error_message=f"Failed to install required library: {lib} - {msg}",
+                    )
+                    return False, f"Missing required library: {lib}. Installation failed: {msg}"
+
+            if dep_report.missing_services or dep_report.pending_services:
+                try:
+                    from core.service_generation_integration import ServiceGenerationIntegration
+                    svc_integration = ServiceGenerationIntegration()
+                    svc_result = svc_integration.validate_and_generate_services(
+                        filled_code, class_name=None, context=gap_description,
+                        requested_by="tool_creation",
+                    )
+                    creation_logger.log_artifact(creation_id, "pending_services", "dependency_check", svc_result)
+                    if svc_result.get("pending_approval"):
+                        creation_logger.update_creation(
+                            creation_id, tool_name=tool_name, status="blocked",
+                            step="services_pending", error_message=svc_result.get("error"),
+                            code_size=len(filled_code),
+                        )
+                        return False, f"Tool requires new/updated services; generated pending service proposals for approval. {svc_result.get('error')}"
+                except Exception as e:
+                    creation_logger.log_artifact(creation_id, "service_generation_error", "dependency_check", {"error": str(e)})
+                    return False, f"Tool requires missing services but service generation failed: {e}"
+
+        # Step 6: Validate generated code (after deps resolved — avoids false AST failures)
         from core.tool_creation.validator import ToolValidator
         validator = ToolValidator()
         broadcast_trace_sync("creation", f"Validating {tool_name}", "in_progress", {"stage": "validation", "tool_name": tool_name})
-        
-        # Get skill definition for service validation
+
         skill_definition = None
         if skill_context and self.skill_registry:
             skill_name = skill_context.get("target_skill") or skill_context.get("skill_name")
             if skill_name:
                 skill_definition = self.skill_registry.get(skill_name)
-        
+
         is_valid, validation_error = validator.validate(filled_code, tool_spec, skill_definition)
-        
-        # Validate skill alignment if skill_context provided
+
         if is_valid and skill_context:
             skill_validation_error = self._validate_skill_alignment(tool_spec, skill_context)
             if skill_validation_error:
                 is_valid = False
                 validation_error = skill_validation_error
-        
+
         if not is_valid:
-            # If validation failed due to missing services, generate them into the pending-services queue.
             try:
                 missing_services = validator.enhanced_validator.get_missing_services()
             except Exception:
@@ -312,19 +361,14 @@ class ToolCreationOrchestrator:
                     from core.service_generation_integration import ServiceGenerationIntegration
                     svc_integration = ServiceGenerationIntegration()
                     svc_result = svc_integration.validate_and_generate_services(
-                        filled_code,
-                        class_name=None,
-                        context=gap_description,
+                        filled_code, class_name=None, context=gap_description,
                         requested_by="tool_creation",
                     )
                     creation_logger.log_artifact(creation_id, "pending_services", "validation", svc_result)
                     if svc_result.get("pending_approval"):
                         creation_logger.update_creation(
-                            creation_id,
-                            tool_name=tool_name,
-                            status="blocked",
-                            step="services_pending",
-                            error_message=svc_result.get("error"),
+                            creation_id, tool_name=tool_name, status="blocked",
+                            step="services_pending", error_message=svc_result.get("error"),
                             code_size=len(filled_code),
                         )
                         return False, f"Missing services detected; generated pending service proposals for approval. {svc_result.get('error')}"
@@ -332,76 +376,12 @@ class ToolCreationOrchestrator:
                     creation_logger.log_artifact(creation_id, "service_generation_error", "validation", {"error": str(e)})
 
             creation_logger.update_creation(
-                creation_id,
-                tool_name=tool_name,
-                status="failed",
-                step="validation",
-                error_message=f"Validation failed: {validation_error}",
-                code_size=len(filled_code),
+                creation_id, tool_name=tool_name, status="failed", step="validation",
+                error_message=f"Validation failed: {validation_error}", code_size=len(filled_code),
             )
-            broadcast_trace_sync("creation", f"Validation failed for {tool_name}: {validation_error}", "error", {"stage": "validation", "tool_name": tool_name})
+            broadcast_trace_sync("creation", f"Validation failed for {tool_name}: {validation_error}", "error",
+                                 {"stage": "validation", "tool_name": tool_name})
             return False, f"Generated tool code invalid: {validation_error}"
-        
-        # Step 5.5: Check and resolve dependencies
-        from core.dependency_checker import DependencyChecker
-        from core.dependency_resolver import DependencyResolver
-        
-        dep_checker = DependencyChecker()
-        dep_report = dep_checker.check_code(filled_code)
-        
-        if dep_report.has_missing():
-            logger.info(f"Found missing dependencies: libs={dep_report.missing_libraries}, services={dep_report.missing_services}")
-            creation_logger.log_artifact(creation_id, "dependencies", "dependency_check", {
-                "missing_libraries": dep_report.missing_libraries,
-                "missing_services": dep_report.missing_services,
-                "pending_services": dep_report.pending_services
-            })
-            
-            # Try to resolve
-            dep_resolver = DependencyResolver(llm_client=llm_client)
-            
-            # Install missing libraries
-            for lib in dep_report.missing_libraries:
-                logger.info(f"Installing library: {lib}")
-                success, msg = dep_resolver.install_library(lib)
-                if success:
-                    logger.info(f"Installed {lib}: {msg}")
-                else:
-                    logger.warning(f"Failed to install {lib}: {msg}")
-                    creation_logger.update_creation(
-                        creation_id,
-                        tool_name=tool_name,
-                        status="failed",
-                        step="dependency_resolution",
-                        error_message=f"Failed to install required library: {lib} - {msg}",
-                    )
-                    return False, f"Missing required library: {lib}. Installation failed: {msg}"
-            
-            # Services: generate pending proposals and block until approved.
-            if dep_report.missing_services or dep_report.pending_services:
-                try:
-                    from core.service_generation_integration import ServiceGenerationIntegration
-                    svc_integration = ServiceGenerationIntegration()
-                    svc_result = svc_integration.validate_and_generate_services(
-                        filled_code,
-                        class_name=None,
-                        context=gap_description,
-                        requested_by="tool_creation",
-                    )
-                    creation_logger.log_artifact(creation_id, "pending_services", "dependency_check", svc_result)
-                    if svc_result.get("pending_approval"):
-                        creation_logger.update_creation(
-                            creation_id,
-                            tool_name=tool_name,
-                            status="blocked",
-                            step="services_pending",
-                            error_message=svc_result.get("error"),
-                            code_size=len(filled_code),
-                        )
-                        return False, f"Tool requires new/updated services; generated pending service proposals for approval. {svc_result.get('error')}"
-                except Exception as e:
-                    creation_logger.log_artifact(creation_id, "service_generation_error", "dependency_check", {"error": str(e)})
-                    return False, f"Tool requires missing services but service generation failed: {e}"
         
         # Step 6: Create in experimental namespace
         success, msg = self.expansion_mode.create_experimental_tool(
@@ -420,45 +400,42 @@ class ToolCreationOrchestrator:
         # Step 7: Run sandbox validation (with retry on failure)
         from core.tool_creation.sandbox_runner import SandboxRunner
         sandbox_runner = SandboxRunner(self.expansion_mode)
-        
-        max_retries = 5  # Increased from 2 to 5
+
+        last_validation_error = validation_error if not is_valid else None
+
+        max_retries = 5
         for attempt in range(max_retries):
             sandbox_passed = sandbox_runner.run_sandbox(tool_spec['name'], creation_id=creation_id)
             if sandbox_passed:
                 break
-            
-            if attempt < max_retries - 1:  # Not last attempt - try to fix
+
+            if attempt < max_retries - 1:
                 logger.info(f"Sandbox failed (attempt {attempt+1}/{max_retries}), regenerating with error feedback")
-                
-                # Get sandbox error and validation error
+
                 error_msg = creation_logger.get_last_error(creation_id, "sandbox") or "Sandbox validation failed"
-                
-                # Build correction prompt with specific fixes
+
                 correction_prompt = self._build_correction_prompt(
                     tool_spec,
                     filled_code,
                     error_msg,
-                    validation_error if not is_valid else None
+                    last_validation_error,
                 )
-                
-                # Regenerate with corrections
+
                 tool_spec['_correction_prompt'] = correction_prompt
                 tool_spec['_retry_attempt'] = attempt + 1
-                
+
                 try:
-                    # Use slightly higher temperature for retries to explore alternatives
                     filled_code = generator.generate(None, tool_spec)
                     if filled_code:
-                        is_valid, validation_error = validator.validate(filled_code, tool_spec)
-                        if is_valid:
-                            # Update file with fixed code
+                        retry_valid, retry_error = validator.validate(filled_code, tool_spec)
+                        last_validation_error = retry_error if not retry_valid else None
+                        if retry_valid:
                             self.expansion_mode.create_experimental_tool(
                                 tool_spec['name'], filled_code, tool_spec
                             )
                             creation_logger.log_artifact(creation_id, f"code_retry_{attempt+1}", "sandbox_retry", filled_code)
                         else:
-                            # Log validation failure for next retry
-                            creation_logger.log_artifact(creation_id, f"validation_error_{attempt+1}", "validation", validation_error)
+                            creation_logger.log_artifact(creation_id, f"validation_error_{attempt+1}", "validation", retry_error)
                 except Exception as e:
                     logger.warning(f"Retry generation failed: {e}")
         

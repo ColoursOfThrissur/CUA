@@ -93,14 +93,13 @@ async def stop_orchestrator():
 async def get_status():
     """Get orchestrator status"""
     global orchestrator, trigger_manager
-    
-    if not orchestrator:
+    # Prefer the coordinated engine's inner orchestrator when available
+    active_orch = coordinated_engine.auto_orchestrator if coordinated_engine else orchestrator
+    if not active_orch:
         return {"running": False, "message": "Orchestrator not initialized"}
-    
-    status = orchestrator.get_status()
+    status = active_orch.get_status()
     if trigger_manager:
         status["triggers"] = trigger_manager.get_status()
-        
     return status
 
 @router.post("/config")
@@ -120,47 +119,40 @@ async def update_config(config: ConfigUpdate):
 async def get_queue():
     """Get current evolution queue"""
     global orchestrator
-    
-    if not orchestrator:
-        return {
-            "queue": [],
-            "in_progress": [],
-            "running": False,
-            "message": "Orchestrator not initialized",
-        }
-    
-    # Manually add priority_score to each queue item
+    # Prefer the coordinated engine's inner orchestrator when available
+    active_orch = coordinated_engine.auto_orchestrator if coordinated_engine else orchestrator
+    if not active_orch:
+        return {"queue": [], "in_progress": [], "running": False, "message": "Orchestrator not initialized"}
     queue_with_priority = []
-    for e in orchestrator.queue.queue:
+    for e in active_orch.queue.queue:
         item = asdict(e)
-        item['priority_score'] = e.priority_score  # Add computed property
+        item['priority_score'] = e.priority_score
         queue_with_priority.append(item)
-        
-    return {
-        "queue": queue_with_priority,
-        "in_progress": orchestrator.queue.in_progress
-    }
+    return {"queue": queue_with_priority, "in_progress": active_orch.queue.in_progress}
 
 @router.post("/trigger-scan")
 async def trigger_scan():
     """Manually trigger tool health scan"""
     global orchestrator
-    
     try:
+        # Always prefer the coordinated engine's orchestrator so the queue is shared
+        if coordinated_engine:
+            active_orch = coordinated_engine.auto_orchestrator
+            await active_orch.ensure_initialized()
+            active_orch.queue.clear_queue()
+            await active_orch._scan_and_queue()
+            return {"success": True, "message": "Scan completed", "queue_size": len(active_orch.queue.queue)}
+        # Fallback: standalone orchestrator
         if not orchestrator:
             from api.server import llm_client, registry
             orchestrator = AutoEvolutionOrchestrator(llm_client, registry)
-        
         await orchestrator.ensure_initialized()
-        # Clear queue before scanning
         orchestrator.queue.clear_queue()
-        
         await orchestrator._scan_and_queue()
         return {"success": True, "message": "Scan completed", "queue_size": len(orchestrator.queue.queue)}
     except Exception as e:
         import traceback
-        error_detail = traceback.format_exc()
-        raise HTTPException(500, f"Scan failed: {str(e)}\n{error_detail}")
+        raise HTTPException(500, f"Scan failed: {str(e)}\n{traceback.format_exc()}")
 
 
 @router.post("/triggers/enable")

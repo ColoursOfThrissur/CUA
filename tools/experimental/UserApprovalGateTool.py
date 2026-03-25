@@ -68,33 +68,33 @@ class UserApprovalGateTool(BaseTool):
         return self.execute_capability(operation, **kwargs)
 
     def _handle_request_approval(self, **kwargs):
-        action_description = (kwargs.get("action_description") or "").strip()
-        user_id = (kwargs.get("user_id") or "").strip()
+            action_description = (kwargs.get("action_description") or "").strip()
+            user_id = (kwargs.get("user_id") or "").strip()
 
-        if not action_description:
-            return {"success": False, "error": "action_description is required", "data": None}
-        if not user_id:
-            return {"success": False, "error": "user_id is required", "data": None}
+            if not action_description:
+                return {"success": False, "error": "action_description is required", "data": None}
+            if not user_id:
+                return {"success": False, "error": "user_id is required", "data": None}
 
-        approval_id = self.services.ids.generate("approval")
-        now = self.services.time.now_utc_iso()
+            approval_id = self.services.ids.generate("approval")
+            now = self.services.time.now_utc_iso()
 
-        policy_check = self._evaluate_policies(action_description)
+            policy_check = self._evaluate_policies(action_description)
 
-        record = {
-            "record_type": "approval_request",
-            "approval_id": approval_id,
-            "action_description": action_description,
-            "user_id": user_id,
-            "status": "pending",
-            "requested_at_utc": now,
-            "policy_check": policy_check,
-        }
+            record = {
+                "record_type": "approval_request",
+                "approval_id": approval_id,
+                "action_description": action_description,
+                "user_id": user_id,
+                "status": "pending",
+                "requested_at_utc": now,
+                "policy_check": policy_check,
+            }
 
-        saved = self.services.storage.save(approval_id, record)
-        self.services.logging.info("Approval requested", approval_id=approval_id, user_id=user_id)
+            saved = self.services.storage.save(approval_id, record)
+            self.services.logging.info("Approval requested", approval_id=approval_id, user_id=user_id)
 
-        return {"success": True, "data": {"approval_id": approval_id, "request": saved}, "error": None}
+            return {"success": True, "data": {"approval_id": approval_id, "request": record}, "error": None}
 
     def _handle_log_approval(self, **kwargs):
         approval_id = (kwargs.get("approval_id") or "").strip()

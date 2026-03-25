@@ -113,52 +113,59 @@ class WorkflowAutomationTool(BaseTool):
             return {'success': False, 'error': str(e), 'data': None}
 
     def _handle_execute_workflow(self, **kwargs):
-        workflow_name = kwargs.get("workflow_name")
+            workflow_name = kwargs.get("workflow_name")
 
-        if not workflow_name:
-            return {'success': False, 'error': 'Missing required parameter: workflow_name', 'data': None}
+            if not workflow_name:
+                return {'success': False, 'error': 'Missing required parameter: workflow_name', 'data': None}
 
-        try:
-            # Retrieve the workflow definition from storage
-            workflow_definition = self.services.storage.get(workflow_name)
-            if not workflow_definition:
-                return {'success': False, 'error': 'Workflow not found', 'data': None}
+            try:
+                # Retrieve the workflow definition from storage
+                workflow_definition = self.services.storage.get(workflow_name)
+                if not workflow_definition or not isinstance(workflow_definition, dict):
+                    return {'success': False, 'error': 'Invalid workflow definition', 'data': None}
 
-            steps = workflow_definition.get("steps", [])
-            for step in steps:
-                step_name = step.get("step_name")
-                action = step.get("action")
-                parameters = step.get("parameters", {})
+                steps = workflow_definition.get("steps", [])
+                for step in steps:
+                    step_name = step.get("step_name")
+                    action = step.get("action")
+                    parameters = step.get("parameters", {})
 
-                if not step_name or not action:
-                    return {'success': False, 'error': f'Missing required fields in step: {step}', 'data': None}
+                    if not step_name or not action:
+                        return {'success': False, 'error': f'Missing required fields in step: {step}', 'data': None}
 
-                # Execute the step based on the action
-                if action == "http_request":
-                    method = parameters.get("method", "GET")
-                    url = parameters.get("url")
-                    data = parameters.get("data")
+                    # Execute the step based on the action
+                    if action == "http_request":
+                        method = parameters.get("method", "GET").upper()
+                        url = parameters.get("url")
+                        data = parameters.get("data")
 
-                    if not url:
-                        return {'success': False, 'error': f'Missing URL in HTTP request for step: {step_name}', 'data': None}
+                        if not url:
+                            return {'success': False, 'error': f'Missing URL in HTTP request for step: {step_name}', 'data': None}
 
-                    response = self.services.http.request(method=method, url=url, json=data)
-                    if response.status_code != 200:
-                        return {'success': False, 'error': f'HTTP request failed with status code {response.status_code} for step: {step_name}', 'data': None}
-                elif action == "shell_command":
-                    command = parameters.get("command")
-                    if not command:
-                        return {'success': False, 'error': f'Missing command in shell execution for step: {step_name}', 'data': None}
+                        if method == "POST":
+                            response = self.services.http.post(url, data)
+                        else:
+                            response = self.services.http.get(url)
+                        if not response or (isinstance(response, dict) and response.get('error')):
+                            self.services.logging.error(f'HTTP request failed for step: {step_name}')
+                            return {'success': False, 'error': f'HTTP request failed for step: {step_name}', 'data': None}
+                    elif action == "shell_command":
+                        command = parameters.get("command")
+                        if not command:
+                            return {'success': False, 'error': f'Missing command in shell execution for step: {step_name}', 'data': None}
 
-                    result = self.services.shell.execute(command)
-                    if result.returncode != 0:
-                        return {'success': False, 'error': f'Shell command failed with return code {result.returncode} for step: {step_name}', 'data': None}
-                else:
-                    return {'success': False, 'error': f'Unsupported action: {action} for step: {step_name}', 'data': None}
+                        result = self.services.shell.execute(command)
+                        if result.returncode != 0:
+                            self.services.logging.error(f'Shell command failed with return code {result.returncode} for step: {step_name}')
+                            return {'success': False, 'error': f'Shell command failed with return code {result.returncode} for step: {step_name}', 'data': None}
+                    else:
+                        return {'success': False, 'error': f'Unsupported action: {action} for step: {step_name}', 'data': None}
 
-            return {'success': True, 'message': 'Workflow executed successfully', 'data': None}
-        except Exception as e:
-            return {'success': False, 'error': str(e), 'data': None}
+                self.services.logging.info('Workflow executed successfully')
+                return {'success': True, 'message': 'Workflow executed successfully', 'data': None}
+            except Exception as e:
+                self.services.logging.error(f'Exception occurred: {str(e)}')
+                return {'success': False, 'error': str(e), 'data': None}
 
     def _handle_add_approval_gate(self, **kwargs):
         workflow_name = kwargs.get("workflow_name")

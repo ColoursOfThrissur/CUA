@@ -22,25 +22,36 @@ class TaskBreakdownTool(BaseTool):
         self.add_capability(analyze_task_capability, self._handle_analyze_task)
     
     def execute(self, operation: str, **kwargs):
-        if operation == "analyze_task":
-            return self._handle_analyze_task(**kwargs)
-        
-        raise ValueError(f"Unsupported operation: {operation}")
+        return self.execute_capability(operation, **kwargs)
     
     def _handle_analyze_task(self, **kwargs):
-            task_description = kwargs.get('task_description')
-            if not task_description:
-                raise ValueError("task_description is required")
+        task_description = kwargs.get('task_description')
+        if not task_description:
+            return {'success': False, 'error': 'Missing required parameter: task_description'}
+        if len(task_description) > 500:
+            return {'success': False, 'error': 'task_description exceeds 500 character limit'}
 
-            dependencies = kwargs.get('dependencies', [])
-            for dependency in dependencies:
-                self.services.logging.info(f"Processing dependency: {dependency}")
-                # Assuming each dependency can be analyzed similarly
+        dependencies = kwargs.get('dependencies', [])
+        if not isinstance(dependencies, list):
+            dependencies = []
+
+        dep_results = []
+        for dependency in dependencies:
+            try:
+                dep_id = self.services.ids.generate('dep')
                 dep_prompt = f"Analyze dependency: {dependency}"
-                dep_analysis_result = self.services.llm.generate(dep_prompt, 0.3)
-                self.services.storage.save({'dependency': dependency, 'analysis': dep_analysis_result})
+                dep_analysis = self.services.llm.generate(dep_prompt, 0.3)
+                self.services.storage.save(dep_id, {'dependency': dependency, 'analysis': dep_analysis})
+                dep_results.append(dep_analysis)
+            except Exception as e:
+                self.services.logging.error(f"Failed to process dependency '{dependency}': {e}")
 
-            prompt = f"Analyze: {task_description} with dependencies"
+        try:
+            prompt = f"Analyze: {task_description}"
+            if dep_results:
+                prompt += f" with dependencies: {', '.join(dep_results)}"
             analysis_result = self.services.llm.generate(prompt, 0.3)
-
-            return {'analysis': analysis_result}
+            return {'success': True, 'data': {'analysis': analysis_result}}
+        except Exception as e:
+            self.services.logging.error(f"Failed to analyze task: {e}")
+            return {'success': False, 'error': str(e)}

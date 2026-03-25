@@ -31,8 +31,11 @@ class ToolRegistryManager:
         """Sync all tools using LLM to analyze code"""
         results = {"synced": [], "failed": [], "timestamp": datetime.now().isoformat()}
         
-        # Find all tool files
+        # Find all tool files — core tools/ and tools/experimental/
         tool_files = list(self.tools_dir.glob("*_tool.py"))
+        exp_dir = self.tools_dir / "experimental"
+        if exp_dir.exists():
+            tool_files += list(exp_dir.glob("*.py"))
         
         registry = {"tools": {}, "last_sync": results["timestamp"]}
         

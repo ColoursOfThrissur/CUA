@@ -1,57 +1,47 @@
-"""Observability data API - Query endpoints for all databases"""
+"""Observability data API - Query endpoints for the consolidated cua.db"""
 from fastapi import APIRouter, Query
-from typing import Optional, List
-import sqlite3
-from pathlib import Path
-from datetime import datetime, timedelta
-
-from core.sqlite_utils import safe_connect, safe_close
+from typing import Optional
+from core.cua_db import get_conn, DB_PATH
 
 router = APIRouter()
-DATA_DIR = Path(__file__).parent.parent / "data"
+
+# All tables now live in cua.db — db_name in URL paths is ignored (kept for UI compat)
+_ALL_TABLES = [
+    {"db": "cua.db", "table": "logs",                    "label": "System Logs"},
+    {"db": "cua.db", "table": "executions",              "label": "Tool Executions"},
+    {"db": "cua.db", "table": "execution_context",       "label": "Execution Context"},
+    {"db": "cua.db", "table": "evolution_runs",          "label": "Tool Evolution"},
+    {"db": "cua.db", "table": "evolution_artifacts",     "label": "Evolution Artifacts"},
+    {"db": "cua.db", "table": "tool_creations",          "label": "Tool Creation"},
+    {"db": "cua.db", "table": "creation_artifacts",      "label": "Creation Artifacts"},
+    {"db": "cua.db", "table": "conversations",           "label": "Conversations"},
+    {"db": "cua.db", "table": "sessions",                "label": "Sessions"},
+    {"db": "cua.db", "table": "learned_patterns",        "label": "Learned Patterns"},
+    {"db": "cua.db", "table": "improvement_metrics",     "label": "Improvement Metrics"},
+    {"db": "cua.db", "table": "failures",                "label": "Failure Patterns"},
+    {"db": "cua.db", "table": "risk_weights",            "label": "Risk Weights"},
+    {"db": "cua.db", "table": "improvements",            "label": "Improvements"},
+    {"db": "cua.db", "table": "plan_history",            "label": "Plan History"},
+    {"db": "cua.db", "table": "tool_metrics_hourly",     "label": "Tool Metrics (Hourly)"},
+    {"db": "cua.db", "table": "system_metrics_hourly",   "label": "System Metrics (Hourly)"},
+    {"db": "cua.db", "table": "auto_evolution_metrics",  "label": "Auto-Evolution Metrics"},
+]
+
 
 @router.get("/observability/tables")
 async def get_tables():
-    """Get all available tables across databases, dynamically verified against disk."""
-    candidates = [
-        {"db": "logs.db",              "table": "logs",                    "label": "System Logs"},
-        {"db": "tool_executions.db",   "table": "executions",              "label": "Tool Executions"},
-        {"db": "tool_executions.db",   "table": "execution_context",       "label": "Execution Context"},
-        {"db": "tool_evolution.db",    "table": "evolution_runs",          "label": "Tool Evolution"},
-        {"db": "tool_evolution.db",    "table": "evolution_artifacts",     "label": "Evolution Artifacts"},
-        {"db": "tool_creation.db",     "table": "tool_creations",          "label": "Tool Creation"},
-        {"db": "tool_creation.db",     "table": "creation_artifacts",      "label": "Creation Artifacts"},
-        {"db": "conversations.db",     "table": "conversations",           "label": "Conversations"},
-        {"db": "conversations.db",     "table": "sessions",                "label": "Sessions"},
-        {"db": "conversations.db",     "table": "execution_history",       "label": "Execution History"},
-        {"db": "conversations.db",     "table": "learned_patterns",        "label": "Learned Patterns"},
-        {"db": "analytics.db",         "table": "improvement_metrics",     "label": "Improvement Metrics"},
-        {"db": "analytics.db",         "table": "attempt_terminal_states", "label": "Terminal States"},
-        {"db": "failure_patterns.db",  "table": "failures",                "label": "Failure Patterns"},
-        {"db": "failure_patterns.db",  "table": "risk_weights",            "label": "Risk Weights"},
-        {"db": "improvement_memory.db","table": "improvements",            "label": "Improvements"},
-        {"db": "plan_history.db",      "table": "plan_history",            "label": "Plan History"},
-        {"db": "metrics.db",           "table": "tool_metrics_hourly",     "label": "Tool Metrics (Hourly)"},
-        {"db": "metrics.db",           "table": "system_metrics_hourly",   "label": "System Metrics (Hourly)"},
-        {"db": "metrics.db",           "table": "auto_evolution_metrics",  "label": "Auto-Evolution Metrics"},
-    ]
-    # Annotate with row counts and verify existence
-    import sqlite3
+    """Get all available tables with row counts from cua.db."""
     result = []
-    for entry in candidates:
-        db_path = DATA_DIR / entry["db"]
-        if not db_path.exists():
-            continue
+    for entry in _ALL_TABLES:
         try:
-            con = sqlite3.connect(str(db_path))
-            cur = con.cursor()
-            cur.execute(f"SELECT COUNT(*) FROM {entry['table']}")
-            count = cur.fetchone()[0]
-            con.close()
+            with get_conn() as conn:
+                cur = conn.execute(f"SELECT COUNT(*) FROM {entry['table']}")
+                count = cur.fetchone()[0]
             result.append({**entry, "row_count": count})
         except Exception:
             pass
     return {"tables": result}
+
 
 @router.get("/observability/data/{db_name}/{table_name}")
 async def get_table_data(
@@ -63,101 +53,53 @@ async def get_table_data(
     filter_column: Optional[str] = None,
     filter_value: Optional[str] = None
 ):
-    """Get paginated table data with search and filters"""
-    db_path = DATA_DIR / db_name
-    if not db_path.exists():
-        return {"error": "Database not found", "rows": [], "total": 0}
-    
+    """Get paginated table data from cua.db (db_name ignored)."""
     try:
-        conn = safe_connect(str(db_path))
-        if not conn:
-            return {"error": "Database unavailable (locked/readonly)", "rows": [], "total": 0}
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Get columns
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        col_info = cursor.fetchall()
-        columns = [row[1] for row in col_info]
-        has_id = "id" in columns
-        order_col = "id" if has_id else "rowid"
+        with get_conn() as conn:
+            cur = conn.execute(f"PRAGMA table_info({table_name})")
+            columns = [row[1] for row in cur.fetchall()]
+            if not columns:
+                return {"error": "Table not found", "rows": [], "total": 0}
+            order_col = "id" if "id" in columns else "rowid"
 
-        # Build query
-        query = f"SELECT * FROM {table_name} WHERE 1=1"
-        params = []
-        
-        # Search across all text columns
-        if search:
-            search_conditions = []
-            for col in columns:
-                search_conditions.append(f"{col} LIKE ?")
-                params.append(f"%{search}%")
-            query += f" AND ({' OR '.join(search_conditions)})"
-        
-        # Filter by specific column
-        if filter_column and filter_value:
-            query += f" AND {filter_column} = ?"
-            params.append(filter_value)
-        
-        # Get total count
-        count_query = query.replace("SELECT *", "SELECT COUNT(*)")
-        cursor.execute(count_query, params)
-        total = cursor.fetchone()[0]
-        
-        # Get paginated data
-        query += f" ORDER BY {order_col} DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        cursor.execute(query, params)
-        rows = [dict(row) for row in cursor.fetchall()]
-        safe_close(conn)
-        
+            query = f"SELECT * FROM {table_name} WHERE 1=1"
+            params = []
+            if search:
+                conds = [f"{c} LIKE ?" for c in columns]
+                query += f" AND ({' OR '.join(conds)})"
+                params.extend([f"%{search}%"] * len(columns))
+            if filter_column and filter_value:
+                query += f" AND {filter_column} = ?"
+                params.append(filter_value)
+
+            total = conn.execute(query.replace("SELECT *", "SELECT COUNT(*)"), params).fetchone()[0]
+            query += f" ORDER BY {order_col} DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
         return {"rows": rows, "total": total, "columns": columns}
     except Exception as e:
         return {"error": str(e), "rows": [], "total": 0}
 
+
 @router.get("/observability/detail/{db_name}/{table_name}/{row_id}")
 async def get_row_detail(db_name: str, table_name: str, row_id: int):
-    """Get detailed view of a single row"""
-    db_path = DATA_DIR / db_name
-    if not db_path.exists():
-        return {"error": "Database not found"}
-    
+    """Get a single row from cua.db."""
     try:
-        conn = safe_connect(str(db_path))
-        if not conn:
-            return {"error": "Database unavailable (locked/readonly)"}
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute(f"SELECT * FROM {table_name} WHERE rowid = ?", [row_id])
-        row = cursor.fetchone()
-        safe_close(conn)
-        
-        if not row:
-            return {"error": "Row not found"}
-        
-        return {"detail": dict(row)}
+        with get_conn() as conn:
+            row = conn.execute(f"SELECT * FROM {table_name} WHERE rowid = ?", [row_id]).fetchone()
+        return {"detail": dict(row)} if row else {"error": "Row not found"}
     except Exception as e:
         return {"error": str(e)}
 
+
 @router.get("/observability/filters/{db_name}/{table_name}/{column}")
 async def get_filter_values(db_name: str, table_name: str, column: str):
-    """Get unique values for a column (for filter dropdowns)"""
-    db_path = DATA_DIR / db_name
-    if not db_path.exists():
-        return {"values": []}
-    
+    """Get unique values for a column filter dropdown."""
     try:
-        conn = safe_connect(str(db_path))
-        if not conn:
-            return {"error": "Database unavailable (locked/readonly)", "values": []}
-        cursor = conn.cursor()
-        
-        cursor.execute(f"SELECT DISTINCT {column} FROM {table_name} WHERE {column} IS NOT NULL ORDER BY {column}")
-        values = [row[0] for row in cursor.fetchall()]
-        safe_close(conn)
-        
-        return {"values": values[:100]}  # Limit to 100 unique values
+        with get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {column} FROM {table_name} WHERE {column} IS NOT NULL ORDER BY {column} LIMIT 100"
+            ).fetchall()
+        return {"values": [r[0] for r in rows]}
     except Exception as e:
         return {"error": str(e), "values": []}

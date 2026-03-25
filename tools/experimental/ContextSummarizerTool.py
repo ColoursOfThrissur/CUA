@@ -85,6 +85,46 @@ class ContextSummarizerTool(BaseTool):
             dependencies=[]
         )
         self.add_capability(batch_summarize_texts_capability, self._handle_batch_summarize_texts)
+
+        batch_capability = ToolCapability(
+            name="batch",
+            description="Add batch processing support to ContextSummarizerTool",
+            parameters=[
+                Parameter(name='texts', type=ParameterType.STRING, description='texts parameter', required=True)
+            ],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(batch_capability, self._handle_batch)
+
+        highlight_important_phrases_capability = ToolCapability(
+            name="highlight_important_phrases",
+            description="Add a capability to highlight important phrases or quotes from the text content ",
+            parameters=[
+                Parameter(name='input_text', type=ParameterType.STRING, description='input_text parameter', required=True)
+            ],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(highlight_important_phrases_capability, self._handle_highlight_important_phrases)
+
+        translate_text_capability = ToolCapability(
+            name="translate_text",
+            description="Add a capability to translate the summarized text into different languages.",
+            parameters=[
+                Parameter(name='input_text', type=ParameterType.STRING, description='input_text parameter', required=True),
+                Parameter(name='target_language', type=ParameterType.STRING, description='target_language parameter', required=True)
+            ],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(translate_text_capability, self._handle_translate_text)
         self.add_capability(generate_json_output_capability, self._handle_generate_json_output)
 
     def _handle_batch_summarize_texts(self, **kwargs) -> dict:
@@ -102,6 +142,47 @@ class ContextSummarizerTool(BaseTool):
 
         return {'summaries': summaries}
 
+    def _handle_batch(self, **kwargs) -> dict:
+        texts = kwargs.get('texts')
+        if not texts or not isinstance(texts, list):
+            return {'error': 'Missing or invalid parameter: texts'}
+        try:
+            results = []
+            for text in texts:
+                summary = self._handle_summarize_text(input_text=text)
+                results.append({'text': text, 'summary': summary})
+            return {'success': True, 'results': results}
+        except Exception as e:
+            self.services.logging.error(f"Batch processing failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _handle_highlight_important_phrases(self, **kwargs) -> dict:
+        input_text = kwargs.get('input_text')
+        if not input_text:
+            return {'error': 'Missing required parameter: input_text'}
+        try:
+            prompt = f"Extract the most important phrases and quotes from this text, one per line:\n\n{input_text}"
+            result = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
+            phrases = [line.strip() for line in result.splitlines() if line.strip()]
+            context_snippet = input_text[:200] + ('...' if len(input_text) > 200 else '')
+            highlighted = [{'phrase': p, 'context': context_snippet} for p in phrases]
+            return {'success': True, 'highlighted_phrases': highlighted}
+        except Exception as e:
+            self.services.logging.error(f"Operation failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _handle_translate_text(self, **kwargs) -> dict:
+        input_text = kwargs.get('input_text')
+        target_language = kwargs.get('target_language')
+
+        if not input_text or not target_language:
+            return {'error': 'Missing required parameters: input_text and target_language'}
+
+        prompt = f"Translate the following text into {target_language}: {input_text}"
+        translated_text = self.services.llm.generate(prompt)
+
+        return {'success': True, 'data': translated_text}
+
     def execute(self, operation: str, **kwargs) -> ToolResult:
         """Execute tool operation"""
         parameters = kwargs
@@ -115,6 +196,15 @@ class ContextSummarizerTool(BaseTool):
             return self._handle_generate_json_output(**parameters)
         if operation == "batch_summarize_texts":
             return self._handle_batch_summarize_texts(**kwargs)
+
+        if operation == "batch":
+            return self._handle_batch(**kwargs)
+
+        if operation == "highlight_important_phrases":
+            return self._handle_highlight_important_phrases(**kwargs)
+
+        if operation == "translate_text":
+            return self._handle_translate_text(**kwargs)
 
         raise ValueError(f"Unsupported operation: {operation}")
 
@@ -143,16 +233,10 @@ class ContextSummarizerTool(BaseTool):
                 self.services.logging.error(f"Failed to generate summary: {e}")
                 raise RuntimeError(f"Failed to generate summary: {e}")
 
-            detected_language = self.services.detect_language(input_text)
-            sentiment = self.services.sentiment_analysis(input_text)
-            tone = sentiment.get('label', 'neutral') if isinstance(sentiment, dict) else 'neutral'
-
             self._cache[cache_key] = {
-                "summary": summary, 
-                "original_length": len(input_text.split()), 
+                "summary": summary,
+                "original_length": len(input_text.split()),
                 "summary_length": len(summary.split()),
-                "detected_language": detected_language,
-                "tone": tone
             }
             return self._cache[cache_key]
 
@@ -169,10 +253,11 @@ class ContextSummarizerTool(BaseTool):
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
-            detected_language = self.services.detect_language(input_text)
-            result = self.services.extract_key_points(input_text, style='bullet', language=detected_language)
+            prompt = f"List the {num_key_points} most important key points from this text, one per line:\n\n{input_text}"
+            result = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
+            key_points = [line.strip() for line in result.splitlines() if line.strip()][:num_key_points]
 
-            self._cache[cache_key] = {'key_points': result, 'language': detected_language}
+            self._cache[cache_key] = {'key_points': key_points}
             return self._cache[cache_key]
 
     def _handle_sentiment_analysis(self, **kwargs):
@@ -188,7 +273,9 @@ class ContextSummarizerTool(BaseTool):
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
-            result = self.services.sentiment_analysis(input_text, language=language)
+            prompt = f"Analyze the sentiment of this text. Reply with one word: positive, negative, or neutral.\n\n{input_text}"
+            label = self.services.llm.generate(prompt, temperature=0.1, max_tokens=10).strip().lower()
+            result = {'label': label, 'language': language}
             self._cache[cache_key] = result
             return result
 
@@ -198,4 +285,5 @@ class ContextSummarizerTool(BaseTool):
             if missing:
                 raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-            return self.services.generate_json_output(**kwargs)
+            import json as _json
+            return {'json_output': _json.dumps({'summary': kwargs['summary'], 'key_points': kwargs['key_points'], 'sentiment': kwargs['sentiment']}, indent=2)}

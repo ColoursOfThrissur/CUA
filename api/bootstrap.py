@@ -241,18 +241,29 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             if tool:
                 registry.register_tool(tool)
 
-        # Load MCP adapters (non-blocking: skip if unreachable)
+        # Load MCP adapters — stdio transport spawns the process directly, no port check needed
+        from core.mcp_process_manager import get_mcp_process_manager
+        mcp_manager = get_mcp_process_manager()
         for mcp_server in (config.mcp_servers or []):
             if not mcp_server.enabled:
                 continue
             try:
                 from tools.experimental.MCPAdapterTool import MCPAdapterTool
-                adapter = MCPAdapterTool(server_name=mcp_server.name, server_url=mcp_server.url)
+                adapter = MCPAdapterTool(
+                    server_name=mcp_server.name,
+                    transport=getattr(mcp_server, "transport", "stdio"),
+                    command=getattr(mcp_server, "command", ""),
+                    server_url=getattr(mcp_server, "url", ""),
+                    rpc_path=getattr(mcp_server, "rpc_path", "/rpc"),
+                    env_key=getattr(mcp_server, "env_key", ""),
+                )
                 if adapter.is_connected():
                     registry.register_tool(adapter)
+                    mcp_manager.register_adapter(mcp_server.name, adapter)
                     print(f"MCP adapter loaded: {mcp_server.name} ({len(adapter._mcp_tools)} tools)")
                 else:
-                    print(f"Warning: MCP server '{mcp_server.name}' at {mcp_server.url} not reachable — skipped")
+                    err = adapter._init_error or "unknown error"
+                    print(f"MCP server '{mcp_server.name}' not ready: {err}")
             except Exception as e:
                 print(f"Warning: Could not load MCP adapter for '{mcp_server.name}': {e}")
 

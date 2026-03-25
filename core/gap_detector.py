@@ -40,7 +40,52 @@ class GapDetector:
             'excel_processing': ['openpyxl', 'xlrd']
         }
     
-    def detect_gap_from_error(self, error_message: str, task_description: str = "") -> Optional[CapabilityGap]:
+    def analyze_with_llm(self, failed_requests: list, llm_client) -> Optional['CapabilityGap']:
+        """Use LLM to identify capability gaps from failed requests + chat history.
+        Supplements keyword matching with reasoning over patterns keyword matching misses.
+        """
+        if not failed_requests or not llm_client:
+            return None
+
+        samples = failed_requests[-10:]  # last 10 to stay within context
+        lines = []
+        for r in samples:
+            task = (r.get("task") or r.get("description") or "")[:120]
+            error = (r.get("error") or r.get("error_message") or "")[:120]
+            if task:
+                lines.append(f"- task: {task}" + (f" | error: {error}" if error else ""))
+
+        if not lines:
+            return None
+
+        prompt = (
+            "You are analyzing failed agent requests to identify a missing tool capability.\n"
+            "Failed requests:\n" + "\n".join(lines) +
+            "\n\nWhat single capability is most clearly missing? "
+            "Reply with JSON only: {\"capability\": \"name\", \"confidence\": 0.0-1.0, \"reason\": \"one sentence\"}\n"
+            "If no clear gap exists reply: {\"capability\": null}"
+        )
+        try:
+            raw = llm_client._call_llm(prompt, temperature=0.1, max_tokens=120, expect_json=True)
+            import json as _json
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+            capability = (data or {}).get("capability")
+            if not capability:
+                return None
+            confidence = float((data or {}).get("confidence", 0.7))
+            reason = (data or {}).get("reason", "LLM-identified capability gap")
+            return CapabilityGap(
+                capability=capability,
+                confidence=min(confidence, 0.95),
+                reason=reason,
+                domain=self._infer_domain(capability),
+                gap_type="llm_identified",
+                suggested_action="create_tool",
+            )
+        except Exception:
+            return None
+
+    def detect_gap_from_error(self, error_message: str, task_description: str = "") -> Optional['CapabilityGap']:
         """Detect capability gap from error message"""
         error_lower = error_message.lower()
         task_lower = task_description.lower()
@@ -72,10 +117,11 @@ class GapDetector:
         return None
     
     def detect_gap_from_task(self, task_description: str) -> Optional[CapabilityGap]:
-        """Detect capability gap from task description"""
+        """Detect capability gap from task description.
+        Requires at least 2 keyword hits to avoid false positives from single-word matches.
+        """
         task_lower = task_description.lower()
-        
-        # Keyword-based detection
+
         keywords = {
             'web_scraping': ['scrape', 'crawl', 'extract from website', 'parse html'],
             'pdf_processing': ['pdf', 'extract from pdf', 'read pdf'],
@@ -84,21 +130,20 @@ class GapDetector:
             'excel_processing': ['excel', 'xlsx', 'spreadsheet'],
             'data_visualization': ['plot', 'chart', 'graph', 'visualize']
         }
-        
+
         for domain, words in keywords.items():
-            if any(word in task_lower for word in words):
-                if not self.mapper.has_capability(domain):
-                    confidence = 0.6 + (0.1 * sum(1 for w in words if w in task_lower))
-                    confidence = min(confidence, 0.95)
-                    
-                    return CapabilityGap(
-                        capability=domain,
-                        confidence=confidence,
-                        reason=f"Task requires {domain} capability",
-                        suggested_library=self.known_domains.get(domain, [None])[0],
-                        domain=domain
-                    )
-        
+            hits = sum(1 for w in words if w in task_lower)
+            # Require at least 2 keyword hits to avoid single-word false positives
+            if hits >= 2 and not self.mapper.has_capability(domain):
+                confidence = min(0.6 + 0.08 * hits, 0.95)
+                return CapabilityGap(
+                    capability=domain,
+                    confidence=confidence,
+                    reason=f"Task requires {domain} capability ({hits} keyword matches)",
+                    suggested_library=self.known_domains.get(domain, [None])[0],
+                    domain=domain
+                )
+
         return None
     
     def analyze_failed_task(self, task: str, error: str, skill_selection: Optional[Dict] = None) -> Optional[CapabilityGap]:

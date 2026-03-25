@@ -74,8 +74,13 @@ class CredentialStore:
         value: str,
         description: str = "",
         allowed_tools: Optional[List[str]] = None,
+        expires_at: Optional[str] = None,
     ) -> None:
-        """Store or update a credential."""
+        """Store or update a credential.
+
+        expires_at: optional ISO-8601 datetime string (e.g. '2026-12-31T00:00:00').
+        get() returns None and logs a warning once the credential is past this time.
+        """
         if not key or not isinstance(key, str):
             raise ValueError("Credential key must be a non-empty string")
         if not isinstance(value, str):
@@ -84,6 +89,7 @@ class CredentialStore:
             "value": value,
             "description": description or "",
             "allowed_tools": allowed_tools or [],  # empty = unrestricted
+            "expires_at": expires_at or None,
         }
         self._save()
 
@@ -91,12 +97,26 @@ class CredentialStore:
         """
         Retrieve a credential value.
 
-        If the entry has `allowed_tools` set, caller_tool must be in that list.
-        Returns None if key not found or access denied.
+        Returns None if key not found, access denied, or credential is expired.
         """
+        import logging
+        _log = logging.getLogger(__name__)
         entry = self._data.get(key)
         if not entry:
             return None
+        # TTL check
+        expires_at = entry.get("expires_at")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+                exp = datetime.fromisoformat(expires_at)
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > exp:
+                    _log.warning(f"Credential '{key}' expired at {expires_at} — returning None")
+                    return None
+            except Exception:
+                pass
         allowed = entry.get("allowed_tools") or []
         if allowed and caller_tool and caller_tool not in allowed:
             raise PermissionError(
@@ -120,6 +140,7 @@ class CredentialStore:
                 "description": v.get("description", ""),
                 "allowed_tools": v.get("allowed_tools") or [],
                 "has_value": bool(v.get("value")),
+                "expires_at": v.get("expires_at"),
             }
             for k, v in self._data.items()
         ]

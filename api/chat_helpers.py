@@ -154,9 +154,17 @@ def execute_tool_calls(tool_calls: List[Dict], session_id: str, reg, sessions: D
         parameters = call.get("parameters") or call.get("arguments") or {}
         t0 = _time.time()
         try:
-            tool_obj = reg.get_tool(tool_name) if reg and hasattr(reg, 'get_tool') else None
-            if tool_obj is None and reg and hasattr(reg, 'tools'):
-                tool_obj = next((t for t in reg.tools if t.__class__.__name__ == tool_name), None)
+            tool_obj = None
+            if reg:
+                if hasattr(reg, 'get_tool'):
+                    tool_obj = reg.get_tool(tool_name)
+                if tool_obj is None and hasattr(reg, 'tools'):
+                    tool_obj = next(
+                        (t for t in reg.tools
+                         if t.__class__.__name__ == tool_name
+                         or (getattr(t, 'name', None) == tool_name)),
+                        None
+                    )
             if tool_obj is None:
                 raise ValueError(f"Tool not found: {tool_name}")
             orch_result = orchestrator.execute_tool_step(
@@ -364,19 +372,22 @@ def record_capability_gap(message: str, error: str, skill_selection: Dict, llm, 
     try:
         from core.gap_detector import GapDetector
         from core.gap_tracker import GapTracker
+        from core.capability_mapper import CapabilityMapper
 
-        class _Mapper:
-            def has_capability(self, cap):
-                if not reg:
-                    return False
-                try:
-                    return any(cap.lower() in c.name.lower()
-                               for t in reg.tools for c in t.register_capabilities())
-                except Exception:
-                    return False
-
-        gap = GapDetector(_Mapper()).analyze_failed_task(message, error, skill_selection)
+        gap = GapDetector(CapabilityMapper()).analyze_failed_task(message, error, skill_selection)
         if gap and gap.confidence >= 0.6:
+            # Skip if already resolved in cua.db
+            try:
+                from core.cua_db import get_conn as _gc
+                with _gc() as _c:
+                    row = _c.execute(
+                        "SELECT id FROM resolved_gaps WHERE capability=? LIMIT 1",
+                        (gap.capability,)
+                    ).fetchone()
+                if row:
+                    return
+            except Exception:
+                pass
             GapTracker().record_gap(gap)
     except Exception as e:
         print(f"[WARN] Gap recording failed: {e}")
@@ -607,7 +618,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             )
 
                         step_outputs = []
-                        all_step_data = []  # raw outputs for OutputAnalyzer
+                        all_step_data = []
                         screenshot_components = []
                         if final_state and hasattr(final_state, "step_results"):
                             for step_id, step_result in final_state.step_results.items():
@@ -762,6 +773,12 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     tool_selector = ContextAwareToolSelector(reg, circuit_breaker, skill_reg)
                     execution_context = tool_selector.select_tools(execution_context)
                     allowed_tools = list(execution_context.available_tools.keys()) if execution_context.available_tools else None
+                    # Always include connected MCP adapter tools regardless of skill filter
+                    if reg:
+                        mcp_tools = [t.__class__.__name__ for t in reg.tools
+                                     if t.__class__.__name__.startswith("MCPAdapterTool") and t.is_connected()]
+                        if mcp_tools:
+                            allowed_tools = list(set(allowed_tools or []) | set(mcp_tools))
                     print(f"[DEBUG] Skill tool filter: {skill_selection['skill_name']} -> {allowed_tools}")
 
             conversation_history = sessions[session_id]["messages"][-5:]

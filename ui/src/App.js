@@ -586,6 +586,7 @@ function AppContent() {
       'auto-evolution': 'Auto-Evolution',
       sessions: 'Session Management',
       history: 'Evolution History',
+      autonomy: 'Autonomy Mode',
     };
     return titles[overlayOpen] || '';
   };

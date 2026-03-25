@@ -214,7 +214,8 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
   const modes = [
     { id: 'chat', label: 'CUA', icon: MessageSquare },
     { id: 'tools', label: 'Tools', icon: Wrench },
-    { id: 'evolution', label: 'Evolution', icon: Zap }
+    { id: 'evolution', label: 'Evolution', icon: Zap },
+    { id: 'autonomy', label: 'Autonomy', icon: Bot }
   ];
 
   useEffect(() => {

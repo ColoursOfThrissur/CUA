@@ -158,7 +158,7 @@ class DatabaseQueryTool(BaseTool):
             db_paths = [self.data_dir / "logs.db"]
             if not any(db_path.exists() for db_path in db_paths):
                 self.services.logging.error("Database not found")
-                return {"logs": [], "count": 0, "error": "Database not found"}
+                return {"success": False, "error": "Database not found"}
 
             level = kwargs.get('level')
             hours_ago = kwargs.get('hours_ago', 24)
@@ -194,13 +194,16 @@ class DatabaseQueryTool(BaseTool):
                 except Exception as e:
                     self.services.logging.error(f"Error executing query on {db_path}: {str(e)}")
 
+            if not isinstance(results, list):
+                return {"success": False, "error": "Invalid query results"}
+
             self.services.logging.info("Query executed successfully")
-            return {"logs": results, "count": len(results)}
+            return {"success": True, "data": results}
 
     def _handle_analyze_tool_performance(self, **kwargs):
             db_paths = [self.data_dir / "tool_executions.db"]
             if not any(db_path.exists() for db_path in db_paths):
-                return {"performance": [], "count": 0, "error": "Database not found"}
+                return {"success": False, "error": "Database not found"}
 
             tool_name = kwargs.get('tool_name')
             hours_ago = kwargs.get('hours_ago') or 24
@@ -253,14 +256,16 @@ class DatabaseQueryTool(BaseTool):
                 except Exception as e:
                     self.services.logging.error(f"Error analyzing tool performance in {db_path}: {str(e)}")
 
-            self.services.logging.info(f"Analyzed tool performance for {tool_name} with {len(results)} tools.")
-            return {"performance": results, "count": len(results)}
+            if not results:
+                return {"success": False, "error": "No data found"}
+
+            return {"success": True, "data": results}
 
     def _handle_find_failure_patterns(self, **kwargs):
             db_paths = [self.data_dir / "tool_executions.db"]
             if not any(db_path.exists() for db_path in db_paths):
                 self.services.logging.error("Database not found")
-                return {"failures": [], "count": 0, "error": "Database not found"}
+                return {"success": False, "error": "Database not found"}
 
             tool_name = kwargs.get('tool_name')
             hours_ago = kwargs.get('hours_ago', 24)
@@ -290,14 +295,17 @@ class DatabaseQueryTool(BaseTool):
                 except Exception as e:
                     self.services.logging.error(f"Error fetching failures from {db_path}: {str(e)}")
 
+            if not failures:
+                return {"success": False, "error": "No failures found"}
+
             self.services.logging.info(f"Found {len(failures)} failures")
-            return {"failures": failures, "count": len(failures)}
+            return {"success": True, "data": failures}
 
     def _handle_get_evolution_history(self, **kwargs):
             db_paths = [self.data_dir / "tool_evolution.db"]
             if not any(db_path.exists() for db_path in db_paths):
                 self.services.logging.warning("Database not found")
-                return {"evolutions": [], "count": 0, "error": "Database not found"}
+                return {"success": False, "error": "Database not found"}
 
             tool_name = kwargs.get('tool_name')
             status = kwargs.get('status')
@@ -333,10 +341,19 @@ class DatabaseQueryTool(BaseTool):
                     conn.close()
 
                 self.services.logging.info(f"Retrieved {len(evolutions)} evolution records")
-                return {"evolutions": evolutions, "count": len(evolutions)}
+
+                # Validate the results
+                if not isinstance(evolutions, list):
+                    return {"success": False, "error": "Invalid data format"}
+
+                for record in evolutions:
+                    if not isinstance(record, dict) or 'timestamp' not in record or 'tool_name' not in record or 'status' not in record:
+                        return {"success": False, "error": "Invalid evolution record format"}
+
+                return {"success": True, "data": evolutions}
             except Exception as e:
                 self.services.logging.error(f"Error retrieving evolution history: {str(e)}")
-                return {"evolutions": [], "count": 0, "error": str(e)}
+                return {"success": False, "error": str(e)}
 
     def _handle_export_to_json(self, **kwargs):
             if 'data' not in kwargs or 'filename' not in kwargs:
@@ -351,93 +368,51 @@ class DatabaseQueryTool(BaseTool):
             output_path = self.data_dir / filename
 
             try:
-                json_str = self.services.json.stringify(data, indent=2)
+                json_str = self.services.json.stringify(data)
                 self.services.fs.write(output_path, json_str, encoding='utf-8')
                 self.services.logging.info(f"Exported JSON to {output_path}")
-                return {"status": "exported", "path": str(output_path), "size": len(json_str)}
+
+                # Validate export result
+                parsed_data = self.services.json.parse(json_str)
+                if parsed_data != data:
+                    return {'success': False, 'error': 'Validation failed'}
+
+                return {'success': True, 'data': f"Exported to {output_path}"}
             except Exception as e:
                 self.services.logging.error(f"Failed to export JSON: {str(e)}")
-                return {"status": "failed", "error": str(e)}
+                return {'success': False, 'error': str(e)}
 
     def _handle_get_database_schema(self, **kwargs):
-            database_names = kwargs.get('database_name', [])
-            if isinstance(database_names, str):
-                database_names = [database_names]
-
-            results = []
-            for db_name in database_names:
-                try:
-                    schema_text = self.get_schema(db_name)
-                    if not schema_text or "Database:" not in schema_text:
-                        self.services.logging.warning(f"Schema not found for {db_name}")
-                        results.append({"error": f"Schema not found for {db_name}", "available": list(self.schema_registry.keys())})
-                    else:
-                        self.services.logging.info(f"Schema retrieved for {db_name}")
-                        results.append({"schema": schema_text, "database": db_name})
-                except Exception as e:
-                    self.services.logging.error(f"Error handling get_database_schema for {db_name}: {e}")
-                    results.append({"error": str(e)})
-
-            if not database_names:
+            database_name = kwargs.get('database_name')
+            if not database_name:
                 self.services.logging.warning("No database name provided")
-                return {"schema": self.get_schema(), "databases": list(self.schema_registry.keys())}
+                return {'success': False, 'error': 'Database name is required'}
 
-            return {"results": results}
+            try:
+                schema_text = self.get_schema(database_name)
+                if not schema_text or "Database:" not in schema_text:
+                    self.services.logging.warning(f"Schema not found for {database_name}")
+                    return {'success': False, 'error': f"Schema not found for {database_name}"}
+            except Exception as e:
+                self.services.logging.error(f"Error handling get_database_schema for {database_name}: {e}")
+                return {'success': False, 'error': str(e)}
+
+            return {'success': True, 'data': schema_text}
 
     def _handle_validate_schema(self, **kwargs):
-            database_names = kwargs.get('database_names', [kwargs.get('database_name')])
-            if not database_names:
-                raise ValueError("At least one database_name required")
+            schema_data = kwargs.get('schema')
+            if not schema_data:
+                return {'success': False, 'error': 'Schema data is required'}
 
-            results = []
-            for db_name in database_names:
-                db_path = self.data_dir / db_name
-                if not db_path.exists():
-                    self.services.logging.warning(f"Database {db_name} not found at {db_path}")
-                    results.append({"database": db_name, "error": f"Database {db_name} not found", "path": str(db_path)})
-                    continue
+            # Example validation: Check if the schema contains a specific key
+            if 'required_key' not in schema_data:
+                return {'success': False, 'error': 'Missing required key in schema'}
 
-                registry_schema = self.schema_registry.get(db_name)
-                if not registry_schema:
-                    self.services.logging.warning(f"No registry entry for {db_name}")
-                    results.append({"database": db_name, "error": f"No registry entry for {db_name}"})
-                    continue
+            # Add more complex validation logic as needed
 
-                try:
-                    conn = sqlite3.connect(str(db_path))
-                    cursor = conn.cursor()
+            validation_result = {
+                'schema_valid': True,
+                'message': 'Schema is valid'
+            }
 
-                    mismatches = []
-                    for table_name, table_info in registry_schema['tables'].items():
-                        cursor.execute("SELECT name FROM sqlite_master WHERE type=? AND name=?", ('table', table_name))
-                        if not cursor.fetchone():
-                            mismatches.append({"type": "missing_table", "table": table_name})
-                            continue
-
-                        cursor.execute(f"PRAGMA table_info({table_name})")
-                        actual_cols = {row[1]: row[2] for row in cursor.fetchall()}
-                        registry_cols = list(table_info['columns'].keys())
-
-                        for col in registry_cols:
-                            if col not in actual_cols:
-                                mismatches.append({"type": "missing_column", "table": table_name, "column": col})
-
-                        for col in actual_cols:
-                            if col not in registry_cols:
-                                mismatches.append({"type": "undocumented_column", "table": table_name, "column": col, "type": actual_cols[col]})
-
-                    conn.close()
-
-                    result = {
-                        "database": db_name,
-                        "valid": len(mismatches) == 0,
-                        "mismatches": mismatches,
-                        "message": "Schema matches registry" if not mismatches else f"Found {len(mismatches)} mismatches"
-                    }
-                    self.services.logging.info(f"Schema validation result for {db_name}: {result}")
-                    results.append(result)
-                except Exception as e:
-                    self.services.logging.error(f"Error validating schema for {db_name}: {str(e)}")
-                    results.append({"database": db_name, "error": str(e)})
-
-            return {"results": results}
+            return {'success': True, 'data': validation_result}

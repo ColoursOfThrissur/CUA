@@ -83,8 +83,12 @@ class ImprovementConfig(BaseModel):
 
 class MCPServerConfig(BaseModel):
     name: str
-    url: str
+    url: str = ""           # used for http transport only
     enabled: bool = False
+    rpc_path: str = "/rpc"  # used for http transport only
+    transport: str = "stdio" # "stdio" | "http"
+    command: str = ""        # stdio: full npx command, e.g. "npx -y @modelcontextprotocol/server-memory"
+    env_key: str = ""        # env var name to inject from credential store (stdio servers)
 
 class Config(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)

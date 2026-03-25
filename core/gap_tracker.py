@@ -108,11 +108,20 @@ class GapTracker:
         ]
     
     def get_actionable_gaps(self) -> List[GapRecord]:
-        """Get gaps that are both persistent and high confidence"""
-        return [
-            gap for gap in self.gaps.values()
-            if gap.occurrence_count >= 3 and gap.confidence_avg >= 0.7
-        ]
+        """Get gaps that are actionable and not yet resolved.
+        LLM-identified gaps (high confidence) are actionable after 1 occurrence.
+        Keyword-detected gaps require 3 occurrences to avoid false positives.
+        """
+        result = []
+        for gap in self.gaps.values():
+            if gap.resolution_attempted:
+                continue
+            if gap.confidence_avg >= 0.7:
+                # LLM-identified or high-confidence gaps: 1 occurrence is enough
+                min_occ = 1 if gap.gap_type == "llm_identified" else 3
+                if gap.occurrence_count >= min_occ:
+                    result.append(gap)
+        return result
 
     def get_prioritized_gaps(self) -> List[GapRecord]:
         """Get actionable gaps ordered by impact. Gaps with cheaper resolutions sort lower."""

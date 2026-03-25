@@ -134,6 +134,32 @@ class ImprovementMemory:
         
         safe_close(conn)
         return results
+
+    def get_successful_attempts(self, days: int = 30) -> List[Dict]:
+        """Get recent successful attempts"""
+        conn = safe_connect(self.db_path)
+        if not conn:
+            return []
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT file_path, change_type, description
+            FROM improvements
+            WHERE outcome = 'success'
+            AND datetime(timestamp) > datetime('now', '-' || ? || ' days')
+            ORDER BY timestamp DESC
+        """, (days,))
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'file_path': row[0],
+                'change_type': row[1],
+                'description': row[2],
+            })
+
+        safe_close(conn)
+        return results
     
     def get_success_rate(self, file_path: str = None) -> float:
         """Calculate success rate for a file or overall"""

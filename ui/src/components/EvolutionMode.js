@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, Code2, Target, Zap, Loader2, AlertTriangle } from 'lucide-react';
+import { Activity, Code2, Target, Zap, Loader2, AlertTriangle, ExternalLink, Server } from 'lucide-react';
 import { API_URL } from '../config';
 import { useToast } from './Toast';
-import AutoEvolutionPanel from './AutoEvolutionPanel';
 import CapabilityGapsPanel from './CapabilityGapsPanel';
 import PendingServicesPanel from './PendingServicesPanel';
+import MCPPanel from './MCPPanel';
 import './EvolutionMode.css';
 
 function EvolutionMode() {
@@ -125,8 +125,8 @@ function EvolutionMode() {
         <button className={`evolution-tab ${tab === 'manual' ? 'active' : ''}`} onClick={() => setTab('manual')}>
           <Zap size={16} /> Manual Evolution
         </button>
-        <button className={`evolution-tab ${tab === 'auto' ? 'active' : ''}`} onClick={() => setTab('auto')}>
-          <Activity size={16} /> Auto-Evolution
+        <button className={`evolution-tab ${tab === 'auto' ? 'active' : ''}`} onClick={() => window.dispatchEvent(new CustomEvent('switchMode', { detail: 'autonomy' }))}>
+          <Activity size={16} /> Auto-Evolution <ExternalLink size={12} />
         </button>
         <button className={`evolution-tab ${tab === 'gaps' ? 'active' : ''}`} onClick={() => setTab('gaps')}>
           <Target size={16} /> Gaps
@@ -134,16 +134,13 @@ function EvolutionMode() {
         <button className={`evolution-tab ${tab === 'services' ? 'active' : ''}`} onClick={() => setTab('services')}>
           <Code2 size={16} /> Services
         </button>
+        <button className={`evolution-tab ${tab === 'mcp' ? 'active' : ''}`} onClick={() => setTab('mcp')}>
+          <Server size={16} /> MCP
+        </button>
       </div>
 
       <div className="evolution-content">
-        {tab === 'auto' && (
-          <div className="evolution-tab-panel">
-            <AutoEvolutionPanel embedded onClose={() => {}} />
-          </div>
-        )}
-
-        {tab === 'gaps' && (
+{tab === 'gaps' && (
           <div className="evolution-tab-panel">
             <CapabilityGapsPanel />
           </div>
@@ -152,6 +149,12 @@ function EvolutionMode() {
         {tab === 'services' && (
           <div className="evolution-tab-panel">
             <PendingServicesPanel />
+          </div>
+        )}
+
+        {tab === 'mcp' && (
+          <div className="evolution-tab-panel">
+            <MCPPanel />
           </div>
         )}
 

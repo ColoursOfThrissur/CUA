@@ -197,6 +197,24 @@ class SandboxRunner:
                     })
                 return False
             
+            # Also treat handler-level success:False as a failure (not just orchestrator-level)
+            if result.success and isinstance(result.data, dict) and result.data.get('success') is False:
+                handler_error = result.data.get('error', 'unknown')
+                # Ignore expected sandbox errors (missing files, network)
+                ignorable = ['not found', 'ssl', 'certificate', 'connection', 'network', 'timeout',
+                             'browser not open', 'no such element']
+                if not any(x in handler_error.lower() for x in ignorable):
+                    logger.error(f"Sandbox: handler returned success=False for '{op}': {handler_error}")
+                    if creation_logger and creation_id:
+                        creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
+                            "operation": op, "error": handler_error
+                        })
+                    return False
+                else:
+                    logger.warning(f"Sandbox: ignoring expected error for '{op}': {handler_error}")
+                    skipped_count += 1
+                    continue
+
             if not result.success:
                 error_msg = f"Operation '{op}' failed: {result.error}"
                 # Ignore SSL errors, network issues, and element-not-found in sandbox - they're expected
@@ -371,5 +389,5 @@ class SandboxRunner:
         return params
     
     def _class_name(self, tool_name: str) -> str:
-        """Convert tool_name to ClassName"""
-        return ''.join((part[:1].upper() + part[1:]) for part in tool_name.split('_') if part)
+        from core.tool_creation.code_generator.base import canonical_class_name
+        return canonical_class_name(tool_name)

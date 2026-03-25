@@ -40,7 +40,7 @@ class QwenCodeGenerator(BaseCodeGenerator):
             logger.info(f"Retry attempt {retry_attempt} with correction guidance")
         
         prompt_spec = self._build_prompt_spec(tool_spec)
-        contract = self._build_contract_pack()
+        contract = self._build_contract_pack(tool_spec.get('target_category'))
         
         skeleton = self._generate_stage1_skeleton(prompt_spec, tool_spec, contract, correction_prompt)
         if not skeleton:
@@ -237,22 +237,30 @@ class QwenCodeGenerator(BaseCodeGenerator):
         return "LOW"
     
     def _generate_stage2_handlers(self, skeleton: str, prompt_spec: dict, tool_spec: dict, contract: str) -> Optional[str]:
-        """Stage 2: Implement handlers one by one"""
-        code = skeleton
-        handler_names = self._extract_handler_names(code, tool_spec)
-        
+        """Stage 2: implement handlers.
+
+        Simple tools (<=COMPLEXITY_THRESHOLD handlers): one-shot call.
+        Complex tools: sequential — one handler at a time, each call sees the
+        growing file so implementations stay consistent with each other.
+        """
+        from core.tool_creation.code_generator.base import COMPLEXITY_THRESHOLD
+        handler_names = self._extract_handler_names(skeleton, tool_spec)
+
         if not handler_names:
             logger.warning("No handlers found in skeleton")
-            return code
-        
-        for handler_name in handler_names:
-            logger.info(f"Generating handler: {handler_name}")
-            code = self._generate_single_handler(code, handler_name, prompt_spec, tool_spec, contract)
-            if not code:
-                logger.error(f"Failed to generate handler: {handler_name}")
-                return None
-        
-        return code
+            return skeleton
+
+        if len(handler_names) <= COMPLEXITY_THRESHOLD:
+            logger.info(f"Simple tool ({len(handler_names)} handlers) — one-shot generation")
+            result = self._generate_all_handlers(skeleton, handler_names, prompt_spec, tool_spec, contract)
+            # Fall back to sequential if one-shot returns empty
+            if not result:
+                logger.warning("One-shot returned empty — falling back to sequential")
+                return self._generate_handlers_sequentially(skeleton, handler_names, prompt_spec, tool_spec, contract)
+            return result
+        else:
+            logger.info(f"Complex tool ({len(handler_names)} handlers > {COMPLEXITY_THRESHOLD}) — sequential generation")
+            return self._generate_handlers_sequentially(skeleton, handler_names, prompt_spec, tool_spec, contract)
     
     def _extract_handler_names(self, code: str, tool_spec: dict) -> List[str]:
         """Extract handler method names from skeleton"""
@@ -273,87 +281,88 @@ class QwenCodeGenerator(BaseCodeGenerator):
         
         return handlers
     
-    def _generate_single_handler(self, code: str, handler_name: str, prompt_spec: dict, tool_spec: dict, contract: str) -> Optional[str]:
-        """Generate implementation for one handler"""
-        op_name = handler_name.replace('_handle_', '')
-        
-        # Build skill-specific guidance
+    def _generate_all_handlers(self, skeleton: str, handler_names: List[str], prompt_spec: dict, tool_spec: dict, contract: str) -> Optional[str]:
+        """Generate all handler implementations in a single LLM call."""
         skill_guidance = self._build_skill_guidance(tool_spec)
-        
-        # Extract just the stub body so the LLM only sees and outputs the handler, not the whole file
-        handler_stub = self._extract_handler_stub(code, handler_name)
-        op_spec = next((op for op in (prompt_spec.get("inputs") or []) if isinstance(op, dict) and self._safe_capability_name(op.get("operation")) == op_name), {})
-        params_desc = ", ".join(p.get("name", "") + ("(required)" if p.get("required") else "(optional)") for p in (op_spec.get("parameters") or []))
 
-        prompt = f"""Implement this Python method using the edit block format.
+        # Build stubs block — show all handlers the LLM needs to implement with full op context
+        stubs_block = ""
+        for name in handler_names:
+            op_name = name.replace('_handle_', '')
+            op_spec = next((op for op in (prompt_spec.get("inputs") or [])
+                           if isinstance(op, dict) and self._safe_capability_name(op.get("operation")) == op_name), {})
+            params_desc = ", ".join(
+                p.get("name", "") + ("(required)" if p.get("required") else "(optional)")
+                for p in (op_spec.get("parameters") or [])
+            )
+            param_details = "\n".join(
+                f"  - {p.get('name')}: {p.get('type','string')} — {p.get('description','')}"
+                for p in (op_spec.get("parameters") or []) if isinstance(p, dict)
+            )
+            stub = self._extract_handler_stub(skeleton, name)
+            stubs_block += f"# Operation: {op_name}  params: {params_desc or 'see kwargs'}\n"
+            if param_details:
+                stubs_block += f"# Parameter details:\n{param_details}\n"
+            # Inject sketch if available
+            sketch_steps = (tool_spec.get('handler_sketches') or {}).get(name, [])
+            if sketch_steps:
+                stubs_block += "# Implementation steps:\n"
+                for step in sketch_steps:
+                    stubs_block += f"#   {step}\n"
+            stubs_block += f"{stub}\n\n"
+
+        prompt = f"""Implement ALL handler methods below for a CUA tool. Output ONLY the implemented methods, no class wrapper, no imports.
 
 SKILL CONTEXT:
 {skill_guidance}
 
-Operation: {op_name}
-Parameters: {params_desc or 'see kwargs'}
-
-Edit block format — output EXACTLY this structure, nothing else:
-<<<< ORIGINAL
-{handler_stub}
-=======
-<your implementation here>
->>>>
-
-Hard requirements:
-- The UPDATED section must be a complete def {handler_name}(self, **kwargs): ... method.
-- Use ONLY self.services.* for external interactions.
-- Return a plain dict (not ToolResult). Include 'success' key.
+For each method:
+- Use ONLY self.services.* from the contract.
+- Return a plain dict with a 'success' key.
 - Validate required inputs, return {{'success': False, 'error': '...'}} on bad input.
-- DO NOT invent new service methods. Only call methods in the contract.
-- DO NOT output imports, class definition, or other methods.
+- NO imports, NO class definition.
 
-Contract reference:
+Contract:
 {contract}
-"""
-        
+
+Methods to implement:
+{stubs_block}"""
+
         from core.tool_creation.validator import ToolValidator
         validator = ToolValidator()
 
-        # Two-attempt loop: generate then (if needed) retry with explicit validator feedback.
-        feedback = ""
         for attempt in range(2):
-            full_prompt = f"{prompt}\n\n{feedback}" if feedback else prompt
-            raw = self.llm_client._call_llm(full_prompt, temperature=0.15 if attempt == 0 else 0.05, expect_json=False)
-            if not raw:
-                feedback = "Previous output was empty. Return the edit block."
+            raw = self.llm_client._call_llm(prompt, temperature=0.15 if attempt == 0 else 0.1, max_tokens=3000, expect_json=False)
+            if not raw or len(raw.strip()) < 50:
                 continue
 
-            handler_code = self._parse_edit_block(raw, handler_name)
-            if not handler_code:
-                # Fall back to direct method extraction if LLM ignored the format
-                handler_code = self._extract_handler_method(raw, handler_name)
-            if not handler_code:
-                feedback = (
-                    f"Output did not contain a valid edit block or def {handler_name}.\n"
-                    f"Use the exact format:\n<<<< ORIGINAL\n{handler_stub}\n=======\n<implementation>\n>>>>"
-                )
+            # Splice each handler found in the response into the skeleton
+            code = skeleton
+            spliced = 0
+            for name in handler_names:
+                handler_code = self._extract_handler_method(raw, name)
+                if handler_code:
+                    code = self._splice_handler_into_code(code, name, handler_code)
+                    spliced += 1
+
+            if spliced == 0:
+                logger.warning(f"Attempt {attempt+1}: no handlers found in LLM response")
                 continue
 
-            candidate = self._splice_handler_into_code(code, handler_name, handler_code)
-            ok, err = validator.validate(candidate, tool_spec)
+            if spliced < len(handler_names):
+                logger.warning(f"Attempt {attempt+1}: only {spliced}/{len(handler_names)} handlers found")
+
+            ok, err = validator.validate(code, tool_spec)
             if ok:
-                return candidate
+                logger.info(f"All-handlers generation succeeded ({spliced}/{len(handler_names)} implemented)")
+                return code
 
-            err_text = str(err or "")
-            if "Unknown method: self.services." in err_text or "CUA validation failed" in err_text:
-                feedback = (
-                    "Previous output failed contract validation.\n"
-                    f"Validation error:\n{err_text}\n\n"
-                    "Fix by using ONLY the allowed ToolServices methods listed in the contract reference.\n"
-                    "Return only the method definition.\n"
-                )
-                continue
-
-            return None
+            logger.warning(f"Attempt {attempt+1} validation failed: {err}")
+            # Narrow the prompt on retry to just fix the contract violation
+            prompt = prompt + f"\n\nPrevious attempt failed validation: {err}\nFix by using ONLY the allowed self.services.* methods listed in the contract."
 
         return None
-    
+
     def _parse_edit_block(self, text: str, handler_name: str) -> Optional[str]:
         """Extract the UPDATED section from an aider-style edit block."""
         # Strip markdown fences first
@@ -381,6 +390,131 @@ Contract reference:
         
         # Re-extract just the method in case there's trailing text
         return self._extract_handler_method(updated, handler_name) or updated
+
+    def _generate_handlers_sequentially(
+        self,
+        skeleton: str,
+        handler_names: List[str],
+        prompt_spec: dict,
+        tool_spec: dict,
+        contract: str,
+    ) -> Optional[str]:
+        """Generate handlers one at a time.
+
+        Each call receives:
+        - The current state of the file (already-implemented handlers visible)
+        - Rich per-handler context (purpose, skill, sibling summaries, param contract)
+        - The contract
+
+        Falls back to the stub for any handler the LLM fails to produce.
+        Returns None only if zero handlers were implemented.
+        """
+        from core.tool_creation.validator import ToolValidator
+        from core.tool_creation.code_generator.base import build_handler_context
+        validator = ToolValidator()
+
+        tool_purpose = (
+            tool_spec.get("gap_description")
+            or tool_spec.get("domain")
+            or tool_spec.get("name", "")
+        )
+        skill_name = tool_spec.get("target_skill") or tool_spec.get("target_category") or ""
+        verification_mode = tool_spec.get("verification_mode") or ""
+
+        current_code = skeleton
+        implemented: List[str] = []
+        failed: List[str] = []
+
+        for handler_name in handler_names:
+            op_name = handler_name.replace("_handle_", "")
+            op_spec = next(
+                (op for op in (prompt_spec.get("inputs") or [])
+                 if isinstance(op, dict) and self._safe_capability_name(op.get("operation")) == op_name),
+                {}
+            )
+
+            handler_context = build_handler_context(
+                handler_name=handler_name,
+                current_file=current_code,
+                tool_purpose=tool_purpose,
+                skill_name=skill_name,
+                verification_mode=verification_mode,
+                op_spec=op_spec,
+                already_implemented=implemented,
+            )
+
+            # Inject sketch if available
+            sketch_steps = (tool_spec.get('handler_sketches') or {}).get(handler_name, [])
+            sketch_section = ""
+            if sketch_steps:
+                sketch_section = "\nIMPLEMENTATION STEPS (follow these exactly):\n" + "\n".join(sketch_steps) + "\n"
+
+            stub = self._extract_handler_stub(current_code, handler_name)
+
+            prompt = f"""Implement ONE handler method for a CUA tool.
+Output ONLY the method definition — no class wrapper, no imports.
+
+{handler_context}
+{sketch_section}
+Current file state (for context — do NOT repeat it, only output the new method):
+```python
+{current_code}
+```
+
+Contract:
+{contract}
+
+Method to implement (replace the stub body with real logic):
+{stub}
+
+Requirements:
+- Use ONLY self.services.* from the contract
+- Return {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
+- Validate required inputs
+- Keep under 25 lines
+- NO imports, NO class definition"""
+
+            success = False
+            feedback = ""
+            for attempt in range(2):
+                full_prompt = prompt + (f"\n\nPrevious attempt feedback: {feedback}" if feedback else "")
+                raw = self.llm_client._call_llm(
+                    full_prompt,
+                    temperature=0.15 if attempt == 0 else 0.1,
+                    max_tokens=800,
+                    expect_json=False,
+                )
+                if not raw or len(raw.strip()) < 20:
+                    feedback = "Output was empty. Return only the method definition."
+                    continue
+
+                handler_code = self._extract_handler_method(raw, handler_name)
+                if not handler_code:
+                    feedback = f"Output did not contain def {handler_name}. Return only the method."
+                    continue
+
+                candidate = self._splice_handler_into_code(current_code, handler_name, handler_code)
+                ok, err = validator.validate(candidate, tool_spec)
+                if ok:
+                    current_code = candidate
+                    implemented.append(handler_name)
+                    logger.info(f"Sequential: implemented {handler_name} ({len(implemented)}/{len(handler_names)})")
+                    success = True
+                    break
+                feedback = f"Validation failed: {err}. Fix and return only the method."
+
+            if not success:
+                logger.warning(f"Sequential: failed to implement {handler_name}, keeping stub")
+                failed.append(handler_name)
+
+        if not implemented:
+            logger.error("Sequential generation: zero handlers implemented")
+            return None
+
+        if failed:
+            logger.warning(f"Sequential generation: {len(failed)} handlers kept as stubs: {failed}")
+
+        return current_code
 
     def _extract_handler_stub(self, code: str, handler_name: str) -> str:
         """Extract just the stub method lines for a given handler."""
@@ -475,21 +609,11 @@ Contract reference:
         return text.strip()
     
     def _class_name(self, tool_name: str) -> str:
-        """Convert tool name to class name"""
-        name = (tool_name or "").strip()
-        if not name:
-            return "GeneratedTool"
-
-        # If user/spec already provides a CamelCase class-like name, keep it stable.
-        # (Python's str.capitalize() would lowercase the rest and break names like UserApprovalGateTool.)
-        if ("_" not in name) and ("-" not in name) and any(ch.isupper() for ch in name[1:]):
-            return name[:1].upper() + name[1:]
-
-        parts = [p for p in name.replace("-", "_").split("_") if p]
-        return "".join((p[:1].upper() + p[1:]) for p in parts)
+        from core.tool_creation.code_generator.base import canonical_class_name
+        return canonical_class_name(tool_name)
     
     def _build_prompt_spec(self, tool_spec: dict) -> dict:
-        """Build prompt specification from tool spec"""
+        """Build prompt specification from tool spec — preserve all skill/gap context."""
         return {
             "name": tool_spec.get("name", "UnknownTool"),
             "domain": tool_spec.get("domain", tool_spec.get("description", "general")),
@@ -497,10 +621,25 @@ Contract reference:
             "outputs": tool_spec.get("outputs", []),
             "dependencies": tool_spec.get("dependencies", []),
             "risk_level": tool_spec.get("risk_level", 0.5),
+            "target_skill": tool_spec.get("target_skill"),
+            "target_category": tool_spec.get("target_category"),
+            "verification_mode": tool_spec.get("verification_mode"),
+            "example_tasks": tool_spec.get("example_tasks", []),
+            "example_errors": tool_spec.get("example_errors", []),
+            "gap_type": tool_spec.get("gap_type"),
         }
     
-    def _build_contract_pack(self) -> str:
-        """Build contract documentation"""
+    def _build_contract_pack(self, skill_category: str = None) -> str:
+        """Build contract documentation, optionally filtered to skill-relevant services."""
+        from core.tool_creation.code_generator.base import TOOL_CREATION_RULES
+        SKILL_SERVICES = {
+            "web":         {"http", "storage", "json", "logging", "ids"},
+            "computer":    {"fs", "shell", "storage", "logging", "ids"},
+            "development": {"fs", "shell", "storage", "json", "logging", "ids"},
+            "automation":  {"storage", "http", "logging", "ids", "time"},
+            "data":        {"json", "storage", "logging", "ids", "llm", "fs"},
+            "productivity":{"storage", "json", "logging", "ids", "time"},
+        }
         try:
             from core.enhanced_code_validator import EnhancedCodeValidator
             service_registry = EnhancedCodeValidator().service_registry or {}
@@ -508,11 +647,12 @@ Contract reference:
             service_registry = {}
 
         lines = [
+            TOOL_CREATION_RULES,
             "CUA Tool Contract (strict):",
             "- Tools inherit from tools.tool_interface.BaseTool",
             "- register_capabilities(): MUST use self.add_capability(capability, handler_func)",
-            "- execute(self, operation: str, **kwargs): MUST dispatch via BaseTool.execute_capability()",
-            "- Handler methods MUST return a plain dict (business payload).",
+            "- execute(self, operation: str, **kwargs): MUST use return self.execute_capability(operation, **kwargs)",
+            "- Handler methods MUST return {'success': True/False, 'data'/'error': ...}",
             "",
             "ToolServices usage rules:",
             "- Only call methods on self.services that are explicitly listed below.",
@@ -531,26 +671,31 @@ Contract reference:
         ]
 
         if service_registry:
+            allowed = SKILL_SERVICES.get(skill_category) if skill_category else None
             for svc_name in sorted(service_registry.keys()):
+                if allowed and svc_name not in allowed:
+                    continue
                 methods = service_registry.get(svc_name) or []
                 if not methods:
                     continue
                 lines.append(f"- self.services.{svc_name}: {', '.join(sorted(set(methods)))}")
         else:
-            # Safe fallback (matches EnhancedCodeValidator defaults)
-            lines.extend(
-                [
-                    "- self.services.storage: save, get, list, find, count, update, delete, exists",
-                    "- self.services.llm: generate",
-                    "- self.services.http: get, post, put, delete, request",
-                    "- self.services.fs: read, write, list",
-                    "- self.services.json: parse, stringify, query",
-                    "- self.services.shell: execute",
-                    "- self.services.time: now_utc, now_local, now_utc_iso, now_local_iso",
-                    "- self.services.ids: generate, uuid",
-                    "- self.services.logging: info, warning, error, debug",
-                ]
-            )
+            allowed = SKILL_SERVICES.get(skill_category) if skill_category else None
+            fallback = [
+                ("storage", "save, get, list, find, count, update, delete, exists"),
+                ("llm",     "generate"),
+                ("http",    "get, post, put, delete"),
+                ("fs",      "read, write, list"),
+                ("json",    "parse, stringify, query"),
+                ("shell",   "execute"),
+                ("time",    "now_utc, now_local, now_utc_iso, now_local_iso"),
+                ("ids",     "generate, uuid"),
+                ("logging", "info, warning, error, debug"),
+            ]
+            for svc_name, methods in fallback:
+                if allowed and svc_name not in allowed:
+                    continue
+                lines.append(f"- self.services.{svc_name}: {methods}")
 
         lines.extend(
             [
@@ -563,56 +708,68 @@ Contract reference:
         return "\n".join(lines) + "\n"
     
     def _build_skill_guidance(self, tool_spec: dict) -> str:
-        """Build skill-specific implementation guidance"""
+        """Build skill-specific implementation guidance by reading actual skill.json."""
         target_skill = tool_spec.get("target_skill")
         target_category = tool_spec.get("target_category", "general")
-        
-        guidance_map = {
-            "web": (
-                "Domain: Web Research\n"
-                "- Use self.services.http for web requests (get/post methods only)\n"
-                "- Store results via self.services.storage\n"
-                "- NO hardcoded URLs - all URLs must come from parameters\n"
-                "- Return structured data with sources/links\n"
-                "- Example: fetch URL from parameter, parse response, store result"
-            ),
-            "computer": (
-                "Domain: Computer Automation (LOCAL operations only)\n"
-                "- Use self.services.fs for file operations (read/write/list)\n"
-                "- Use self.services.shell for command execution\n"
-                "- ALL operations are LOCAL - NO external APIs or network calls\n"
-                "- NO hardcoded paths - use parameters\n"
-                "- Example: read local file, process content, write result locally"
-            ),
-            "development": (
-                "Domain: Code Workspace\n"
-                "- Use self.services.fs for code file operations\n"
-                "- Focus on local repository operations\n"
-                "- NO external API calls\n"
-                "- Example: read code files, analyze, write reports"
-            ),
-            "data": (
-                "Domain: Data Operations (in-memory transformation)\n"
-                "- Operate on data passed directly as parameters (list of dicts)\n"
-                "- Use self.services.json for serialization if needed\n"
-                "- Use self.services.storage to persist results if needed\n"
-                "- NO external HTTP calls unless the operation explicitly fetches data\n"
-                "- NO filesystem access\n"
-                "- Return transformed data directly in the result dict"
-            ),
-            "general": (
-                "Domain: General\n"
-                "- Use appropriate self.services.* methods\n"
-                "- Avoid external dependencies\n"
-                "- NO hardcoded values - use parameters\n"
-                "- Keep operations simple and deterministic"
-            )
-        }
-        
-        guidance = guidance_map.get(target_category, guidance_map["general"])
-        
-        return f"""Target Skill: {target_skill or 'unknown'}
-Target Category: {target_category}
 
-{guidance}
-"""
+        # Try to load actual skill.json for rich context
+        skill_data = {}
+        if target_skill:
+            try:
+                from pathlib import Path
+                import json as _json
+                skill_file = Path(f"skills/{target_skill}/skill.json")
+                if skill_file.exists():
+                    skill_data = _json.loads(skill_file.read_text())
+            except Exception:
+                pass
+
+        lines = [f"Target Skill: {target_skill or 'unknown'}", f"Target Category: {target_category}"]
+
+        if skill_data:
+            if skill_data.get("description"):
+                lines.append(f"Skill Purpose: {skill_data['description']}")
+            preferred = skill_data.get("preferred_tools") or []
+            if preferred:
+                lines.append(f"Preferred tools in this skill: {', '.join(preferred)}")
+            verification = skill_data.get("verification_mode")
+            if verification:
+                lines.append(f"Verification mode: {verification}")
+                if verification == "source_backed":
+                    lines.append("  → Tool MUST return sources/citations in output")
+                elif verification == "side_effect_observed":
+                    lines.append("  → Tool MUST demonstrate observable side effects")
+            risk = skill_data.get("risk_level")
+            if risk:
+                lines.append(f"Skill risk level: {risk}")
+            triggers = skill_data.get("trigger_examples") or skill_data.get("triggers") or []
+            if triggers:
+                lines.append("This skill handles requests like:")
+                for t in triggers[:5]:
+                    lines.append(f"  - {t}")
+        else:
+            # Fallback domain hints
+            domain_hints = {
+                "web": "Use self.services.http for web requests. Return structured data with sources.",
+                "computer": "Use self.services.fs and self.services.shell for local operations only.",
+                "development": "Use self.services.fs for code file operations. No external API calls.",
+                "data": "Operate on data passed as parameters. Use self.services.json for serialization.",
+                "automation": "Use self.services.storage and self.services.http. Track state.",
+                "productivity": "Use self.services.storage and self.services.ids for persistence.",
+            }
+            hint = domain_hints.get(target_category, "Use appropriate self.services.* methods. No hardcoded values.")
+            lines.append(hint)
+
+        # Inject example tasks and errors from spec if available
+        example_tasks = tool_spec.get("example_tasks") or []
+        if example_tasks:
+            lines.append("Example tasks this tool should handle:")
+            for t in example_tasks[:3]:
+                lines.append(f"  - {t}")
+        example_errors = tool_spec.get("example_errors") or []
+        if example_errors:
+            lines.append("Known failure patterns to avoid:")
+            for e in example_errors[:3]:
+                lines.append(f"  - {e}")
+
+        return "\n".join(lines) + "\n"

@@ -32,38 +32,38 @@ class ServicePatternValidator:
     # Service patterns expected for each skill category
     SKILL_SERVICE_PATTERNS = {
         "web": {
-            "required": ["http", "logging"],
-            "recommended": ["storage", "json"],
+            "required": ["http"],
+            "recommended": ["storage", "json", "logging"],
             "forbidden": ["shell", "fs"],
             "risk_services": {"shell": "high", "fs": "medium"}
         },
         "computer": {
-            "required": ["fs", "logging"],
-            "recommended": ["shell", "storage"],
+            "required": [],
+            "recommended": ["fs", "shell", "storage", "logging"],
             "forbidden": [],
             "risk_services": {"shell": "high", "fs": "medium"}
         },
         "development": {
-            "required": ["fs", "logging"],
-            "recommended": ["shell", "storage", "json"],
+            "required": [],
+            "recommended": ["fs", "shell", "storage", "json", "logging"],
             "forbidden": [],
             "risk_services": {"shell": "high", "fs": "medium"}
         },
         "automation": {
-            "required": ["logging"],
-            "recommended": ["storage", "http"],
+            "required": [],
+            "recommended": ["storage", "http", "logging"],
             "forbidden": [],
             "risk_services": {"shell": "high", "fs": "medium"}
         },
         "data": {
-            "required": ["logging"],
-            "recommended": ["storage", "json", "http"],
-            "forbidden": ["shell", "fs"],
+            "required": [],
+            "recommended": ["storage", "json", "http", "logging"],
+            "forbidden": ["shell"],
             "risk_services": {"http": "medium"}
         },
         "productivity": {
-            "required": ["storage", "logging"],
-            "recommended": ["json"],
+            "required": ["storage"],
+            "recommended": ["json", "logging"],
             "forbidden": ["shell", "http"],
             "risk_services": {}
         }

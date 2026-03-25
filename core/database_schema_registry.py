@@ -1,493 +1,357 @@
-"""Database schema registry for LLM-assisted database queries."""
+"""Database schema registry for LLM-assisted database queries.
+
+All tables live in data/cua.db (WAL mode, single file).
+Legacy per-DB files are no longer written.
+"""
 
 DATABASE_SCHEMAS = {
-    "tool_creation.db": {
-        "description": "Tool creation attempts and outcomes",
-        "tables": {
-            "tool_creations": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "tool_name": "TEXT - Name of tool being created",
-                    "user_prompt": "TEXT - User's creation request",
-                    "status": "TEXT - 'success', 'failed', 'pending'",
-                    "step": "TEXT - Last completed step",
-                    "error_message": "TEXT - Error if failed",
-                    "code_size": "INTEGER - Size of generated code",
-                    "capabilities_count": "INTEGER - Number of capabilities",
-                    "timestamp": "REAL - Unix timestamp",
-                    "created_at": "TEXT - ISO format timestamp"
-                },
-                "indexes": ["tool_name", "status", "timestamp", "correlation_id"],
-                "common_queries": [
-                    "SELECT * FROM tool_creations WHERE tool_name=? ORDER BY timestamp DESC",
-                    "SELECT status, COUNT(*) FROM tool_creations GROUP BY status",
-                    "SELECT * FROM tool_creations WHERE status='failed' ORDER BY timestamp DESC",
-                    "SELECT * FROM tool_creations WHERE correlation_id=?"
-                ]
-            },
-            "creation_artifacts": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "creation_id": "INTEGER - FK to tool_creations",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "artifact_type": "TEXT - spec, code, validation, sandbox",
-                    "step": "TEXT - Step that produced artifact",
-                    "content": "TEXT - Artifact content",
-                    "timestamp": "REAL - Unix timestamp",
-                    "created_at": "TEXT - ISO format timestamp"
-                },
-                "indexes": ["creation_id", "artifact_type"],
-                "common_queries": [
-                    "SELECT * FROM creation_artifacts WHERE creation_id=? ORDER BY timestamp"
-                ]
-            }
-        }
-    },
-    
-    "chat_history.db": {
-        "description": "Alternative chat history storage",
-        "tables": {
-            "messages": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "session_id": "TEXT - Session identifier",
-                    "timestamp": "REAL - Unix timestamp",
-                    "role": "TEXT - 'user' or 'assistant'",
-                    "content": "TEXT - Message content",
-                    "metadata": "TEXT - Additional metadata as JSON"
-                },
-                "indexes": ["session_id", "timestamp"],
-                "common_queries": [
-                    "SELECT * FROM messages WHERE session_id=? ORDER BY timestamp",
-                    "SELECT DISTINCT session_id FROM messages ORDER BY timestamp DESC",
-                    "SELECT * FROM messages ORDER BY timestamp DESC LIMIT 50"
-                ]
-            }
-        }
-    },
-    
-    "logs.db": {
-        "description": "System logs from all services",
-        "tables": {
-            "logs": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "timestamp": "TEXT - ISO format timestamp",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "service": "TEXT - Service name that generated log",
-                    "level": "TEXT - Log level (info, warning, error, debug)",
-                    "message": "TEXT - Log message content",
-                    "context": "TEXT - Additional context as JSON",
-                    "created_at": "DATETIME"
-                },
-                "indexes": ["timestamp", "service", "level", "correlation_id"],
-                "common_queries": [
-                    "SELECT * FROM logs WHERE level='error' ORDER BY timestamp DESC LIMIT 10",
-                    "SELECT service, COUNT(*) FROM logs GROUP BY service",
-                    "SELECT * FROM logs WHERE service='tool.ContextSummarizerTool' ORDER BY timestamp DESC",
-                    "SELECT * FROM logs WHERE correlation_id=? ORDER BY timestamp"
-                ]
-            }
-        }
-    },
-    
-    "conversations.db": {
-        "description": "Chat conversation history, sessions, and learned patterns",
-        "tables": {
-            "conversations": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "session_id": "TEXT - Unique session identifier",
-                    "timestamp": "REAL - Unix timestamp",
-                    "role": "TEXT - 'user' or 'assistant'",
-                    "content": "TEXT - Message content",
-                    "metadata": "TEXT - Additional metadata as JSON"
-                },
-                "indexes": ["session_id", "timestamp"],
-                "common_queries": [
-                    "SELECT * FROM conversations WHERE session_id=? ORDER BY timestamp",
-                    "SELECT DISTINCT session_id FROM conversations ORDER BY timestamp DESC",
-                    "SELECT role, content FROM conversations ORDER BY timestamp DESC LIMIT 10"
-                ]
-            },
-            "sessions": {
-                "columns": {
-                    "session_id": "TEXT PRIMARY KEY",
-                    "user_preferences": "TEXT - User preferences as JSON",
-                    "active_goal": "TEXT - Current active goal",
-                    "created_at": "TEXT - ISO format timestamp",
-                    "updated_at": "TEXT - ISO format timestamp"
-                },
-                "indexes": ["session_id"],
-                "pk": "session_id",
-                "common_queries": [
-                    "SELECT * FROM sessions ORDER BY updated_at DESC",
-                    "SELECT * FROM sessions WHERE session_id=?"
-                ]
-            },
-            "execution_history": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "session_id": "TEXT - FK to sessions",
-                    "execution_id": "TEXT - Execution identifier",
-                    "timestamp": "TEXT - ISO format timestamp"
-                },
-                "indexes": ["session_id"],
-                "common_queries": [
-                    "SELECT * FROM execution_history WHERE session_id=? ORDER BY timestamp DESC"
-                ]
-            },
-            "learned_patterns": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "pattern_type": "TEXT - Type of pattern (e.g. failed_attempts, successful_goals)",
-                    "pattern_data": "TEXT - Pattern data as JSON",
-                    "learned_at": "TEXT - ISO format timestamp"
-                },
-                "indexes": ["pattern_type", "learned_at"],
-                "common_queries": [
-                    "SELECT * FROM learned_patterns ORDER BY learned_at DESC LIMIT 20",
-                    "SELECT * FROM learned_patterns WHERE pattern_type=? ORDER BY learned_at DESC"
-                ]
-            }
-        }
-    },
-    
-    "tool_executions.db": {
-        "description": "Tool execution history and performance metrics",
+    "cua.db": {
+        "description": "Consolidated CUA database — all tables in one file with WAL mode",
         "tables": {
             "executions": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "parent_execution_id": "INTEGER - Parent execution for nested calls",
-                    "tool_name": "TEXT - Name of the tool",
-                    "operation": "TEXT - Operation/capability name",
-                    "success": "INTEGER - 1 for success, 0 for failure",
-                    "error": "TEXT - Error message if failed",
-                    "error_stack_trace": "TEXT - Full stack trace",
-                    "execution_time_ms": "REAL - Execution time in milliseconds",
-                    "parameters": "TEXT - Input parameters as JSON",
-                    "output_data": "TEXT - Full output data (truncated)",
-                    "output_size": "INTEGER - Size of output in bytes",
-                    "timestamp": "REAL - Unix timestamp",
-                    "created_at": "TEXT - ISO format timestamp",
-                    "risk_score": "REAL - Risk score 0-1"
+                    "correlation_id": "TEXT",
+                    "parent_execution_id": "INTEGER",
+                    "tool_name": "TEXT",
+                    "operation": "TEXT",
+                    "success": "INTEGER - 1/0",
+                    "error": "TEXT",
+                    "error_stack_trace": "TEXT",
+                    "execution_time_ms": "REAL",
+                    "parameters": "TEXT - JSON",
+                    "output_data": "TEXT - JSON truncated at 10k",
+                    "output_size": "INTEGER",
+                    "risk_score": "REAL 0-1",
+                    "timestamp": "REAL - Unix",
+                    "created_at": "TEXT",
                 },
-                "indexes": ["tool_name", "operation", "success", "timestamp", "correlation_id", "parent_execution_id"],
+                "indexes": ["tool_name", "timestamp", "correlation_id", "parent_execution_id"],
                 "common_queries": [
-                    "SELECT tool_name, COUNT(*) as count, AVG(success) as success_rate FROM executions GROUP BY tool_name",
+                    "SELECT tool_name, COUNT(*), AVG(success) FROM executions GROUP BY tool_name",
                     "SELECT * FROM executions WHERE tool_name=? ORDER BY timestamp DESC LIMIT 20",
                     "SELECT * FROM executions WHERE success=0 ORDER BY timestamp DESC",
-                    "SELECT * FROM executions WHERE correlation_id=? ORDER BY timestamp",
-                    "SELECT * FROM executions WHERE parent_execution_id=?"
-                ]
+                ],
             },
             "execution_context": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "execution_id": "INTEGER - FK to executions",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "service_calls": "TEXT - Services used as JSON array",
-                    "llm_calls_count": "INTEGER - Number of LLM calls",
-                    "llm_tokens_used": "INTEGER - Total tokens used",
-                    "created_at": "TEXT - ISO format timestamp"
+                    "execution_id": "INTEGER FK executions",
+                    "correlation_id": "TEXT",
+                    "service_calls": "TEXT - JSON array",
+                    "llm_calls_count": "INTEGER",
+                    "llm_tokens_used": "INTEGER",
+                    "created_at": "TEXT",
                 },
                 "indexes": ["execution_id"],
-                "common_queries": [
-                    "SELECT * FROM execution_context WHERE execution_id=?"
-                ]
-            }
-        }
-    },
-    
-    "tool_evolution.db": {
-        "description": "Tool evolution attempts and results",
-        "tables": {
+                "common_queries": ["SELECT * FROM execution_context WHERE execution_id=?"],
+            },
             "evolution_runs": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "tool_name": "TEXT - Name of tool being evolved",
-                    "user_prompt": "TEXT - User's improvement request",
-                    "status": "TEXT - 'success', 'failed', 'pending', 'approved'",
-                    "step": "TEXT - Last completed step",
-                    "error_message": "TEXT - Error if failed",
-                    "confidence": "REAL - Confidence score 0-1",
-                    "health_before": "REAL - Health score before evolution",
-                    "health_after": "REAL - Health score after evolution",
-                    "timestamp": "TEXT - ISO format timestamp",
-                    "created_at": "DATETIME"
+                    "correlation_id": "TEXT",
+                    "tool_name": "TEXT",
+                    "user_prompt": "TEXT",
+                    "status": "TEXT - success/failed/pending/approved",
+                    "step": "TEXT",
+                    "error_message": "TEXT",
+                    "confidence": "REAL",
+                    "health_before": "REAL",
+                    "health_after": "REAL",
+                    "timestamp": "TEXT",
+                    "created_at": "DATETIME",
                 },
-                "indexes": ["tool_name", "status", "timestamp", "correlation_id"],
+                "indexes": ["tool_name", "status", "correlation_id"],
                 "common_queries": [
                     "SELECT * FROM evolution_runs WHERE tool_name=? ORDER BY timestamp DESC",
-                    "SELECT tool_name, COUNT(*) as attempts, SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) as successes FROM evolution_runs GROUP BY tool_name",
-                    "SELECT * FROM evolution_runs WHERE status='failed' ORDER BY timestamp DESC",
-                    "SELECT * FROM evolution_runs WHERE correlation_id=? ORDER BY timestamp",
-                    "SELECT tool_name, AVG(health_after - health_before) as avg_improvement FROM evolution_runs WHERE health_after IS NOT NULL GROUP BY tool_name"
-                ]
+                    "SELECT tool_name, AVG(health_after-health_before) FROM evolution_runs WHERE health_after IS NOT NULL GROUP BY tool_name",
+                ],
             },
             "evolution_artifacts": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "evolution_id": "INTEGER - FK to evolution_runs",
-                    "correlation_id": "TEXT - Request correlation ID",
-                    "artifact_type": "TEXT - analysis, proposal, code, validation, sandbox, error",
-                    "step": "TEXT - Step that produced artifact",
-                    "content": "TEXT - Artifact content",
-                    "timestamp": "TEXT - ISO format timestamp",
-                    "created_at": "DATETIME"
+                    "evolution_id": "INTEGER FK evolution_runs",
+                    "correlation_id": "TEXT",
+                    "artifact_type": "TEXT - analysis/proposal/code/validation/sandbox/error",
+                    "step": "TEXT",
+                    "content": "TEXT",
+                    "timestamp": "TEXT",
+                    "created_at": "DATETIME",
                 },
                 "indexes": ["evolution_id", "artifact_type"],
-                "common_queries": [
-                    "SELECT * FROM evolution_artifacts WHERE evolution_id=? ORDER BY timestamp",
-                    "SELECT * FROM evolution_artifacts WHERE artifact_type='error' ORDER BY timestamp DESC"
-                ]
-            }
-        }
-    },
-    
-    "analytics.db": {
-        "description": "Self-improvement metrics and analytics",
-        "tables": {
-            "improvement_metrics": {
-                "columns": {
-                    "id": "INTEGER PRIMARY KEY",
-                    "timestamp": "REAL - Unix timestamp",
-                    "iteration": "INTEGER - Iteration number",
-                    "proposal_desc": "TEXT - Description of proposal",
-                    "risk_level": "TEXT - 'low', 'medium', 'high'",
-                    "test_passed": "BOOLEAN - Whether tests passed",
-                    "apply_success": "BOOLEAN - Whether changes applied successfully",
-                    "duration_seconds": "REAL - Duration of iteration",
-                    "error_type": "TEXT - Type of error if failed"
-                },
-                "indexes": ["timestamp", "iteration", "risk_level"],
-                "common_queries": [
-                    "SELECT COUNT(*), AVG(test_passed), AVG(apply_success) FROM improvement_metrics",
-                    "SELECT risk_level, COUNT(*) FROM improvement_metrics GROUP BY risk_level",
-                    "SELECT * FROM improvement_metrics ORDER BY timestamp DESC LIMIT 10"
-                ]
+                "common_queries": ["SELECT * FROM evolution_artifacts WHERE evolution_id=? ORDER BY timestamp"],
             },
-            "attempt_terminal_states": {
+            "tool_creations": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "timestamp": "REAL - Unix timestamp",
-                    "iteration": "INTEGER - Iteration number",
-                    "file_path": "TEXT - File path changed",
-                    "status": "TEXT - Terminal status",
-                    "generated": "INTEGER - Whether code was generated",
-                    "sandbox_passed": "INTEGER - Whether sandbox passed",
-                    "applied": "INTEGER - Whether change was applied"
+                    "correlation_id": "TEXT",
+                    "tool_name": "TEXT",
+                    "user_prompt": "TEXT",
+                    "status": "TEXT - success/failed/pending",
+                    "step": "TEXT",
+                    "error_message": "TEXT",
+                    "code_size": "INTEGER",
+                    "capabilities_count": "INTEGER",
+                    "timestamp": "REAL",
+                    "created_at": "TEXT",
                 },
-                "indexes": ["timestamp", "iteration"],
+                "indexes": ["tool_name", "status", "correlation_id"],
                 "common_queries": [
-                    "SELECT * FROM attempt_terminal_states ORDER BY timestamp DESC LIMIT 20"
-                ]
-            }
-        }
-    },
-    
-    "failure_patterns.db": {
-        "description": "Failed changes and error patterns",
-        "tables": {
+                    "SELECT * FROM tool_creations WHERE tool_name=? ORDER BY timestamp DESC",
+                    "SELECT status, COUNT(*) FROM tool_creations GROUP BY status",
+                ],
+            },
+            "creation_artifacts": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "creation_id": "INTEGER FK tool_creations",
+                    "correlation_id": "TEXT",
+                    "artifact_type": "TEXT - spec/code/validation/sandbox",
+                    "step": "TEXT",
+                    "content": "TEXT",
+                    "timestamp": "REAL",
+                    "created_at": "TEXT",
+                },
+                "indexes": ["creation_id"],
+                "common_queries": ["SELECT * FROM creation_artifacts WHERE creation_id=? ORDER BY timestamp"],
+            },
+            "logs": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "timestamp": "TEXT",
+                    "correlation_id": "TEXT",
+                    "service": "TEXT",
+                    "level": "TEXT - info/warning/error/debug",
+                    "message": "TEXT",
+                    "context": "TEXT - JSON",
+                    "created_at": "DATETIME",
+                },
+                "indexes": ["timestamp", "service", "level", "correlation_id"],
+                "common_queries": [
+                    "SELECT * FROM logs WHERE level='error' ORDER BY timestamp DESC LIMIT 20",
+                    "SELECT service, COUNT(*) FROM logs GROUP BY service",
+                ],
+            },
+            "conversations": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "session_id": "TEXT",
+                    "timestamp": "REAL",
+                    "role": "TEXT - user/assistant",
+                    "content": "TEXT",
+                    "metadata": "TEXT - JSON",
+                },
+                "indexes": ["session_id"],
+                "common_queries": ["SELECT * FROM conversations WHERE session_id=? ORDER BY timestamp"],
+            },
+            "sessions": {
+                "columns": {
+                    "session_id": "TEXT PRIMARY KEY",
+                    "user_preferences": "TEXT - JSON",
+                    "active_goal": "TEXT",
+                    "created_at": "TEXT",
+                    "updated_at": "TEXT",
+                },
+                "indexes": ["session_id"],
+                "pk": "session_id",
+                "common_queries": ["SELECT * FROM sessions ORDER BY updated_at DESC"],
+            },
+            "learned_patterns": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "pattern_type": "TEXT",
+                    "pattern_data": "TEXT - JSON",
+                    "learned_at": "TEXT",
+                },
+                "indexes": ["pattern_type"],
+                "common_queries": ["SELECT * FROM learned_patterns ORDER BY learned_at DESC LIMIT 20"],
+            },
             "failures": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "timestamp": "TEXT - ISO format timestamp",
-                    "file_path": "TEXT - Path to file that failed",
-                    "change_type": "TEXT - Type of change attempted",
-                    "failure_reason": "TEXT - Reason for failure",
-                    "error_message": "TEXT - Full error message",
-                    "methods_affected": "TEXT - Methods that were changed",
-                    "lines_changed": "INTEGER - Number of lines changed",
-                    "metadata": "TEXT - Additional metadata as JSON"
+                    "timestamp": "TEXT",
+                    "file_path": "TEXT",
+                    "change_type": "TEXT",
+                    "failure_reason": "TEXT",
+                    "error_message": "TEXT",
+                    "methods_affected": "TEXT",
+                    "lines_changed": "INTEGER",
+                    "metadata": "TEXT - JSON",
                 },
-                "indexes": ["timestamp", "file_path", "change_type"],
+                "indexes": ["timestamp", "file_path"],
                 "common_queries": [
-                    "SELECT change_type, COUNT(*) FROM failures GROUP BY change_type",
-                    "SELECT * FROM failures WHERE file_path LIKE ? ORDER BY timestamp DESC",
-                    "SELECT failure_reason, COUNT(*) as count FROM failures GROUP BY failure_reason ORDER BY count DESC"
-                ]
+                    "SELECT failure_reason, COUNT(*) FROM failures GROUP BY failure_reason ORDER BY COUNT(*) DESC",
+                    "SELECT * FROM failures ORDER BY timestamp DESC LIMIT 20",
+                ],
             },
             "risk_weights": {
                 "columns": {
                     "pattern": "TEXT PRIMARY KEY",
-                    "weight": "REAL - Risk weight for this pattern",
-                    "failure_count": "INTEGER - Number of failures with this pattern",
-                    "last_updated": "TEXT - ISO format timestamp"
+                    "weight": "REAL",
+                    "failure_count": "INTEGER",
+                    "last_updated": "TEXT",
                 },
                 "indexes": ["pattern"],
                 "pk": "pattern",
-                "common_queries": [
-                    "SELECT * FROM risk_weights ORDER BY weight DESC"
-                ]
-            }
-        }
-    },
-    
-    "improvement_memory.db": {
-        "description": "Successful improvements and their outcomes",
-        "tables": {
+                "common_queries": ["SELECT * FROM risk_weights ORDER BY weight DESC"],
+            },
             "improvements": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "timestamp": "TEXT - ISO format timestamp",
-                    "file_path": "TEXT - Path to improved file",
-                    "change_type": "TEXT - Type of improvement",
-                    "description": "TEXT - Description of improvement",
-                    "patch": "TEXT - Git-style patch",
-                    "outcome": "TEXT - 'success', 'partial', 'failed'",
-                    "error_message": "TEXT - Error if any",
-                    "test_results": "TEXT - Test results as JSON",
-                    "metrics": "TEXT - Performance metrics as JSON"
+                    "timestamp": "TEXT",
+                    "file_path": "TEXT",
+                    "change_type": "TEXT",
+                    "description": "TEXT",
+                    "patch": "TEXT",
+                    "outcome": "TEXT - success/partial/failed",
+                    "error_message": "TEXT",
+                    "test_results": "TEXT - JSON",
+                    "metrics": "TEXT - JSON",
                 },
                 "indexes": ["timestamp", "file_path", "outcome"],
                 "common_queries": [
                     "SELECT change_type, COUNT(*) FROM improvements WHERE outcome='success' GROUP BY change_type",
-                    "SELECT * FROM improvements WHERE file_path=? ORDER BY timestamp DESC",
-                    "SELECT * FROM improvements ORDER BY timestamp DESC LIMIT 10"
-                ]
-            }
-        }
-    },
-    
-    "plan_history.db": {
-        "description": "Execution plan history",
-        "tables": {
+                    "SELECT * FROM improvements ORDER BY timestamp DESC LIMIT 10",
+                ],
+            },
             "plan_history": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "plan_id": "TEXT - Unique plan identifier",
-                    "timestamp": "REAL - Unix timestamp",
-                    "iteration": "INTEGER - Iteration number",
-                    "description": "TEXT - Plan description",
-                    "proposal": "TEXT - Proposal details as JSON",
-                    "patch": "TEXT - Git-style patch",
-                    "risk_level": "TEXT - 'low', 'medium', 'high'",
-                    "test_result": "TEXT - Test results",
-                    "apply_result": "TEXT - Apply results",
-                    "status": "TEXT - 'pending', 'applied', 'failed', 'rolled_back'",
-                    "rollback_commit": "TEXT - Git commit for rollback"
+                    "plan_id": "TEXT",
+                    "timestamp": "REAL",
+                    "iteration": "INTEGER",
+                    "description": "TEXT",
+                    "proposal": "TEXT - JSON",
+                    "patch": "TEXT",
+                    "risk_level": "TEXT",
+                    "test_result": "TEXT",
+                    "apply_result": "TEXT",
+                    "status": "TEXT - pending/applied/failed/rolled_back",
+                    "rollback_commit": "TEXT",
                 },
-                "indexes": ["plan_id", "timestamp", "status"],
+                "indexes": ["plan_id", "status"],
                 "common_queries": [
-                    "SELECT * FROM plan_history WHERE plan_id=? ORDER BY iteration",
                     "SELECT status, COUNT(*) FROM plan_history GROUP BY status",
-                    "SELECT * FROM plan_history ORDER BY timestamp DESC LIMIT 10"
-                ]
-            }
-        }
-    },
-    "metrics.db": {
-        "description": "Hourly tool and system performance metrics",
-        "tables": {
+                    "SELECT * FROM plan_history ORDER BY timestamp DESC LIMIT 10",
+                ],
+            },
+            "improvement_metrics": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "timestamp": "REAL",
+                    "iteration": "INTEGER",
+                    "proposal_desc": "TEXT",
+                    "risk_level": "TEXT",
+                    "test_passed": "BOOLEAN",
+                    "apply_success": "BOOLEAN",
+                    "duration_seconds": "REAL",
+                    "error_type": "TEXT",
+                },
+                "indexes": ["timestamp"],
+                "common_queries": ["SELECT COUNT(*), AVG(test_passed), AVG(apply_success) FROM improvement_metrics"],
+            },
             "tool_metrics_hourly": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "tool_name": "TEXT - Tool name",
-                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
-                    "total_executions": "INTEGER - Total executions in hour",
-                    "successes": "INTEGER - Successful executions",
-                    "failures": "INTEGER - Failed executions",
-                    "avg_duration_ms": "REAL - Average duration in ms",
-                    "p50_duration_ms": "REAL - Median duration",
-                    "p95_duration_ms": "REAL - 95th percentile duration",
-                    "p99_duration_ms": "REAL - 99th percentile duration",
-                    "error_rate_percent": "REAL - Error rate 0-100",
-                    "avg_output_size": "REAL - Average output size in bytes",
-                    "created_at": "TEXT - ISO format timestamp"
+                    "tool_name": "TEXT",
+                    "hour_timestamp": "TEXT",
+                    "total_executions": "INTEGER",
+                    "successes": "INTEGER",
+                    "failures": "INTEGER",
+                    "avg_duration_ms": "REAL",
+                    "error_rate_percent": "REAL",
+                    "created_at": "TEXT",
                 },
                 "indexes": ["tool_name", "hour_timestamp"],
                 "common_queries": [
-                    "SELECT tool_name, SUM(total_executions), AVG(error_rate_percent) FROM tool_metrics_hourly GROUP BY tool_name ORDER BY SUM(total_executions) DESC",
-                    "SELECT * FROM tool_metrics_hourly WHERE tool_name=? ORDER BY hour_timestamp DESC LIMIT 24"
-                ]
+                    "SELECT tool_name, SUM(total_executions), AVG(error_rate_percent) FROM tool_metrics_hourly GROUP BY tool_name",
+                ],
             },
             "system_metrics_hourly": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
-                    "total_chat_requests": "INTEGER - Total chat requests",
-                    "total_tool_calls": "INTEGER - Total tool calls",
-                    "total_evolutions": "INTEGER - Total evolution runs",
-                    "evolution_success_rate": "REAL - Evolution success rate 0-1",
-                    "avg_response_time_ms": "REAL - Average response time",
-                    "unique_tools_used": "INTEGER - Number of distinct tools used",
-                    "created_at": "TEXT - ISO format timestamp"
+                    "hour_timestamp": "TEXT",
+                    "total_chat_requests": "INTEGER",
+                    "total_tool_calls": "INTEGER",
+                    "total_evolutions": "INTEGER",
+                    "evolution_success_rate": "REAL",
+                    "avg_response_time_ms": "REAL",
+                    "unique_tools_used": "INTEGER",
+                    "created_at": "TEXT",
                 },
                 "indexes": ["hour_timestamp"],
-                "common_queries": [
-                    "SELECT * FROM system_metrics_hourly ORDER BY hour_timestamp DESC LIMIT 24"
-                ]
+                "common_queries": ["SELECT * FROM system_metrics_hourly ORDER BY hour_timestamp DESC LIMIT 24"],
             },
             "auto_evolution_metrics": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",
-                    "hour_timestamp": "TEXT - Hour bucket (ISO format)",
-                    "tools_analyzed": "INTEGER - Tools analyzed",
-                    "evolutions_triggered": "INTEGER - Evolutions triggered",
-                    "evolutions_pending": "INTEGER - Evolutions pending approval",
-                    "evolutions_approved": "INTEGER - Evolutions approved",
-                    "evolutions_rejected": "INTEGER - Evolutions rejected",
-                    "avg_health_improvement": "REAL - Average health score improvement",
-                    "created_at": "TEXT - ISO format timestamp"
+                    "hour_timestamp": "TEXT",
+                    "tools_analyzed": "INTEGER",
+                    "evolutions_triggered": "INTEGER",
+                    "evolutions_pending": "INTEGER",
+                    "evolutions_approved": "INTEGER",
+                    "evolutions_rejected": "INTEGER",
+                    "avg_health_improvement": "REAL",
+                    "created_at": "TEXT",
                 },
                 "indexes": ["hour_timestamp"],
+                "common_queries": ["SELECT * FROM auto_evolution_metrics ORDER BY hour_timestamp DESC LIMIT 24"],
+            },
+            "resolved_gaps": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "capability": "TEXT NOT NULL",
+                    "resolution_action": "TEXT - create_tool/reroute/mcp/api_wrap",
+                    "tool_name": "TEXT",
+                    "resolved_at": "TEXT",
+                    "notes": "TEXT",
+                },
+                "indexes": ["capability", "resolved_at"],
                 "common_queries": [
-                    "SELECT * FROM auto_evolution_metrics ORDER BY hour_timestamp DESC LIMIT 24"
-                ]
-            }
-        }
+                    "SELECT * FROM resolved_gaps ORDER BY resolved_at DESC LIMIT 20",
+                    "SELECT capability, resolution_action FROM resolved_gaps WHERE capability=?",
+                ],
+            },
+        },
     }
 }
 
 
 def get_schema_for_database(db_name: str) -> dict:
-    """Get schema for a specific database."""
+    """Get schema for a specific database. Legacy DB names return empty dict."""
     return DATABASE_SCHEMAS.get(db_name, {})
 
 
 def get_all_databases() -> list:
-    """Get list of all database names."""
     return list(DATABASE_SCHEMAS.keys())
 
 
 def get_schema_summary() -> str:
-    """Get human-readable summary of all schemas."""
     lines = ["CUA Database Schema Summary\n"]
     for db_name, db_info in DATABASE_SCHEMAS.items():
         lines.append(f"\n{db_name}: {db_info['description']}")
-        for table_name, table_info in db_info['tables'].items():
+        for table_name, table_info in db_info["tables"].items():
             lines.append(f"  Table: {table_name}")
             lines.append(f"    Columns: {', '.join(table_info['columns'].keys())}")
     return "\n".join(lines)
 
 
 def get_schema_for_llm(db_name: str = None) -> str:
-    """Get schema formatted for LLM consumption."""
-    if db_name:
-        schemas = {db_name: DATABASE_SCHEMAS.get(db_name)}
-    else:
-        schemas = DATABASE_SCHEMAS
-    
+    schemas = {db_name: DATABASE_SCHEMAS.get(db_name)} if db_name else DATABASE_SCHEMAS
     lines = []
     for db, info in schemas.items():
         if not info:
             continue
         lines.append(f"Database: {db}")
         lines.append(f"Purpose: {info['description']}")
-        for table, tinfo in info['tables'].items():
+        for table, tinfo in info["tables"].items():
             lines.append(f"\nTable: {table}")
             lines.append("Columns:")
-            for col, desc in tinfo['columns'].items():
+            for col, desc in tinfo["columns"].items():
                 lines.append(f"  - {col}: {desc}")
-            if tinfo.get('common_queries'):
+            if tinfo.get("common_queries"):
                 lines.append("Common queries:")
-                for q in tinfo['common_queries']:
+                for q in tinfo["common_queries"]:
                     lines.append(f"  - {q}")
         lines.append("")
-    
     return "\n".join(lines)

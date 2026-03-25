@@ -29,6 +29,11 @@
   background: #050308;
 }
 
+.app.mode-autonomy {
+  --mode-color: #10b981;
+  background: #020a06;
+}
+
 .app::before {
   content: '';
   position: fixed;
@@ -60,6 +65,10 @@
   background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 15%, transparent) 0%, color-mix(in srgb, var(--mode-color) 8%, transparent) 50%, transparent 70%);
 }
 
+.app.mode-autonomy::before {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 15%, transparent) 0%, color-mix(in srgb, var(--mode-color) 8%, transparent) 50%, transparent 70%);
+}
+
 .app::after {
   content: '';
   position: fixed;
@@ -87,6 +96,10 @@
 }
 
 .app.mode-evolution::after {
+  background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 10%, transparent) 0%, transparent 70%);
+}
+
+.app.mode-autonomy::after {
   background: radial-gradient(circle, color-mix(in srgb, var(--mode-color) 10%, transparent) 0%, transparent 70%);
 }
 

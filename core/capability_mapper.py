@@ -12,17 +12,19 @@ class CapabilityMapper:
         self.capability_graph = {}
     
     def build_capability_graph(self) -> Dict[str, bool]:
-        """Scan tools and build capability graph"""
+        """Scan tools and build capability graph — includes experimental subdirectory."""
         capabilities = {}
-        
-        # Scan all tool files
-        for tool_file in self.tools_dir.glob("*.py"):
-            if tool_file.name.startswith('_'):
+
+        dirs_to_scan = [self.tools_dir, self.tools_dir / "experimental"]
+        for scan_dir in dirs_to_scan:
+            if not scan_dir.exists():
                 continue
-            
-            tool_caps = self._extract_tool_capabilities(tool_file)
-            capabilities.update(tool_caps)
-        
+            for tool_file in scan_dir.glob("*.py"):
+                if tool_file.name.startswith('_'):
+                    continue
+                tool_caps = self._extract_tool_capabilities(tool_file)
+                capabilities.update(tool_caps)
+
         self.capability_graph = capabilities
         return capabilities
     

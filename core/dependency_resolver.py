@@ -1,34 +1,55 @@
 """Dependency resolver - installs libraries and generates services."""
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+# Packages the autonomous loop is allowed to install automatically.
+# Add entries here after manual review — never expand this list programmatically.
+ALLOWED_PACKAGES = {
+    "requests", "httpx",
+    "pandas", "numpy",
+    "beautifulsoup4", "lxml", "html5lib",
+    "pyyaml", "toml",
+    "pillow",
+    "python-dateutil", "pytz",
+    "tqdm", "rich",
+    "aiohttp", "aiofiles",
+    "pydantic",
+}
+
+# Block patterns that indicate non-PyPI / unsafe install sources
+_UNSAFE_RE = re.compile(r'(git\+|file://|\.\.[\\/]|-e\s|--index-url|--extra-index-url)', re.I)
+
 
 class DependencyResolver:
     """Resolve missing dependencies."""
-    
+
     def __init__(self, llm_client=None):
         self.llm = llm_client
-    
+
     def install_library(self, library: str) -> Tuple[bool, str]:
-        """Install Python library via pip."""
+        """Install Python library via pip — allowlist enforced."""
+        pkg = library.strip().split("[")[0].split("==")[0].split(">=")[0].split("<=")[0].lower()
+
+        if _UNSAFE_RE.search(library):
+            return False, f"Unsafe install source blocked: {library}"
+
+        if pkg not in ALLOWED_PACKAGES:
+            return False, f"Package '{pkg}' not in dependency allowlist — add manually after review"
+
         try:
-            # Install library
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", library],
                 capture_output=True,
                 text=True,
                 timeout=120
             )
-            
             if result.returncode == 0:
-                # Add to requirements.txt
                 self._add_to_requirements(library)
                 return True, f"Installed {library}"
-            else:
-                return False, f"Failed: {result.stderr}"
-        
+            return False, f"Failed: {result.stderr}"
         except subprocess.TimeoutExpired:
             return False, "Installation timeout"
         except Exception as e:

@@ -155,22 +155,37 @@ class UnifiedMemory:
         if not self._im:
             return []
         try:
-            # Search recent failed attempts — useful for avoiding repeated mistakes
-            failed = self._im.get_failed_attempts(days=30)
             results = []
+
+            # Failed attempts — cautionary, downweighted
+            failed = self._im.get_failed_attempts(days=30)
             for attempt in failed:
                 text = f"{attempt.get('description', '')} {attempt.get('file_path', '')}"
                 score = _score(q_tokens, text)
                 if score > 0:
                     results.append({
                         "source": "improvement_memory",
-                        "score": score * 0.8,  # slight downweight — failures are cautionary
+                        "score": score * 0.8,
                         "content": f"[FAILED] {attempt.get('description', '')} in {attempt.get('file_path', '')}",
                         "metadata": {
                             "change_type": attempt.get("change_type"),
                             "error": attempt.get("error_message", "")[:100],
                         },
                     })
+
+            # Successful improvements — positive signal, full weight
+            if hasattr(self._im, 'get_successful_attempts'):
+                for attempt in self._im.get_successful_attempts(days=30):
+                    text = f"{attempt.get('description', '')} {attempt.get('file_path', '')}"
+                    score = _score(q_tokens, text)
+                    if score > 0:
+                        results.append({
+                            "source": "improvement_memory",
+                            "score": score,
+                            "content": f"[SUCCESS] {attempt.get('description', '')} in {attempt.get('file_path', '')}",
+                            "metadata": {"change_type": attempt.get("change_type")},
+                        })
+
             return results
         except Exception:
             return []

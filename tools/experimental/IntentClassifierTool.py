@@ -70,53 +70,59 @@ class IntentClassifierTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _handle_classify_intent(self, **kwargs):
-        required_params = ['user_input']
-        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-        if missing:
-            raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+            required_params = ['user_input']
+            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+            if missing:
+                self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
+                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
 
-        user_input = kwargs['user_input']
-        cache_key = hash(user_input)
-        
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+            user_input = kwargs['user_input']
+            cache_key = hash(user_input)
 
-        if not self.services or not self.services.llm:
-            raise RuntimeError("LLM service not available")
+            if cache_key in self.cache:
+                self.services.logging.debug(f"Returning cached result for input: {user_input}")
+                return self.cache[cache_key]
 
-        prompt = f"""Classify this user input as either 'conversational' or 'actionable':
+            if not self.services or not self.services.llm:
+                self.services.logging.error("LLM service is not available")
+                raise RuntimeError("LLM service not available")
 
-User input: "{user_input}"
+            prompt = f"""Classify this user input as either 'conversational' or 'actionable':
 
-Rules:
-- 'conversational': Questions ABOUT the system, asking for suggestions, opinions, recommendations, explanations
-- 'actionable': Direct commands to DO something with data (analyze, summarize, create, list, read, write)
+    User input: "{user_input}"
 
-Examples:
-- "what tool should we add next?" -> conversational
-- "analyze the sentiment of this text" -> actionable
-- "can you suggest improvements?" -> conversational
-- "summarize this document" -> actionable
+    Rules:
+    - 'conversational': Questions ABOUT the system, asking for suggestions, opinions, recommendations, explanations
+    - 'actionable': Direct commands to DO something with data (analyze, summarize, create, list, read, write)
 
-Respond with ONLY: conversational OR actionable"""
+    Examples:
+    - "what tool should we add next?" -> conversational
+    - "analyze the sentiment of this text" -> actionable
+    - "can you suggest improvements?" -> conversational
+    - "summarize this document" -> actionable
 
-        try:
-            result = self.services.llm.generate(prompt, temperature=0.1, max_tokens=10).strip().lower()
-            intent = 'conversational' if 'conversational' in result else 'actionable'
-            confidence = 0.9
-        except Exception as e:
-            intent = 'conversational'
-            confidence = 0.5
+    Respond with ONLY: conversational OR actionable"""
 
-        result = {
-            'intent': intent,
-            'confidence': confidence,
-            'requires_tool': intent == 'actionable',
-            'user_input': user_input
-        }
+            try:
+                self.services.logging.debug(f"Generating intent classification for input: {user_input}")
+                result = self.services.llm.generate(prompt, temperature=0.1, max_tokens=10).strip().lower()
+                intent = 'conversational' if 'conversational' in result else 'actionable'
+                confidence = 0.9
+            except Exception as e:
+                self.services.logging.error(f"Error generating intent classification: {e}")
+                intent = 'conversational'
+                confidence = 0.5
 
-        self.cache[cache_key] = result
-        return result
+            result = {
+                'intent': intent,
+                'confidence': confidence,
+                'requires_tool': intent == 'actionable',
+                'user_input': user_input
+            }
+
+            self.services.logging.debug(f"Storing classification result in cache for input: {user_input}")
+            self.cache[cache_key] = result
+            return result
 
     def _handle_suggest_tool(self, **kwargs):
         required_params = ['user_input']

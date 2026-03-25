@@ -35,3 +35,33 @@ Personal knowledge organization, code snippet storage, note-taking, and informat
 
 ## Fallback Strategy
 Direct tool routing for simple storage and retrieval operations.
+
+## Managed Tool Updates
+- Updated `LocalRunNoteTool` for operations: new workflow support.
+
+## Managed Workflow Updates
+### LocalRunNoteTool (evolve_tool, tool_evolution)
+- Reason: User request: Feature enhancements suggested (3 improvements). Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `LocalRunNoteTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### LocalRunNoteTool (evolve_tool, tool_evolution)
+- Reason: User request: Low health score (48.2) - Low success rate: 62.5%. Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `LocalRunNoteTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+- Updated `LocalCodeSnippetLibraryTool` for operations: new workflow support.
+
+### LocalCodeSnippetLibraryTool (evolve_tool, tool_evolution)
+- Reason: User request: Low health score (53.7) - Low success rate: 51.4%. Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `LocalCodeSnippetLibraryTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### LocalRunNoteTool (evolve_tool, tool_evolution)
+- Reason: User request: Feature enhancements suggested (2 improvements). Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `LocalRunNoteTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### LocalCodeSnippetLibraryTool (evolve_tool, tool_evolution)
+- Reason: User request: Enhancement opportunity: Enhance the search functionality by adding support for more sophisticated queries, such as boolean operators and wildcard searches, to improve the accuracy of snippet retrieval.. Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `LocalCodeSnippetLibraryTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.

@@ -29,7 +29,15 @@
   "preferred_tools": [
     "HTTPTool",
     "JSONTool",
-    "DatabaseQueryTool"
+    "DatabaseQueryTool",
+    "DataTransformationTool",
+    "DiffComparisonTool",
+    "MCPAdapterTool_github",
+    "MCPAdapterTool_filesystem",
+    "MCPAdapterTool_memory",
+    "MCPAdapterTool_sqlite",
+    "MCPAdapterTool_brave-search",
+    "MCPAdapterTool_fetch"
   ],
   "required_tools": [],
   "preferred_connectors": [],
@@ -47,7 +55,10 @@
     "transformed_data",
     "json_structure",
     "validation_result",
-    "diff_result"
+    "diff_result",
+    "filtered_records",
+    "sorted_list",
+    "aggregated_result"
   ],
   "verification_mode": "output_validation",
   "risk_level": "medium",

@@ -283,6 +283,15 @@ class ExecutionEngine:
                         "preferred_tools": list(skill_context.preferred_tools),
                         "skill_name": getattr(skill_context, 'skill_name', ''),
                     })
+                # Inject completed step outputs so replanner can reference {{step_X}} results
+                completed_outputs = {
+                    sid: r.output
+                    for sid, r in state.step_results.items()
+                    if r.status == StepStatus.COMPLETED and r.output is not None
+                }
+                if completed_outputs:
+                    replan_ctx = dict(replan_ctx)
+                    replan_ctx["completed_summary"] = completed_outputs
                 new_steps = self.task_planner.replan_remaining(
                     original_goal=plan.goal,
                     remaining_steps=remaining_after,
@@ -546,26 +555,37 @@ class ExecutionEngine:
         return False
     
     def resume_execution(self, execution_id: str) -> ExecutionState:
-        """Resume a paused execution."""
+        """Resume a paused execution, respecting the original wave structure."""
         state = self.active_executions.get(execution_id)
         if not state or state.status != "paused":
             raise ValueError(f"Cannot resume execution {execution_id}")
-        
+
         state.status = "running"
-        
-        # Continue from current step
+
         remaining_steps = [
             step for step in state.plan.steps
-            if state.step_results[step.step_id].status in [StepStatus.PENDING, StepStatus.FAILED]
+            if state.step_results[step.step_id].status in (StepStatus.PENDING, StepStatus.FAILED)
         ]
-        
-        # Re-execute remaining steps
-        for step in remaining_steps:
-            if self._dependencies_met(step, state):
-                result = self._execute_step(step, state)
-                state.step_results[step.step_id] = result
-        
-        state.status = "completed"
-        state.end_time = time.time()
-        
+
+        try:
+            waves = self._build_execution_waves(remaining_steps)
+            for wave in waves:
+                eligible = [s for s in wave if self._dependencies_met(s, state)]
+                if len(eligible) == 1:
+                    result = self._execute_step(eligible[0], state)
+                    state.step_results[eligible[0].step_id] = result
+                elif eligible:
+                    wave_results = self._execute_parallel(eligible, state, None)
+                    for step_id, result in wave_results.items():
+                        state.step_results[step_id] = result
+
+            failed = [r for r in state.step_results.values() if r.status == StepStatus.FAILED]
+            state.status = "completed_with_errors" if failed else "completed"
+        except Exception as e:
+            logger.error(f"Resume {execution_id} failed: {e}")
+            state.status = "failed"
+            state.error = str(e)
+        finally:
+            state.end_time = time.time()
+
         return state

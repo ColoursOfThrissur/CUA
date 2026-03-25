@@ -26,6 +26,8 @@ class ShellTool(BaseTool):
         "ps", "tasklist", "top",
         # python / pip
         "python", "python3", "pip", "pip3",
+        # node / npx — for MCP server management
+        "node", "npx",
         # git (read-only)
         "git",
         # network info

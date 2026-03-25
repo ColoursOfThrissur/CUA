@@ -19,6 +19,7 @@ class SetCredentialRequest(BaseModel):
     value: str
     description: str = ""
     allowed_tools: Optional[List[str]] = None
+    expires_at: Optional[str] = None  # ISO-8601 datetime string
 
 
 class UpdateScopeRequest(BaseModel):
@@ -45,6 +46,7 @@ def set_credential(req: SetCredentialRequest):
         req.value,
         description=req.description,
         allowed_tools=req.allowed_tools,
+        expires_at=req.expires_at,
     )
     return {"success": True, "key": req.key.strip()}
 

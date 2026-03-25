@@ -111,9 +111,12 @@ class ToolEvolutionOrchestrator:
             
             self._log_conversation("PROPOSAL", proposal['description'])
             
-            # Check confidence
+            # Check confidence — use per-model threshold (local=0.35, cloud=0.5)
             confidence = proposal.get('confidence', 0)
-            if confidence < 0.5:
+            from core.config_manager import get_config
+            _provider = getattr(get_config().llm, 'provider', 'ollama')
+            _min_confidence = 0.35 if _provider == 'ollama' else 0.5
+            if confidence < _min_confidence:
                 evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", f"Low confidence: {confidence:.2f}", confidence, health_before)
                 return False, f"Low confidence proposal ({confidence:.2f})"
         except Exception as e:
@@ -164,13 +167,23 @@ class ToolEvolutionOrchestrator:
                     import ast as _ast
                     _ast.parse(improved_code)
                 except SyntaxError as syn_err:
-                    syntax_msg = f"Syntax error in generated code: {syn_err}"
-                    evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": syntax_msg})
-                    logger.warning(f"[Evolution {evolution_id}] {syntax_msg} (attempt {attempt+1})")
+                    # Inject the broken line into feedback so the LLM can see what to fix
+                    broken_lines = ""
+                    if syn_err.lineno:
+                        code_lines = improved_code.splitlines()
+                        start = max(0, syn_err.lineno - 3)
+                        end = min(len(code_lines), syn_err.lineno + 2)
+                        broken_lines = "\nCode around the error:\n" + "\n".join(
+                            f"{'>>>' if i + 1 == syn_err.lineno else '   '} {i+1}: {code_lines[i]}"
+                            for i in range(start, end)
+                        )
+                    syntax_msg = f"Syntax error in generated code: {syn_err}{broken_lines}"
+                    evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": str(syn_err)})
+                    logger.warning(f"[Evolution {evolution_id}] {syn_err} (attempt {attempt+1})")
                     validation_error = syntax_msg
                     if attempt < 2:
                         continue
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", syntax_msg, confidence, health_before)
+                    evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", str(syn_err), confidence, health_before)
                     return False, f"Generated code has syntax errors after all retries: {syn_err}"
                 
                 evo_logger.log_artifact(evolution_id, "improved_code", f"attempt_{attempt+1}", improved_code)
@@ -250,7 +263,8 @@ class ToolEvolutionOrchestrator:
                     improved_code,
                     analysis['tool_path'],
                     new_service_specs=proposal.get('new_service_specs'),
-                    network_only=proposal.get('network_only', False)
+                    network_only=proposal.get('network_only', False),
+                    target_functions=proposal.get('target_functions') or []
                 )
                 evo_logger.log_artifact(evolution_id, "sandbox", f"attempt_{attempt+1}", {
                     "passed": sandbox_passed,
@@ -263,7 +277,7 @@ class ToolEvolutionOrchestrator:
                 else:
                     sandbox_error = sandbox_output
                     logger.warning(f"[Evolution {evolution_id}] Sandbox failed (attempt {attempt+1})")
-                    if attempt == 0:
+                    if attempt < 2:
                         continue
                     else:
                         evo_logger.log_run(tool_name, user_prompt, "failed", "sandbox", "Failed after retry", confidence, health_before)
@@ -302,26 +316,10 @@ class ToolEvolutionOrchestrator:
             return False, f"Failed to create pending evolution: {str(e)}"
     
     def _select_generator(self):
-        """Select generator based on model (matches creation pattern)."""
-        from pathlib import Path
-        import json
+        """Return the evolution-specific code generator."""
         from core.tool_evolution.code_generator import EvolutionCodeGenerator
-        
-        # Check model capabilities config
-        config_path = Path("config/model_capabilities.json")
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    capabilities = json.load(f)
-                    model = str(getattr(self.llm_client, "model", "")).lower()
-                    for pattern, config in capabilities.items():
-                        if pattern in model:
-                            logger.info(f"Using {config['strategy']} strategy for {model}")
-                            break
-            except Exception as e:
-                logger.warning(f"Failed to load model capabilities: {e}")
-        
-        # Single generator for now (can add Qwen-specific later)
+        model = str(getattr(self.llm_client, "model", "")).lower()
+        logger.info(f"Evolution using EvolutionCodeGenerator for model: {model}")
         return EvolutionCodeGenerator(self.llm_client)
     
     def _create_pending_evolution(self, tool_name, improved_code, proposal, analysis, evolution_id):

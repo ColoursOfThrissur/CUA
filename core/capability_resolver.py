@@ -26,23 +26,52 @@ class ResolutionResult:
 
 
 # ---------------------------------------------------------------------------
-# Static MCP server catalogue (extend as real MCP servers are added)
+# Default catalogues — overridden by config.yaml
+# capability_resolver:
+#   mcp_catalogue:
+#     web_scraping: {server: mcp-puppeteer, ops: [navigate, scrape]}
+#   api_catalogue:
+#     weather: {api: OpenWeatherMap, base_url: https://api.openweathermap.org}
 # ---------------------------------------------------------------------------
-_MCP_CATALOGUE: Dict[str, Dict] = {
-    "web_scraping":       {"server": "mcp-puppeteer",   "ops": ["navigate", "scrape", "screenshot"]},
-    "html_parsing":       {"server": "mcp-puppeteer",   "ops": ["get_content"]},
-    "browser_automation": {"server": "mcp-puppeteer",   "ops": ["click", "fill", "navigate"]},
-    "github":             {"server": "mcp-github",      "ops": ["list_repos", "create_issue", "get_file"]},
-    "filesystem":         {"server": "mcp-filesystem",  "ops": ["read", "write", "list"]},
-    "database":           {"server": "mcp-sqlite",      "ops": ["query", "execute"]},
-    "slack":              {"server": "mcp-slack",       "ops": ["send_message", "list_channels"]},
-    "google_drive":       {"server": "mcp-gdrive",      "ops": ["list_files", "read_file", "upload"]},
+_DEFAULT_MCP_CATALOGUE: Dict[str, Dict] = {
+    # Browser / scraping
+    "web_scraping":       {"server": "puppeteer",    "ops": ["navigate", "scrape", "screenshot"]},
+    "html_parsing":       {"server": "puppeteer",    "ops": ["get_content"]},
+    "browser_automation": {"server": "puppeteer",    "ops": ["click", "fill", "navigate"]},
+    "screenshot":         {"server": "puppeteer",    "ops": ["screenshot"]},
+    # Web search / fetch
+    "web_search":         {"server": "brave-search", "ops": ["search"]},
+    "search":             {"server": "brave-search", "ops": ["search"]},
+    "url_fetch":          {"server": "fetch",        "ops": ["fetch"]},
+    "content_extraction": {"server": "fetch",        "ops": ["fetch"]},
+    # Version control
+    "git":                {"server": "git",          "ops": ["log", "diff", "status", "commit", "branch"]},
+    "version_control":    {"server": "git",          "ops": ["log", "diff", "commit"]},
+    "code_history":       {"server": "git",          "ops": ["log", "diff"]},
+    # File system
+    "filesystem":         {"server": "filesystem",   "ops": ["read", "write", "list"]},
+    "file_access":        {"server": "filesystem",   "ops": ["read", "write", "list"]},
+    # Database
+    "database":           {"server": "sqlite",       "ops": ["query", "execute"]},
+    "sql":                {"server": "sqlite",       "ops": ["query", "execute"]},
+    "sqlite":             {"server": "sqlite",       "ops": ["query", "execute"]},
+    # Knowledge / memory
+    "knowledge_graph":    {"server": "memory",       "ops": ["create_entities", "search_nodes", "add_relations"]},
+    "persistent_memory":  {"server": "memory",       "ops": ["create_entities", "search_nodes"]},
+    "entity_tracking":    {"server": "memory",       "ops": ["create_entities", "add_relations"]},
+    # Code / repos
+    "github":             {"server": "github",       "ops": ["list_repos", "create_issue", "get_file", "search_code"]},
+    "code_search":        {"server": "github",       "ops": ["search_code", "get_file"]},
+    "repository":         {"server": "github",       "ops": ["list_repos", "get_file"]},
+    # Messaging
+    "slack":              {"server": "slack",        "ops": ["send_message", "list_channels"]},
+    "notification":       {"server": "slack",        "ops": ["send_message"]},
+    # Cloud storage
+    "google_drive":       {"server": "gdrive",       "ops": ["list_files", "read_file", "upload"]},
+    "cloud_storage":      {"server": "gdrive",       "ops": ["list_files", "read_file", "upload"]},
 }
 
-# ---------------------------------------------------------------------------
-# Static API-wrap catalogue (thin HTTPTool wrappers that could be auto-created)
-# ---------------------------------------------------------------------------
-_API_CATALOGUE: Dict[str, Dict] = {
+_DEFAULT_API_CATALOGUE: Dict[str, Dict] = {
     "weather":            {"api": "OpenWeatherMap",  "base_url": "https://api.openweathermap.org"},
     "geocoding":          {"api": "Nominatim",       "base_url": "https://nominatim.openstreetmap.org"},
     "currency":           {"api": "ExchangeRate-API","base_url": "https://api.exchangerate-api.com"},
@@ -52,6 +81,33 @@ _API_CATALOGUE: Dict[str, Dict] = {
     "image_processing":   {"api": "Cloudinary",      "base_url": "https://api.cloudinary.com"},
     "data_visualization": {"api": "QuickChart",      "base_url": "https://quickchart.io"},
 }
+
+
+def _load_catalogue(key: str, default: Dict) -> Dict:
+    """Load a catalogue from config.yaml, merging over the default."""
+    try:
+        from core.config_manager import get_config
+        cfg = get_config()
+        # Config model doesn't have capability_resolver field — read raw YAML directly
+        import yaml
+        from pathlib import Path
+        raw_yaml = yaml.safe_load(Path("config.yaml").read_text()) or {}
+        raw = raw_yaml.get("capability_resolver", {}).get(key)
+        if isinstance(raw, dict):
+            merged = dict(default)
+            merged.update(raw)
+            return merged
+    except Exception:
+        pass
+    return dict(default)
+
+
+def _get_mcp_catalogue() -> Dict[str, Dict]:
+    return _load_catalogue("mcp_catalogue", _DEFAULT_MCP_CATALOGUE)
+
+
+def _get_api_catalogue() -> Dict[str, Dict]:
+    return _load_catalogue("api_catalogue", _DEFAULT_API_CATALOGUE)
 
 
 class CapabilityResolver:
@@ -230,8 +286,8 @@ class CapabilityResolver:
             except Exception:
                 pass
 
-        # Fallback: static catalogue
-        for key, entry in _MCP_CATALOGUE.items():
+        # Fallback: config-driven catalogue (merges config.yaml overrides over defaults)
+        for key, entry in _get_mcp_catalogue().items():
             if key in capability or key in domain or capability in key:
                 return ResolutionResult(
                     resolved=True,
@@ -251,7 +307,7 @@ class CapabilityResolver:
     # ------------------------------------------------------------------
 
     def _check_api(self, capability: str, domain: str) -> ResolutionResult:
-        for key, entry in _API_CATALOGUE.items():
+        for key, entry in _get_api_catalogue().items():
             if key in capability or key in domain or capability in key:
                 return ResolutionResult(
                     resolved=True,

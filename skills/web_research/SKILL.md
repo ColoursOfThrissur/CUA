@@ -82,3 +82,22 @@ If no web skill route is feasible:
 
 - fall back to direct capability/tool routing
 - record the missing web capability or weak execution path
+
+## Managed Tool Updates
+- Updated `ContextSummarizerTool` for operations: new workflow support.
+
+## Managed Workflow Updates
+### ContextSummarizerTool (evolve_tool, tool_evolution)
+- Reason: User request: Enhancement opportunity: Add batch processing support. Code quality: HEALTHY, Health: 50/100
+- Re-evaluate `ContextSummarizerTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### ContextSummarizerTool (evolve_tool, tool_evolution)
+- Reason: User request: Enhancement opportunity: Add a capability to highlight important phrases or quotes from the text content along with their context.. Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `ContextSummarizerTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.
+
+### ContextSummarizerTool (evolve_tool, tool_evolution)
+- Reason: User request: Enhancement opportunity: Add a capability to translate the summarized text into different languages. This can be useful for users who need summaries in their preferred language.. Code quality: HEALTHY, Health: 95/100
+- Re-evaluate `ContextSummarizerTool` first for improved handling of: existing workflow steps.
+- Strengthen the step-by-step workflow before proposing unrelated new tools.

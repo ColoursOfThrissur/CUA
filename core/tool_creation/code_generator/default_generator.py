@@ -19,11 +19,8 @@ class DefaultCodeGenerator(BaseCodeGenerator):
         operation_contract = self._build_operation_contract(prompt_spec)
         contract_pack = self._build_contract_pack()
         class_name = self._class_name(tool_spec['name'])
-        tool_name = tool_spec['name']
-        
-        base_prompt = f"""Fill in the logic for this tool template:
 
-{template}
+        base_prompt = f"""Generate a complete CUA tool class.
 
 Tool spec:
 {prompt_spec_json}
@@ -99,7 +96,7 @@ Return only complete Python code with register_capabilities and execute methods 
         return fenced[0].strip() if fenced else response.strip()
     
     def _build_prompt_spec(self, tool_spec: dict) -> dict:
-        """Build spec for prompt"""
+        """Build spec for prompt — preserve all skill/gap context."""
         return {
             "name": tool_spec.get("name"),
             "domain": tool_spec.get("domain"),
@@ -107,6 +104,12 @@ Return only complete Python code with register_capabilities and execute methods 
             "outputs": tool_spec.get("outputs", []),
             "dependencies": tool_spec.get("dependencies", []),
             "risk_level": tool_spec.get("risk_level", 0.5),
+            "target_skill": tool_spec.get("target_skill"),
+            "target_category": tool_spec.get("target_category"),
+            "verification_mode": tool_spec.get("verification_mode"),
+            "example_tasks": tool_spec.get("example_tasks", []),
+            "example_errors": tool_spec.get("example_errors", []),
+            "gap_type": tool_spec.get("gap_type"),
         }
     
     def _build_operation_contract(self, prompt_spec: dict) -> str:
@@ -130,19 +133,20 @@ Return only complete Python code with register_capabilities and execute methods 
     
     def _build_contract_pack(self) -> str:
         """Build contract reference"""
-        # Dynamically get valid parameter types
         from tools.tool_capability import ParameterType
+        from core.tool_creation.code_generator.base import TOOL_CREATION_RULES
         valid_types = "|".join([pt.name for pt in ParameterType])
         
-        return f"""Required API contracts:
+        return f"""{TOOL_CREATION_RULES}
+Required API contracts:
 - Parameter(name=..., type=ParameterType.<{valid_types}>, description=..., required=..., default=...)
-- ToolCapability(name=..., description=..., parameters=[...], returns="string description", safety_level=SafetyLevel.<LOW|MEDIUM|HIGH|CRITICAL>, examples=[...], dependencies=[...])
+- ToolCapability(name=..., description=..., parameters=[...], returns="dict", safety_level=SafetyLevel.<LOW|MEDIUM|HIGH|CRITICAL>, examples=[], dependencies=[])
 - self.add_capability(capability_obj, self._handler)
-- execute(self, operation: str, **kwargs)
+- execute(self, operation: str, **kwargs): return self.execute_capability(operation, **kwargs)
 
 Thin Tool Pattern:
 - __init__(self, orchestrator=None): Accept orchestrator, initialize self._cache = {{}} if needed
-- Handlers return plain dict (orchestrator wraps in ToolResult)
+- Handlers return plain dict with 'success' key (orchestrator wraps in ToolResult)
 
 CRITICAL - ALWAYS use self.services prefix for ALL service calls:
 - self.services.storage.save(id, data) / .get(id) / .list(limit=10) - Storage
@@ -157,17 +161,18 @@ CRITICAL - ALWAYS use self.services prefix for ALL service calls:
 - self.services.extract_key_points(text, style, language) - Extract key points
 - self.services.sentiment_analysis(text, language) - Analyze sentiment
 - self.services.generate_json_output(**kwargs) - Generate JSON
-- self.services.call_tool(tool_name, operation, **params) - Call another tool
+- self.services.call_tool(tool_name, operation, **params) - Call another tool (public ops only)
 - self.services.list_tools() - List available tools
 - self.services.has_capability(name) - Check if capability exists
 
 DO NOT:
+- Write if/elif chains in execute() - use execute_capability() delegation
 - Call self.method_name() for services - ALWAYS use self.services.method_name()
 - Use attributes not initialized in __init__
 - Reference undefined helper methods
-- Raise ValueError for errors
+- Raise ValueError for errors - return dict with success=False instead
 """
     
     def _class_name(self, tool_name: str) -> str:
-        """Convert tool_name to ClassName"""
-        return ''.join((part[:1].upper() + part[1:]) for part in tool_name.split('_') if part)
+        from core.tool_creation.code_generator.base import canonical_class_name
+        return canonical_class_name(tool_name)

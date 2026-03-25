@@ -12,10 +12,8 @@ class LocalCodeSnippetLibraryTool(BaseTool):
     """Thin tool using orchestrator services for storage/time/IDs."""
     
     def __init__(self, orchestrator=None):
-        print(f"[TOOL_INIT] LocalCodeSnippetLibraryTool.__init__ called with orchestrator: {orchestrator}")
         self.description = "Auto-generated tool"
         self.services = orchestrator.get_services(self.__class__.__name__) if orchestrator else None
-        print(f"[TOOL_INIT] Services set to: {self.services}")
         super().__init__()
 
     def register_capabilities(self):
@@ -124,78 +122,119 @@ class LocalCodeSnippetLibraryTool(BaseTool):
         )
 
     def _handle_save_snippet(self, **kwargs):
-            snippet_id = kwargs.get('snippet_id')
-            language = kwargs.get('language')
-            tags = kwargs.get('tags')
-            description = kwargs.get('description')
-            code_content = kwargs.get('code_content')
-            version = kwargs.get('version')
+        snippet_id = kwargs.get('snippet_id')
+        language = kwargs.get('language')
+        tags = kwargs.get('tags')
+        description = kwargs.get('description')
+        code_content = kwargs.get('code_content')
+        version = kwargs.get('version')
 
-            if isinstance(snippet_id, list) and isinstance(code_content, list):
-                snippets = []
-                for i in range(len(snippet_id)):
-                    snippets.append({
-                        'snippet_id': snippet_id[i],
-                        'language': language[i] if isinstance(language, list) else language,
-                        'tags': tags[i] if isinstance(tags, list) else tags,
-                        'description': description[i] if isinstance(description, list) else description,
-                        'code_content': code_content[i],
-                        'version': version[i] if isinstance(version, list) else version
-                    })
-                return self.services.storage.save(snippets)
-            else:
-                data = {
-                    'snippet_id': snippet_id,
-                    'language': language,
-                    'tags': tags,
-                    'description': description,
-                    'code_content': code_content,
-                    'version': version
-                }
-                return self.services.storage.save(snippet_id, data)
+        for field, val in [('snippet_id', snippet_id), ('language', language),
+                           ('code_content', code_content), ('version', version)]:
+            if val is None:
+                return {'success': False, 'error': f'Missing required parameter: {field}'}
+
+        data = {
+            'snippet_id': snippet_id,
+            'language': language,
+            'tags': tags or [],
+            'description': description or '',
+            'code_content': code_content,
+            'version': version,
+            'timestamp': self.services.time.now_utc_iso(),
+        }
+        try:
+            result = self.services.storage.save(snippet_id, data)
+            return {'success': True, 'data': {'message': 'Snippet saved successfully'}}
+        except Exception as e:
+            self.services.logging.error(f'Storage error: {e}')
+            return {'success': False, 'error': str(e)}
 
     def _handle_get_snippet(self, **kwargs):
-            snippet_id = kwargs.get('snippet_id')
-            if not snippet_id:
-                raise ValueError("Missing required parameter: snippet_id")
-
-            return self.services.storage.get(snippet_id)
+        snippet_id = kwargs.get('snippet_id')
+        if not snippet_id:
+            return {'success': False, 'error': 'Missing required parameter: snippet_id'}
+        try:
+            data = self.services.storage.get(snippet_id)
+            if data is None:
+                return {'success': False, 'error': 'Snippet not found'}
+            return {'success': True, 'data': data}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
 
     def _handle_search(self, **kwargs):
             query = kwargs.get('query')
-            language = kwargs.get('language')
-            tags = kwargs.get('tags')
-
             if not query:
-                raise ValueError("Missing required parameter: query")
+                return {'success': False, 'error': 'Missing required parameter: query'}
+            language = kwargs.get('language')
+            tags = kwargs.get('tags') or []
 
-            # TODO: Implement search logic using self.services
-            return {}
+            try:
+                all_snippets = self.services.storage.list(limit=100)
+                results = []
+
+                for s in all_snippets:
+                    if not isinstance(s, dict):
+                        continue
+                    description = s.get('description', '').lower()
+                    code_content = s.get('code_content', '').lower()
+
+                    # Apply boolean logic and wildcard matching
+                    query_parts = query.split()
+                    match = True
+                    for part in query_parts:
+                        if part.startswith('-'):
+                            negated_query = part[1:]
+                            if negated_query in description or negated_query in code_content:
+                                match = False
+                                break
+                        elif '*' in part:
+                            wildcard_query = part.replace('*', '.*')
+                            import re
+                            pattern = re.compile(wildcard_query)
+                            if not (pattern.search(description) or pattern.search(code_content)):
+                                match = False
+                                break
+                        else:
+                            if part not in description and part not in code_content:
+                                match = False
+                                break
+
+                    if language and s.get('language', '').lower() != language.lower():
+                        continue
+                    if tags and not any(t in s.get('tags', []) for t in tags):
+                        continue
+                    if match or (not language and not tags):
+                        results.append(s)
+
+                return {'success': True, 'data': results} if results else {'success': False, 'error': 'No results found'}
+            except Exception as e:
+                self.services.logging.error(f'Search error: {e}')
+                return {'success': False, 'error': str(e)}
 
     def _handle_list_popular(self, **kwargs):
-            limit = kwargs.get("limit", 10)
-            if not isinstance(limit, int) or limit <= 0:
-                raise ValueError("Limit must be a positive integer.")
-
+        limit = kwargs.get('limit', 10)
+        if not isinstance(limit, int) or limit <= 0:
+            return {'success': False, 'error': 'Limit must be a positive integer'}
+        try:
             snippets = self.services.storage.list(limit=limit)
-            return {"popular_snippets": snippets}
+            return {'success': True, 'data': snippets}
+        except Exception as e:
+            self.services.logging.error(f'List error: {e}')
+            return {'success': False, 'error': str(e)}
 
     def _handle_update_version(self, **kwargs):
-            snippet_id = kwargs.get('snippet_id')
-            new_code_content = kwargs.get('new_code_content')
-            new_version = kwargs.get('new_version')
-
-            if not all([snippet_id, new_code_content, new_version]):
-                raise ValueError("Missing required parameters: snippet_id, new_code_content, new_version")
-
-            existing_snippet = self.services.storage.get(snippet_id)
-            if not existing_snippet:
-                raise ValueError(f"Snippet with ID {snippet_id} does not exist")
-
-            updated_snippet = {
-                **existing_snippet,
-                'code_content': new_code_content,
-                'version': new_version
-            }
-
-            return self.services.storage.save(snippet_id, updated_snippet)
+        snippet_id = kwargs.get('snippet_id')
+        new_code_content = kwargs.get('new_code_content')
+        new_version = kwargs.get('new_version')
+        if not all([snippet_id, new_code_content, new_version is not None]):
+            return {'success': False, 'error': 'Missing required parameters: snippet_id, new_code_content, new_version'}
+        try:
+            existing = self.services.storage.get(snippet_id)
+            if not existing:
+                return {'success': False, 'error': f'Snippet {snippet_id} not found'}
+            self.services.storage.update(snippet_id, {'code_content': new_code_content, 'version': new_version})
+            return {'success': True, 'data': {'message': 'Snippet updated successfully'}}
+        except Exception as e:
+            self.services.logging.error(f'Update error: {e}')
+            return {'success': False, 'error': str(e)}

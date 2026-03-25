@@ -37,8 +37,8 @@ class AutoEvolutionOrchestrator:
             "min_health_threshold": 50,
             "auto_approve_threshold": 90,  # Auto-approve if test score >= 90
             "learning_enabled": True,
-            "enable_enhancements": True,  # Queue tools with improvement suggestions
-            "max_new_tools_per_scan": 1,  # Limit self-feature growth per scan
+            "enable_enhancements": True,  # Queue HEALTHY tools with improvements too
+            "max_new_tools_per_scan": 3,  # tools to create per scan from gaps
         }
 
     async def ensure_initialized(self):
@@ -131,15 +131,134 @@ class AutoEvolutionOrchestrator:
                 self.logger.error(f"Process loop error: {e}")
                 await asyncio.sleep(10)
                 
+    async def _analyze_system_gaps(self):
+        """Proactively reason about the full CUA system and identify missing tools.
+        Reads skills, existing tools, and architecture to find capability gaps
+        without waiting for user failures to trigger them.
+        """
+        try:
+            from pathlib import Path
+            from core.gap_tracker import GapTracker
+            from core.gap_detector import CapabilityGap
+
+            # Build system snapshot: skills and what they need
+            skills_snapshot = []
+            skills_dir = Path("skills")
+            for skill_dir in sorted(skills_dir.iterdir()):
+                skill_json = skill_dir / "skill.json"
+                if not skill_json.exists():
+                    continue
+                try:
+                    import json as _json
+                    skill_def = _json.loads(skill_json.read_text())
+                    skills_snapshot.append({
+                        "name": skill_def.get("name", skill_dir.name),
+                        "description": skill_def.get("description", ""),
+                        "preferred_tools": skill_def.get("preferred_tools", []),
+                        "capabilities_needed": skill_def.get("capabilities", []),
+                    })
+                except Exception:
+                    pass
+
+            # Build existing tool inventory
+            existing_tools = []
+            for tools_path in [Path("tools"), Path("tools/experimental")]:
+                if not tools_path.exists():
+                    continue
+                for tf in tools_path.glob("*.py"):
+                    if tf.name.startswith("__"):
+                        continue
+                    existing_tools.append(tf.stem)
+
+            # Build covered capabilities from registry
+            covered_caps = set()
+            if self.registry:
+                try:
+                    for tool in getattr(self.registry, "tools", []):
+                        for cap_name in (tool.get_capabilities() or {}):
+                            covered_caps.add(cap_name.lower())
+                        covered_caps.add(tool.__class__.__name__.lower().replace("tool", ""))
+                except Exception:
+                    pass
+
+            import json as _json
+            system_context = (
+                "You are analyzing the CUA autonomous agent system to find missing tool capabilities.\n"
+                "CUA is a local autonomous agent: plans tasks, routes via skills, calls tools, creates/evolves tools.\n\n"
+                f"SKILLS: {', '.join(s['name'] for s in skills_snapshot)}\n"
+                f"EXISTING TOOLS: {', '.join(existing_tools)}\n"
+                f"COVERED CAPABILITIES (sample): {', '.join(sorted(covered_caps)[:30])}\n\n"
+                "What tool capabilities are clearly missing for a general-purpose autonomous agent?\n"
+                "Consider: what each skill needs, what gaps exist between skills and tools.\n\n"
+                "Return JSON array of up to 3 gaps (most impactful first):\n"
+                '[{"capability": "short_name", "confidence": 0.0-1.0, "reason": "max 8 words", '
+                '"suggested_tool_name": "ToolNameTool"}]\n'
+                "Only include gaps where confidence >= 0.75. Keep reason under 8 words. If nothing is missing return []"
+            )
+
+            raw = await asyncio.to_thread(
+                self.llm_client._call_llm,
+                system_context,
+                0.1,
+                800,  # was 300 — too small for JSON array with reason strings, caused truncation
+                True,
+            )
+            import json as _json
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(data, list):
+                return
+
+            tracker = GapTracker()
+            found = 0
+            for item in data:
+                cap = (item.get("capability") or "").strip()
+                conf = float(item.get("confidence", 0.0))
+                reason = (item.get("reason") or "").strip()
+                suggested_name = (item.get("suggested_tool_name") or "").strip()
+                if not cap or conf < 0.75:
+                    continue
+                # Skip if already covered — exact match only
+                cap_key = cap.lower().replace(":", "_")
+                if cap_key in covered_caps:
+                    continue
+                # Skip if already tracked and actionable
+                existing = tracker.gaps.get(cap)
+                if existing and existing.resolution_attempted:
+                    continue
+                gap = CapabilityGap(
+                    capability=cap,
+                    confidence=min(conf, 0.95),
+                    reason=reason,
+                    domain="system_analysis",
+                    gap_type="llm_identified",
+                    suggested_action="create_tool",
+                )
+                if suggested_name:
+                    gap.target_tool = suggested_name
+                tracker.record_gap(gap)
+                found += 1
+                self.logger.info(f"System gap identified: {cap} (conf={conf:.2f}) — {reason}")
+                broadcast_trace_sync("auto", f"System gap found: {cap}", "in_progress",
+                                     {"stage": "system_analysis", "capability": cap, "confidence": conf})
+
+            if found:
+                self.logger.info(f"System analysis found {found} new capability gaps")
+        except Exception as e:
+            self.logger.warning(f"System gap analysis skipped: {e}")
+
     async def _scan_and_queue(self):
         """Scan tools with LLM health analysis and queue improvements"""
         self.scanning = True
         self.logger.info("Starting LLM-based tool health scan")
         
         try:
-            # 0) Queue evolutions based on real usage signals (tool execution logs)
+            # 0) Proactive system-wide gap analysis — LLM reasons about full CUA architecture
+            broadcast_trace_sync("auto", "Running system gap analysis", "in_progress", {"stage": "system_analysis"})
+            await self._analyze_system_gaps()
+
+            # 1) Queue evolutions based on real usage signals (tool execution logs)
             try:
-                weak_reports = self.quality_analyzer.get_weak_tools(days=7, min_usage=3)
+                weak_reports = self.quality_analyzer.get_weak_tools(days=7, min_usage=5)
                 for report in weak_reports[:10]:
                     evolution = QueuedEvolution(
                         tool_name=report.tool_name,
@@ -157,14 +276,58 @@ class AutoEvolutionOrchestrator:
             # 1) Queue new tool creation from persistent capability gaps (self-feature growth)
             try:
                 from core.gap_tracker import GapTracker
+                from core.gap_detector import GapDetector
+                from core.capability_mapper import CapabilityMapper
                 tracker = GapTracker()
+
+                # LLM-driven gap analysis over recent failed requests
+                try:
+                    from core.cua_db import get_conn as _get_cua_conn
+                    failed_requests = []
+                    with _get_cua_conn() as _conn:
+                        _rows = _conn.execute(
+                            "SELECT failure_reason, error_message FROM failures "
+                            "ORDER BY timestamp DESC LIMIT 20"
+                        ).fetchall() or []
+                        failed_requests = [
+                            {"task": r[0] or "", "error": r[1] or ""} for r in _rows
+                        ]
+                    if failed_requests:
+                        detector = GapDetector(CapabilityMapper())
+                        llm_gap = detector.analyze_with_llm(failed_requests, self.llm_client)
+                        if llm_gap and llm_gap.confidence >= 0.7:
+                            tracker.record_gap(llm_gap)
+                            self.logger.info(f"LLM gap analysis found: {llm_gap.capability} (conf={llm_gap.confidence:.2f})")
+                except Exception as _ge:
+                    self.logger.warning(f"LLM gap analysis skipped: {_ge}")
+
                 actionable = tracker.get_actionable_gaps()
                 max_new_tools = int(self.config.get("max_new_tools_per_scan", 1))
                 created = 0
+
+                # Build set of capability names already covered by loaded tools
+                covered_caps: set = set()
+                if self.registry:
+                    try:
+                        for tool in getattr(self.registry, "tools", []):
+                            for cap_name in (tool.get_capabilities() or {}):
+                                covered_caps.add(cap_name.lower())
+                            covered_caps.add(tool.__class__.__name__.lower().replace("tool", ""))
+                    except Exception:
+                        pass
+
                 for gap in actionable:
                     if created >= max_new_tools:
                         break
+                    gap_key = (gap.capability or "").lower().replace(":", "_")
+                    # Skip only if an exact capability name matches — not substring
+                    # The old 'gap_key in cap or cap in gap_key' was too broad and
+                    # filtered out almost everything via substring coincidence
+                    if gap_key in covered_caps:
+                        self.logger.info(f"Gap '{gap.capability}' already covered by loaded tool — skipping CREATE")
+                        continue
                     if gap.capability and not self.queue.is_queued(f"CREATE::{gap.capability}"):
+                        preferred_name = getattr(gap, "target_tool", None)
                         evolution = QueuedEvolution(
                             tool_name=f"CREATE::{gap.capability}",
                             urgency_score=60.0,
@@ -177,9 +340,12 @@ class AutoEvolutionOrchestrator:
                                 "gap_capability": gap.capability,
                                 "gap_description": f"Add capability: {gap.capability}. Reasons: {', '.join(gap.reasons[:3])}",
                                 "suggested_library": gap.suggested_library,
+                                "preferred_name": preferred_name,
                             },
                         )
                         self.queue.add(evolution)
+                        # Mark gap so it doesn't re-queue on the next scan
+                        tracker.mark_resolved(gap.capability, "create_tool")
                         created += 1
             except Exception as e:
                 self.logger.warning(f"Gap-based tool creation queueing skipped: {e}")
@@ -206,9 +372,28 @@ class AutoEvolutionOrchestrator:
                 self.logger.info(f"Analyzing {tool_name} ({self.scan_progress['current']}/{self.scan_progress['total']})")
                 self.logger.info(f"Checking if {tool_name} is already queued...")
                 
+                # Skip disabled tools — they never execute so health never updates
+                if tool_name in self._DISABLED_TOOLS:
+                    self.logger.info(f"Skipping {tool_name} - disabled tool")
+                    continue
+
                 # Skip if already queued
                 if self.queue.is_queued(tool_name):
                     self.logger.info(f"Skipping {tool_name} - already queued")
+                    continue
+
+                # Skip disabled tools — they never execute so health data never improves
+                try:
+                    from core.tool_registry_manager import ToolRegistryManager
+                    if tool_name in ToolRegistryManager.DISABLED_TOOLS:
+                        self.logger.info(f"Skipping {tool_name} - disabled tool")
+                        continue
+                except Exception:
+                    pass
+
+                # Skip if tool was recently evolved and hasn't been executed enough since
+                if self._recently_evolved_insufficient_data(tool_name):
+                    self.logger.info(f"Skipping {tool_name} - recently evolved, awaiting execution data")
                     continue
                 
                 # Run LLM health analysis
@@ -233,12 +418,16 @@ class AutoEvolutionOrchestrator:
                 improvements = llm_result.get("improvements", [])
                 
                 # Queue WEAK, NEEDS_IMPROVEMENT, or HEALTHY with improvements (if enabled)
+                is_enhancement = category == "HEALTHY" and len(improvements) > 0
                 should_queue = False
                 if category in ["WEAK", "NEEDS_IMPROVEMENT"]:
                     should_queue = True
-                elif category == "HEALTHY" and len(improvements) > 0 and self.config.get("enable_enhancements", True):
-                    should_queue = True
-                
+                elif is_enhancement and self.config.get("enable_enhancements", True):
+                    # Cap enhancements per scan to avoid queuing all healthy tools
+                    enhancement_queued = sum(1 for e in self.queue.queue if (e.metadata or {}).get("is_enhancement"))
+                    if enhancement_queued < int(self.config.get("max_new_tools_per_scan", 3)):
+                        should_queue = True
+
                 if not should_queue:
                     continue
                 
@@ -289,7 +478,7 @@ class AutoEvolutionOrchestrator:
                         "llm_scan": True, 
                         "issues_count": len(issues),
                         "improvements_count": len(improvements),
-                        "is_enhancement": category == "HEALTHY"
+                        "is_enhancement": is_enhancement
                     }
                 )
                 self.queue.add(evolution)
@@ -418,13 +607,24 @@ class AutoEvolutionOrchestrator:
                     from core.capability_graph import CapabilityGraph
                     from core.expansion_mode import ExpansionMode
                     from core.tool_creation.flow import ToolCreationOrchestrator
-                    self.tool_creation_flow = ToolCreationOrchestrator(CapabilityGraph(), ExpansionMode(enabled=True))
+                    from core.skills.registry import SkillRegistry as _SR
+                    _sr = _SR()
+                    _sr.load_all()
+                    self.tool_creation_flow = ToolCreationOrchestrator(
+                        CapabilityGraph(),
+                        ExpansionMode(enabled=True),
+                        skill_registry=_sr,
+                        llm_client=self.llm_client,
+                    )
 
                 gap_description = (evolution.metadata or {}).get("gap_description") or evolution.reason
                 preferred_name = None
                 gap_capability = (evolution.metadata or {}).get("gap_capability")
                 if gap_capability:
-                    preferred_name = "".join([p.capitalize() for p in str(gap_capability).split("_")]) + "Tool"
+                    preferred_name = (
+                        (evolution.metadata or {}).get("preferred_name")
+                        or "".join([p.capitalize() for p in str(gap_capability).split("_")]) + "Tool"
+                    )
 
                 result = await asyncio.to_thread(
                     self.tool_creation_flow.create_tool,
@@ -440,6 +640,21 @@ class AutoEvolutionOrchestrator:
                     tool_name_for_tests = (self.tool_creation_flow.last_spec or {}).get("name")
                 except Exception:
                     tool_name_for_tests = None
+                # Feedback loop: record resolved gap in cua.db
+                if result.get("success"):
+                    gap_capability = (evolution.metadata or {}).get("gap_capability")
+                    if gap_capability:
+                        try:
+                            from core.cua_db import get_conn as _gcua
+                            from datetime import datetime as _dt
+                            with _gcua() as _c:
+                                _c.execute(
+                                    "INSERT INTO resolved_gaps (capability, resolution_action, tool_name, resolved_at, notes) VALUES (?,?,?,?,?)",
+                                    (gap_capability, "create_tool", tool_name_for_tests or evolution.tool_name,
+                                     _dt.utcnow().isoformat(), evolution.reason or ""),
+                                )
+                        except Exception as _fe:
+                            self.logger.warning(f"Failed to record resolved gap: {_fe}")
             else:
                 # Run evolution flow with execution context for skill-aware guidance
                 # Build skill context for auto-triggered evolution
@@ -479,7 +694,8 @@ class AutoEvolutionOrchestrator:
                 self.queue.mark_failed(evolution.tool_name, result.get("message", "Unknown error"))
                 return
                 
-            # Run LLM tests (best-effort)
+            # Run LLM tests (best-effort) — score is informational only;
+            # test orchestrator runs without a live LLM so score is often 0
             test_target = tool_name_for_tests or evolution.tool_name
             test_result = self.test_orchestrator.run_test_suite(test_target)
             broadcast_trace_sync(
@@ -490,17 +706,25 @@ class AutoEvolutionOrchestrator:
             )
             test_score = test_result.get("overall_score", 0)
             
-            self.logger.info(f"Evolution test score: {test_score} (tool: {test_target}, pass_rate: {test_result.get('pass_rate', 0)})")
-            
-            # Auto-approve if score is high enough
-            if test_score >= self.config["auto_approve_threshold"]:
-                self.logger.info(f"Auto-approving evolution for {evolution.tool_name}")
-                # Note: Actual approval still requires human confirmation
-                # This just marks it as recommended for auto-approval
-                result["auto_approve_recommended"] = True
-                
+            # Auto-approve evolution if test score meets threshold (creation always needs human)
+            if kind == "evolve_tool" and test_score >= self.config["auto_approve_threshold"]:
+                self.logger.info(f"Auto-approving evolution for {evolution.tool_name} (score={test_score})")
+                try:
+                    from core.pending_evolutions_manager import PendingEvolutionsManager
+                    mgr = PendingEvolutionsManager()
+                    if mgr.get_pending_evolution(evolution.tool_name):
+                        mgr.approve_evolution(evolution.tool_name)
+                        result["auto_approved"] = True
+                        broadcast_trace_sync("evolution", f"Auto-approved {evolution.tool_name}", "success",
+                                             {"stage": "auto_approve", "test_score": test_score})
+                except Exception as _e:
+                    self.logger.warning(f"Auto-approve failed for {evolution.tool_name}: {_e}")
+                    result["auto_approve_recommended"] = True
+            elif kind == "create_tool":
+                result["auto_approve_recommended"] = test_score >= self.config["auto_approve_threshold"]
+
             self.queue.mark_completed(evolution.tool_name)
-            
+
             # Learn from result if enabled
             if self.config["learning_enabled"]:
                 self._learn_from_evolution(evolution, result, test_score)
@@ -509,6 +733,55 @@ class AutoEvolutionOrchestrator:
             self.logger.error(f"Evolution processing error for {evolution.tool_name}: {e}")
             self.queue.mark_failed(evolution.tool_name, str(e))
             
+    # Tools that are intentionally disabled and should never be re-queued for evolution
+    _DISABLED_TOOLS = {"TaskBreakdownTool", "DatabaseQueryTool"}
+
+    def _recently_evolved_insufficient_data(self, tool_name: str, min_executions: int = 3) -> bool:
+        """Return True if the tool was successfully evolved recently but hasn't been
+        executed enough times since to produce meaningful health data, OR if it was
+        evolved within the cooldown window (prevents churn on active tools).
+        """
+        COOLDOWN_HOURS = 6  # minimum hours between evolutions of the same tool
+        try:
+            from core.cua_db import get_conn
+            with get_conn() as conn:
+                row = conn.execute(
+                    """SELECT timestamp FROM evolution_runs
+                       WHERE tool_name = ? AND status IN ('success', 'approved')
+                       ORDER BY timestamp DESC LIMIT 1""",
+                    (tool_name,)
+                ).fetchone()
+            if not row:
+                return False
+            last_evolved_at = row[0]
+        except Exception:
+            return False
+
+        # Cooldown check — always skip if evolved within COOLDOWN_HOURS regardless of executions
+        try:
+            from datetime import datetime, timezone, timedelta
+            last_dt = datetime.fromisoformat(last_evolved_at.replace('Z', '+00:00'))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - last_dt < timedelta(hours=COOLDOWN_HOURS):
+                return True
+        except Exception:
+            pass
+
+        try:
+            import sqlite3
+            conn2 = sqlite3.connect("data/tool_executions.db")
+            row2 = conn2.execute(
+                "SELECT COUNT(*) FROM executions WHERE tool_name = ? AND timestamp > ?",
+                (tool_name, last_evolved_at)
+            ).fetchone()
+            conn2.close()
+            executions_since = row2[0] if row2 else 0
+        except Exception:
+            return False
+
+        return executions_since < min_executions
+
     def _calculate_urgency(self, health_data: Dict) -> float:
         """Calculate urgency score (0-100)"""
         health = health_data.get("health_score", 100)
@@ -556,15 +829,20 @@ class AutoEvolutionOrchestrator:
         last_execution = health_data.get("last_execution")
         if not last_execution:
             return 50.0
-            
-        # Recent activity = better timing
-        hours_since = (datetime.now() - datetime.fromisoformat(last_execution)).total_seconds() / 3600
-        
+        try:
+            from datetime import timezone
+            parsed = datetime.fromisoformat(str(last_execution).replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            hours_since = (now - parsed).total_seconds() / 3600
+        except Exception:
+            return 50.0
         if hours_since < 1:
             return 100.0
         elif hours_since < 24:
             return 75.0
-        elif hours_since < 168:  # 1 week
+        elif hours_since < 168:
             return 50.0
         else:
             return 25.0
@@ -618,16 +896,23 @@ class AutoEvolutionOrchestrator:
         return "LLM analysis recommends improvements"
             
     def _learn_from_evolution(self, evolution: QueuedEvolution, result: Dict, test_score: float):
-        """Learn from evolution outcome to improve future prioritization"""
-        # Store learning data for future analysis
-        learning_data = {
-            "tool_name": evolution.tool_name,
-            "priority_score": evolution.priority_score,
-            "test_score": test_score,
-            "success": result.get("success", False),
-            "timestamp": datetime.now().isoformat()
-        }
-        self.logger.debug(f"Learning from evolution: {learning_data}")
+        """Record evolution outcome to improvement_memory.db for future threshold adjustment."""
+        try:
+            from core.improvement_memory import ImprovementMemory
+            mem = ImprovementMemory()
+            kind = (evolution.metadata or {}).get("kind", "evolve_tool")
+            mem.store_attempt(
+                file_path=evolution.tool_name,
+                change_type=kind,
+                description=evolution.reason or "",
+                patch="",
+                outcome="success" if result.get("success") else "failed",
+                error_message=result.get("message") if not result.get("success") else None,
+                test_results={"overall_score": test_score, "auto_approved": result.get("auto_approved", False)},
+                metrics={"priority_score": evolution.priority_score, "test_score": test_score},
+            )
+        except Exception as _e:
+            self.logger.warning(f"Failed to record improvement memory: {_e}")
         
     def update_config(self, config: Dict):
         """Update orchestrator configuration"""

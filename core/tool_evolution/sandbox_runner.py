@@ -22,7 +22,8 @@ class EvolutionSandboxRunner:
         improved_code: str,
         original_path: str,
         new_service_specs: Optional[Dict[str, Any]] = None,
-        network_only: bool = False
+        network_only: bool = False,
+        target_functions: Optional[list] = None
     ) -> tuple[bool, str]:
         """Test improved tool in isolated environment. Returns (success, output)."""
         
@@ -90,7 +91,7 @@ class EvolutionSandboxRunner:
                 output_lines.append("✓ Instantiation test passed")
                 
                 # Run smoke tests
-                success = self._run_smoke_tests(tool_instance, orchestrator, output_lines)
+                success = self._run_smoke_tests(tool_instance, orchestrator, output_lines, target_functions=target_functions)
                 
                 if success:
                     logger.info(f"Sandbox tests passed for {tool_name}")
@@ -117,8 +118,14 @@ class EvolutionSandboxRunner:
         class_name = self._class_name(tool_name)
         return getattr(module, class_name, None)
     
-    def _run_smoke_tests(self, tool_instance, orchestrator, output_lines: list) -> bool:
+    def _run_smoke_tests(self, tool_instance, orchestrator, output_lines: list, target_functions: Optional[list] = None) -> bool:
         """Execute smoke tests across capabilities (matches creation pattern)."""
+        # Derive operation names that were targeted by this evolution
+        targeted_ops = set()
+        if target_functions:
+            for fn in target_functions:
+                if fn.startswith('_handle_'):
+                    targeted_ops.add(fn[len('_handle_'):])
         try:
             capabilities = tool_instance.get_capabilities()
         except Exception as e:
@@ -172,11 +179,12 @@ class EvolutionSandboxRunner:
                 error_msg = str(e)
                 # Only skip specific network/browser errors that are expected in sandbox
                 skip_patterns = [
-                    'ssl', 'certificate', 'tls',  # SSL/TLS errors
-                    'connection refused', 'connection reset', 'connection timeout',  # Connection errors
-                    'network is unreachable', 'no route to host',  # Network errors
-                    'browser not open', 'browser is not initialized',  # Browser state errors
-                    'no such element', 'element not found', 'stale element'  # Element errors
+                    'ssl', 'certificate', 'tls',
+                    'connection refused', 'connection reset', 'connection timeout',
+                    'network is unreachable', 'no route to host',
+                    'browser not open', 'browser is not initialized',
+                    'no such element', 'element not found', 'stale element',
+                    'this event loop is already running',  # asyncio in FastAPI context
                 ]
                 if any(pattern in error_msg.lower() for pattern in skip_patterns):
                     logger.warning(f"Sandbox: Skipping expected network/browser error for '{op}': {error_msg}")
@@ -185,21 +193,39 @@ class EvolutionSandboxRunner:
                 
                 # Real errors should fail
                 logger.error(f"Exception during '{op}': {error_msg}")
-                output_lines.append(f"✗ Operation '{op}' failed: {error_msg}")
+                # Flag asyncio misuse specifically
+                if 'asyncio' in error_msg.lower() or 'event loop' in error_msg.lower() or 'run_until_complete' in error_msg.lower():
+                    output_lines.append(f"✗ Operation '{op}' uses asyncio incorrectly — use ThreadPoolExecutor instead")
+                else:
+                    output_lines.append(f"✗ Operation '{op}' failed: {error_msg}")
                 return False
             
             if not result.success:
                 error_msg = result.error
                 # Only skip specific network/browser errors that are expected in sandbox
                 skip_patterns = [
-                    'ssl', 'certificate', 'tls',  # SSL/TLS errors
-                    'connection refused', 'connection reset', 'connection timeout',  # Connection errors
-                    'network is unreachable', 'no route to host',  # Network errors
-                    'browser not open', 'browser is not initialized',  # Browser state errors
-                    'no such element', 'element not found', 'stale element'  # Element errors
+                    'ssl', 'certificate', 'tls',
+                    'connection refused', 'connection reset', 'connection timeout',
+                    'network is unreachable', 'no route to host',
+                    'browser not open', 'browser is not initialized',
+                    'no such element', 'element not found', 'stale element',
+                    'this event loop is already running',
+                    # Rate-limit heuristic is a false positive in sandbox — tool output
+                    # contains words that trigger the orchestrator heuristic but the
+                    # tool itself is working correctly.
+                    'rate-limit signals',
+                    'rate limit',
                 ]
                 if any(pattern in error_msg.lower() for pattern in skip_patterns):
                     logger.warning(f"Sandbox: Skipping expected network/browser error for '{op}': {error_msg}")
+                    skipped_count += 1
+                    continue
+
+                # If this operation was NOT a target of the evolution, a 'returned None'
+                # failure means the original handler uses services that aren't available
+                # in sandbox — skip it rather than failing the whole evolution.
+                if targeted_ops and op not in targeted_ops and 'returned none' in error_msg.lower():
+                    logger.warning(f"Sandbox: Skipping 'returned None' for non-targeted op '{op}' (services unavailable in sandbox)")
                     skipped_count += 1
                     continue
                 

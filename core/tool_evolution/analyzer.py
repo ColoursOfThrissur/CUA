@@ -61,8 +61,8 @@ class ToolAnalyzer:
             else:
                 health_score = runtime_report.health_score
             
-            # Adjust based on runtime success rate
-            if runtime_report.success_rate < 0.5:
+            # Adjust based on runtime success rate — only penalize if there IS usage data
+            if runtime_report.usage_frequency > 0 and runtime_report.success_rate < 0.5:
                 health_score = min(health_score, 50.0)
             
             # Block evolution only if tool is HEALTHY but has critically low success rate

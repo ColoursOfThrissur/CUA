@@ -27,8 +27,16 @@ class LLMToolHealthAnalyzer:
     
     def analyze_tool(self, tool_name: str, force_refresh: bool = False) -> Dict:
         """Analyze tool with sequential LLM reasoning."""
+        # Cache hit: valid only if entry is < 24 hours old
         if not force_refresh and tool_name in self.cache:
-            return self.cache[tool_name]
+            entry = self.cache[tool_name]
+            try:
+                import time as _time
+                cached_mtime = float(entry.get("timestamp", 0))
+                if _time.time() - cached_mtime < 86400:  # 24h TTL
+                    return entry
+            except Exception:
+                pass  # fall through to re-analyse
         
         # Find tool file - check experimental dir first, then registry
         tool_file = self.tools_dir / f"{tool_name}.py"
@@ -63,7 +71,7 @@ class LLMToolHealthAnalyzer:
             "issues": issues,
             "improvements": improvements,
             "category": category,
-            "timestamp": str(Path(tool_file).stat().st_mtime)
+            "timestamp": __import__('time').time()  # wall-clock seconds for TTL
         }
         
         self.cache[tool_name] = result
@@ -134,27 +142,76 @@ If no REAL issues found, return: []"""
         
         return []
     
+    def _extract_tool_structure(self, tool_code: str) -> str:
+        """Extract registered capabilities, operations, and services used from tool code."""
+        import ast as _ast
+        lines = []
+        try:
+            tree = _ast.parse(tool_code)
+            # Registered capability names
+            caps = []
+            services_used = set()
+            methods = []
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef):
+                    if node.name not in ('__init__', 'execute', 'register_capabilities'):
+                        methods.append(node.name)
+                    # Detect self.services.X usage
+                    for child in _ast.walk(node):
+                        if isinstance(child, _ast.Attribute):
+                            if (isinstance(child.value, _ast.Attribute)
+                                    and isinstance(child.value.value, _ast.Name)
+                                    and child.value.value.id == 'self'
+                                    and child.value.attr == 'services'):
+                                services_used.add(child.attr)
+                if isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Attribute) and func.attr == 'add_capability':
+                        for kw in node.keywords:
+                            if kw.arg == 'name' and isinstance(kw.value, _ast.Constant):
+                                caps.append(kw.value.value)
+            if caps:
+                lines.append(f"Registered capabilities: {', '.join(caps)}")
+            if methods:
+                lines.append(f"Methods: {', '.join(methods[:20])}")
+            if services_used:
+                lines.append(f"Services used: {', '.join(sorted(services_used))}")
+        except Exception:
+            pass
+        return '\n'.join(lines) if lines else 'Could not extract structure'
+
     def _suggest_improvements(self, tool_name: str, tool_code: str, purpose: str, issues: List[Dict]) -> List[Dict]:
-        """Step 3: Suggest functional improvements (not fixes)."""
-        prompt = f"""You are a feature enhancement advisor. Suggest NEW capabilities for this tool.
+        """Step 3: Suggest functional improvements grounded in the actual tool code."""
+        structure = self._extract_tool_structure(tool_code)
+        prompt = f"""You are a feature enhancement advisor reviewing actual tool code.
 
 Tool: {tool_name}
 Purpose: {purpose}
 
-Current Issues Found: {len(issues)} issues
+Tool structure:
+{structure}
 
-Suggest ADDITIONS (not fixes) that would make this tool more useful:
-1. NEW_CAPABILITY - Additional operations/features
-2. ENHANCEMENT - Improvements to existing features
-3. INTEGRATION - Better use of available services
+Code:
+{tool_code}
 
-Return ONLY a JSON array:
+Existing issues already found: {json.dumps(issues)}
+
+Based on the ACTUAL CODE and registered capabilities above, suggest specific improvements that are:
+- Grounded in what this tool specifically does (not generic advice)
+- Additions or enhancements to the existing operations this tool already has
+- Realistic given the tool's current architecture and services it already uses
+
+DO NOT suggest:
+- Generic improvements like "add batch processing" unless the tool already has single-item operations that would clearly benefit
+- Things already present in the code
+- Fixes for the issues listed above (those are separate)
+
+Return ONLY a JSON array (max 3 items):
 [
-  {{"type": "NEW_CAPABILITY", "priority": "HIGH", "description": "Add batch processing support"}},
-  {{"type": "ENHANCEMENT", "priority": "MEDIUM", "description": "Add configurable output formats"}}
+  {{"type": "NEW_CAPABILITY", "priority": "HIGH", "description": "<specific to this tool's existing operations>"}}
 ]
 
-If no improvements needed, return: []"""
+If no meaningful improvements exist for this specific tool, return: []"""
         
         response = self.llm.generate_response(prompt, [])
         

@@ -6,73 +6,22 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 from core.correlation_context import CorrelationContext
+from core.cua_db import get_conn
 
 
 class ToolExecutionLogger:
     """Logs every tool execution to enable quality tracking."""
-    
-    def __init__(self, db_path: str = "data/tool_executions.db"):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-    
+
+    def __init__(self, db_path: str = "data/cua.db"):
+        # db_path kept for API compat but ignored — all writes go to cua.db via get_conn()
+        from core.cua_db import _ensure_init
+        _ensure_init()
+
     def _init_db(self):
-        """Create executions table if not exists."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='executions'")
-            table_exists = cursor.fetchone() is not None
-            
-            if table_exists:
-                cursor = conn.execute("PRAGMA table_info(executions)")
-                columns = [row[1] for row in cursor.fetchall()]
-                if 'correlation_id' not in columns:
-                    conn.execute("ALTER TABLE executions ADD COLUMN correlation_id TEXT")
-                if 'parent_execution_id' not in columns:
-                    conn.execute("ALTER TABLE executions ADD COLUMN parent_execution_id INTEGER")
-                if 'error_stack_trace' not in columns:
-                    conn.execute("ALTER TABLE executions ADD COLUMN error_stack_trace TEXT")
-                if 'output_data' not in columns:
-                    conn.execute("ALTER TABLE executions ADD COLUMN output_data TEXT")
-            else:
-                conn.execute("""
-                    CREATE TABLE executions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        correlation_id TEXT,
-                        parent_execution_id INTEGER,
-                        tool_name TEXT NOT NULL,
-                        operation TEXT NOT NULL,
-                        success INTEGER NOT NULL,
-                        error TEXT,
-                        error_stack_trace TEXT,
-                        execution_time_ms REAL,
-                        parameters TEXT,
-                        output_data TEXT,
-                        output_size INTEGER,
-                        risk_score REAL,
-                        timestamp REAL NOT NULL,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-            
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_name ON executions(tool_name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON executions(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_correlation_id ON executions(correlation_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_parent_execution_id ON executions(parent_execution_id)")
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS execution_context (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    execution_id INTEGER NOT NULL,
-                    correlation_id TEXT,
-                    service_calls TEXT,
-                    llm_calls_count INTEGER DEFAULT 0,
-                    llm_tokens_used INTEGER DEFAULT 0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (execution_id) REFERENCES executions(id)
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_exec_context_execution_id ON execution_context(execution_id)")
-            conn.commit()
+        """No-op — schema created by cua_db._ensure_init."""
+        pass
+
+    # legacy _init_db removed — schema lives in cua_db._create_all_tables
     
     def log_execution(
         self,
@@ -109,18 +58,15 @@ class ToolExecutionLogger:
         risk_score = self._calculate_risk_score(success, error, execution_time_ms, output_size)
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_conn() as conn:
                 cursor = conn.execute("""
-                    INSERT INTO executions 
-                    (correlation_id, parent_execution_id, tool_name, operation, success, error, error_stack_trace, 
+                    INSERT INTO executions
+                    (correlation_id, parent_execution_id, tool_name, operation, success, error, error_stack_trace,
                      execution_time_ms, parameters, output_data, output_size, risk_score, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (correlation_id, parent_execution_id, tool_name, operation, int(success), error, 
+                """, (correlation_id, parent_execution_id, tool_name, operation, int(success), error,
                       error_stack_trace, execution_time_ms, params_json, output_json, output_size, risk_score, time.time()))
-                
                 execution_id = cursor.lastrowid
-                
-                # Store execution context if provided
                 if service_calls or llm_calls_count > 0:
                     service_calls_json = json.dumps(service_calls) if service_calls else None
                     conn.execute("""
@@ -128,15 +74,9 @@ class ToolExecutionLogger:
                         (execution_id, correlation_id, service_calls, llm_calls_count, llm_tokens_used)
                         VALUES (?, ?, ?, ?, ?)
                     """, (execution_id, correlation_id, service_calls_json, llm_calls_count, llm_tokens_used))
-                
-                conn.commit()
                 return execution_id
-        except sqlite3.OperationalError as e:
-            # In some environments (Windows + running server), sqlite files can be locked/readonly.
-            # Logging must never break tool execution.
-            if "readonly" in str(e).lower() or "read-only" in str(e).lower():
-                return -1
-            raise
+        except Exception:
+            return -1
     
     def _calculate_risk_score(self, success: bool, error: Optional[str], exec_time_ms: float, output_size: int) -> float:
         """Calculate risk score for execution (0-1, higher = riskier)."""
@@ -170,55 +110,32 @@ class ToolExecutionLogger:
         """Get execution stats for a tool."""
         cutoff = time.time() - (days * 86400)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with get_conn() as conn:
             cursor = conn.execute("""
-                SELECT 
-                    COUNT(*) as total_executions,
-                    SUM(success) as successful_executions,
-                    AVG(execution_time_ms) as avg_time_ms,
-                    AVG(output_size) as avg_output_size,
-                    AVG(risk_score) as avg_risk_score
-                FROM executions
-                WHERE tool_name = ? AND timestamp > ?
+                SELECT COUNT(*), SUM(success), AVG(execution_time_ms), AVG(output_size), AVG(risk_score)
+                FROM executions WHERE tool_name = ? AND timestamp > ?
             """, (tool_name, cutoff))
-            
             row = cursor.fetchone()
             if not row or row[0] == 0:
-                return {
-                    "total_executions": 0,
-                    "success_rate": 0.0,
-                    "avg_time_ms": 0.0,
-                    "avg_output_size": 0,
-                    "avg_risk_score": 0.0
-                }
-            
+                return {"total_executions": 0, "success_rate": 0.0, "avg_time_ms": 0.0, "avg_output_size": 0, "avg_risk_score": 0.0}
             total, successful, avg_time, avg_size, avg_risk = row
             return {
                 "total_executions": total,
                 "success_rate": successful / total if total > 0 else 0.0,
                 "avg_time_ms": avg_time or 0.0,
                 "avg_output_size": int(avg_size or 0),
-                "avg_risk_score": avg_risk or 0.0
+                "avg_risk_score": avg_risk or 0.0,
             }
     
     def get_all_tools_stats(self, days: int = 7) -> Dict[str, Dict[str, Any]]:
         """Get stats for all tools."""
         cutoff = time.time() - (days * 86400)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with get_conn() as conn:
             cursor = conn.execute("""
-                SELECT 
-                    tool_name,
-                    COUNT(*) as total,
-                    SUM(success) as successful,
-                    AVG(execution_time_ms) as avg_time,
-                    AVG(output_size) as avg_size,
-                    AVG(risk_score) as avg_risk
-                FROM executions
-                WHERE timestamp > ?
-                GROUP BY tool_name
+                SELECT tool_name, COUNT(*), SUM(success), AVG(execution_time_ms), AVG(output_size), AVG(risk_score)
+                FROM executions WHERE timestamp > ? GROUP BY tool_name
             """, (cutoff,))
-            
             results = {}
             for row in cursor.fetchall():
                 tool_name, total, successful, avg_time, avg_size, avg_risk = row
@@ -227,9 +144,8 @@ class ToolExecutionLogger:
                     "success_rate": successful / total if total > 0 else 0.0,
                     "avg_time_ms": avg_time or 0.0,
                     "avg_output_size": int(avg_size or 0),
-                    "avg_risk_score": avg_risk or 0.0
+                    "avg_risk_score": avg_risk or 0.0,
                 }
-            
             return results
 
 

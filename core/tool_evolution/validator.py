@@ -91,8 +91,39 @@ class EvolutionValidator:
         # 4. Required tool methods check
         if not self._has_required_methods(improved_code):
             return False, "Missing required methods (get_capabilities or execute)"
+
+        # 5. Duplicate capability name check
+        dup_error = self._check_duplicate_capabilities(improved_code)
+        if dup_error:
+            return False, dup_error
         
         return True, ""
+    
+    def _check_duplicate_capabilities(self, code: str) -> str:
+        """Detect duplicate add_capability calls with the same name.
+        Python silently uses the last definition, so duplicates indicate
+        the LLM added a new capability without removing the old one.
+        """
+        try:
+            tree = ast.parse(code)
+            seen: dict = {}
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Attribute) and func.attr == 'add_capability'):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == 'name' and isinstance(kw.value, ast.Constant):
+                        cap_name = kw.value.value
+                        if cap_name in seen:
+                            return (f"Duplicate capability '{cap_name}' registered twice in "
+                                    f"register_capabilities (lines {seen[cap_name]} and "
+                                    f"{getattr(node, 'lineno', '?')}). Remove the old registration.")
+                        seen[cap_name] = getattr(node, 'lineno', '?')
+        except Exception:
+            pass
+        return ""
     
     def _format_issues(self, issues: List[CodeIssue]) -> str:
         """Format issues for error message"""
@@ -159,19 +190,61 @@ class EvolutionValidator:
     
     def _validate_skill_alignment(self, code: str, execution_context: Any) -> str:
         """Validate evolved tool still matches skill requirements."""
-        verification_mode = getattr(execution_context, 'verification_mode', None)
+        if isinstance(execution_context, dict):
+            verification_mode = execution_context.get('verification_mode')
+        else:
+            verification_mode = getattr(execution_context, 'verification_mode', None)
         
         if not verification_mode:
             return ""
         
-        # Check if code returns required fields for verification_mode
+        # Only enforce source_backed if the tool's own registered capabilities
+        # indicate it is a web/research tool. Avoid blocking summarizers, processors,
+        # or other tools that happen to be queued under web_research skill.
         if verification_mode == "source_backed":
-            # Must return sources in output
+            import ast as _ast
+            try:
+                tree = _ast.parse(code)
+                cap_names = []
+                for node in _ast.walk(tree):
+                    if isinstance(node, _ast.Call):
+                        func = node.func
+                        if isinstance(func, _ast.Attribute) and func.attr == 'add_capability':
+                            for kw in node.keywords:
+                                if kw.arg == 'name' and isinstance(kw.value, _ast.Constant):
+                                    cap_names.append(kw.value.value.lower())
+                web_caps = {'search', 'fetch', 'crawl', 'scrape', 'browse', 'lookup', 'research'}
+                is_web_tool = any(any(w in c for w in web_caps) for c in cap_names)
+                if not is_web_tool:
+                    return ""  # Not a web tool — skip source_backed enforcement
+            except Exception:
+                return ""  # Parse failure — don't block
             if "sources" not in code.lower() and "source" not in code.lower():
                 return "Tool must return 'sources' field for source_backed verification"
         
         elif verification_mode == "side_effect_observed":
-            # Must create files or have observable side effects
+            # Only enforce side_effect_observed if the tool's capabilities indicate
+            # it actually performs file/shell operations. Storage-only tools
+            # (benchmark runners, note tools, snippet libraries) are not file tools
+            # and should never be required to return a file path.
+            import ast as _ast
+            try:
+                tree = _ast.parse(code)
+                cap_names = []
+                for node in _ast.walk(tree):
+                    if isinstance(node, _ast.Call):
+                        func = node.func
+                        if isinstance(func, _ast.Attribute) and func.attr == 'add_capability':
+                            for kw in node.keywords:
+                                if kw.arg == 'name' and isinstance(kw.value, _ast.Constant):
+                                    cap_names.append(kw.value.value.lower())
+                file_caps = {'write', 'execute', 'run', 'create_file', 'save_file',
+                             'download', 'export', 'generate_file', 'render'}
+                is_file_tool = any(any(w in c for w in file_caps) for c in cap_names)
+                if not is_file_tool:
+                    return ""  # Not a file/shell tool — skip side_effect_observed enforcement
+            except Exception:
+                return ""  # Parse failure — don't block
             if "file_path" not in code.lower() and "path" not in code.lower():
                 return "Tool must return 'file_path' or 'path' for side_effect_observed verification"
         

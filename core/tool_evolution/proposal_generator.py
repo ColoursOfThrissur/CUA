@@ -15,7 +15,14 @@ class EvolutionProposalGenerator:
     
     def generate_proposal(self, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Generate improvement proposal from analysis."""
-        
+
+        # Fix 7: skip if the last successful proposal for this tool had the same
+        # description or same target_functions — prevents the same proposal every cycle.
+        tool_name = analysis.get('tool_name', '')
+        if not analysis.get('user_prompt') and self._is_duplicate_proposal(tool_name, analysis):
+            logger.info(f"Skipping duplicate proposal for {tool_name} — same as last cycle")
+            return None
+
         # Get service context from dependency checker
         service_context = self._build_service_context()
         
@@ -28,14 +35,19 @@ class EvolutionProposalGenerator:
         if analysis.get('context_priorities'):
             context_priorities_text = "\n\nEXECUTION CONTEXT PRIORITIES (from recent failures):\n" + "\n".join(analysis['context_priorities'])
         
-        # Limit code included in prompt based on health — HEALTHY tools don't need full code review
+        # Always include code — LLM cannot propose targeted fixes without seeing what it's changing
         category = analysis.get('code_quality_category', 'UNKNOWN')
-        if category in ('WEAK', 'NEEDS_IMPROVEMENT'):
-            code_section = f"\nCurrent Code:\n```python\n{analysis['current_code'][:4000]}\n```"
-        elif analysis.get('user_prompt'):
-            code_section = f"\nCurrent Code (truncated):\n```python\n{analysis['current_code'][:2000]}\n```"
+        user_prompt = analysis.get('user_prompt', '')
+        code_section = f"\nCurrent Code:\n```python\n{analysis.get('current_code', '')[:6000]}\n```"
+
+        # When user gave explicit instructions, make them the primary directive
+        if user_prompt:
+            rules_line = "RULES: The User Request above is your PRIMARY directive — implement exactly what was asked. Ignore health score. Populate target_functions with every method that needs changing."
         else:
-            code_section = ""  # HEALTHY with no user prompt — skip full code
+            rules_line = "RULES: Fix ONE issue. Prioritize: execution errors > HIGH bugs > WEAK code > improvements. If HEALTHY with no issues → skip."
+
+        # Build structured tool context for LLM
+        tool_structure = self._extract_tool_structure(analysis.get('current_code', ''))
 
         prompt = f"""Analyze this tool and propose ONLY necessary improvements.
 
@@ -43,7 +55,10 @@ Tool: {analysis['tool_name']}
 Health Score: {analysis['health_score']:.1f}/100
 Code Quality: {category}
 Success Rate: {analysis['success_rate']:.1%}
-{f"User Request: {analysis['user_prompt']}" if analysis.get('user_prompt') else ""}
+{f"User Request: {user_prompt}" if user_prompt else ""}
+
+Tool structure (registered capabilities, methods, services):
+{tool_structure}
 
 LLM CODE ANALYSIS:
 {llm_issues_text}
@@ -55,7 +70,7 @@ SUGGESTED IMPROVEMENTS:
 
 AVAILABLE SERVICES (use self.services.X only): {service_context}
 
-RULES: Fix ONE issue. Prioritize: execution errors > HIGH bugs > WEAK code > improvements. If HEALTHY with no issues → skip.
+{rules_line}
 
 Generate improvement proposal as JSON:
 {{
@@ -63,6 +78,13 @@ Generate improvement proposal as JSON:
   "description": "One specific improvement",
   "target_functions": ["_handle_method_name"],
   "changes": ["Change 1"],
+  "implementation_sketch": {{
+    "_handle_method_name": [
+      "1. Get param_x (type) from kwargs. Return error if missing.",
+      "2. Call self.services.X.method() with param_x.",
+      "3. Return {{'success': True, 'data': result}}."
+    ]
+  }},
   "expected_improvement": "Outcome",
   "confidence": 0.0-1.0,
   "risk_level": 0.0-1.0,
@@ -73,7 +95,12 @@ Generate improvement proposal as JSON:
   "new_service_specs": {{}}
 }}
 
-target_functions: list the exact method names that need changing (e.g. ["_handle_search"]). Leave empty [] only for add_capability.
+target_functions: list the exact _handle_* method names that need changing (e.g. ["_handle_search"]). NEVER include 'execute', 'register_capabilities', or '__init__' — only _handle_* methods. Leave empty [] only for add_capability.
+implementation_sketch: for EACH method in target_functions, provide numbered pseudocode steps describing exactly what the implementation should do. Rules for sketches:
+- Use exact service API signatures: storage.save(id, data) takes TWO args, storage.get(id) takes ONE arg, storage.list(limit=N) returns a list
+- For filtering/searching: specify the exact field to check and the comparison (e.g. 'keep items where query.lower() in item.get("description","").lower()')
+- Every return statement must include 'success' key: return {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
+- Use plain English, not Python. Max 6 steps per handler.
 If NO issues found: {{"skip": true, "reason": "Tool is working correctly"}}
 Return ONLY valid JSON."""
         
@@ -131,7 +158,10 @@ Return ONLY valid JSON."""
                 proposal['service_descriptions'] = self._get_service_descriptions(
                     proposal['required_services']
                 )
-            
+
+            # Record this proposal so next cycle can detect duplicates
+            self._record_proposal(tool_name, proposal)
+
             return proposal
             
         except Exception as e:
@@ -139,6 +169,82 @@ Return ONLY valid JSON."""
             logger.error(f"Proposal generation error: {e}\n{traceback.format_exc()}")
             return None
     
+    def _is_duplicate_proposal(self, tool_name: str, analysis: Dict) -> bool:
+        """Return True if the last evolution for this tool had the same description
+        or same target_functions, indicating the LLM is stuck in a loop.
+        """
+        try:
+            from core.cua_db import get_conn
+            with get_conn() as conn:
+                row = conn.execute(
+                    """SELECT ea.content FROM evolution_artifacts ea
+                       JOIN evolution_runs er ON ea.evolution_id = er.id
+                       WHERE er.tool_name = ? AND ea.artifact_type = 'proposal'
+                       ORDER BY ea.created_at DESC LIMIT 1""",
+                    (tool_name,)
+                ).fetchone()
+            if not row:
+                return False
+            last = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            if not isinstance(last, dict):
+                return False
+            last_desc = (last.get('description') or '').strip().lower()
+            last_targets = sorted(last.get('target_functions') or [])
+            # Current analysis doesn't have a proposal yet — compare against LLM issues
+            # to detect if the situation is identical (same issues = same proposal likely)
+            current_issues = [i.get('description', '') for i in (analysis.get('llm_issues') or [])]
+            last_issues_key = last.get('_issues_key', '')
+            current_issues_key = '|'.join(sorted(current_issues))[:200]
+            if last_issues_key and last_issues_key == current_issues_key:
+                logger.debug(f"Duplicate proposal detected for {tool_name}: same issues fingerprint")
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _record_proposal(self, tool_name: str, proposal: Dict) -> None:
+        """Stamp the proposal with an issues fingerprint for next-cycle dedup."""
+        try:
+            analysis = proposal.get('analysis') or {}
+            issues = [i.get('description', '') for i in (analysis.get('llm_issues') or [])]
+            proposal['_issues_key'] = '|'.join(sorted(issues))[:200]
+        except Exception:
+            pass
+
+    def _extract_tool_structure(self, code: str) -> str:
+        """Extract registered capabilities, methods, and services used via AST."""
+        import ast as _ast
+        lines = []
+        try:
+            tree = _ast.parse(code)
+            caps, methods, services_used = [], [], set()
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef):
+                    if node.name not in ('__init__', 'execute', 'register_capabilities'):
+                        methods.append(node.name)
+                    for child in _ast.walk(node):
+                        if isinstance(child, _ast.Attribute):
+                            if (isinstance(child.value, _ast.Attribute)
+                                    and isinstance(child.value.value, _ast.Name)
+                                    and child.value.value.id == 'self'
+                                    and child.value.attr == 'services'):
+                                services_used.add(child.attr)
+                if isinstance(node, _ast.Call):
+                    func = node.func
+                    if isinstance(func, _ast.Attribute) and func.attr == 'add_capability':
+                        for kw in node.keywords:
+                            if kw.arg == 'name' and isinstance(kw.value, _ast.Constant):
+                                caps.append(kw.value.value)
+            if caps:
+                lines.append(f"Registered capabilities: {', '.join(caps)}")
+            if methods:
+                lines.append(f"Methods: {', '.join(methods[:20])}")
+            if services_used:
+                lines.append(f"Services used: {', '.join(sorted(services_used))}")
+        except Exception:
+            pass
+        return '\n'.join(lines) if lines else 'Could not extract structure'
+
     def _build_service_context(self) -> str:
         """Build service context from dependency checker (matches spec_generator pattern)."""
         from core.dependency_checker import DependencyChecker
@@ -160,7 +266,7 @@ Return ONLY valid JSON."""
         for name, methods in service_specs.items():
             if name in DependencyChecker.AVAILABLE_SERVICES:
                 services_list.append(f"- self.services.{name}: {methods}")
-        
+        services_list.append("NOTE: Do NOT use optional visualization libraries (graphviz, matplotlib, plotly). Use self.services.json or self.services.storage for data output.")
         return "\n".join(services_list)
     
     def _read_evolution_context(self) -> str:
@@ -192,9 +298,20 @@ ARCHITECTURE PATTERNS:
         if not has_required:
             return False
 
-        # Ensure changes is a non-None list
+        # Ensure changes is a non-None list of strings
         if not isinstance(proposal.get('changes'), list):
             proposal['changes'] = []
+        else:
+            proposal['changes'] = [str(c) if not isinstance(c, str) else c for c in proposal['changes']]
+
+        # Strip non-handler entries from target_functions — execute/register_capabilities
+        # must never be targeted directly; the code generator only processes _handle_* methods
+        _SKIP_TARGETS = {'execute', 'register_capabilities', '__init__'}
+        if isinstance(proposal.get('target_functions'), list):
+            proposal['target_functions'] = [
+                f for f in proposal['target_functions']
+                if f not in _SKIP_TARGETS
+            ]
 
         # Validate action_type if present
         if 'action_type' in proposal:
@@ -212,6 +329,8 @@ ARCHITECTURE PATTERNS:
                     return False
                 if 'description' not in svc_spec or 'methods' not in svc_spec:
                     return False
+                # Normalize methods to list of strings
+                svc_spec['methods'] = [str(m) for m in (svc_spec.get('methods') or [])]
         else:
             proposal['new_service_specs'] = {}
 
@@ -219,6 +338,20 @@ ARCHITECTURE PATTERNS:
         for field in ('required_services', 'required_libraries'):
             if not isinstance(proposal.get(field), list):
                 proposal[field] = []
+
+        # Normalize implementation_sketch — must be dict of {handler_name: [str, ...]}
+        sketch = proposal.get('implementation_sketch')
+        if not isinstance(sketch, dict):
+            proposal['implementation_sketch'] = {}
+        else:
+            normalized_sketch = {}
+            for fn, steps in sketch.items():
+                if isinstance(steps, list):
+                    normalized_sketch[fn] = [str(s) for s in steps if s]
+                elif isinstance(steps, str) and steps:
+                    # LLM returned a string instead of list — split on newlines
+                    normalized_sketch[fn] = [s.strip() for s in steps.splitlines() if s.strip()]
+            proposal['implementation_sketch'] = normalized_sketch
 
         return True
     

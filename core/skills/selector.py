@@ -72,6 +72,11 @@ class SkillSelector:
             adjusted = engine.score_skill_candidates(raw_scores)
             scored = sorted([(s, adjusted.get(s.name, sc)) for s, sc in scored], key=lambda x: x[1], reverse=True)
 
+        # Negative signal: if top-2 are within 0.05, penalise the runner-up slightly
+        if len(scored) >= 2 and (scored[0][1] - scored[1][1]) < 0.05:
+            scored[1] = (scored[1][0], max(0.0, scored[1][1] - 0.05))
+            scored.sort(key=lambda x: x[1], reverse=True)
+
         if not scored or scored[0][1] < 0.15:
             return SkillSelection(matched=False, reason="no_confident_skill_match",
                                   fallback_mode="direct_tool_routing", candidate_skills=candidates)
@@ -182,4 +187,12 @@ class SkillSelector:
                               fallback_mode="direct_tool_routing", candidate_skills=candidates)
 
     def _tokenize(self, text: str) -> set:
-        return set(re.findall(r"[a-z0-9_]+", text.lower()))
+        tokens = set(re.findall(r"[a-z0-9_]+", text.lower()))
+        # Minimal suffix stemming — no external deps
+        stemmed = set()
+        for t in tokens:
+            for suffix in ("ing", "ed", "er", "ly", "s"):
+                if t.endswith(suffix) and len(t) - len(suffix) >= 3:
+                    stemmed.add(t[: -len(suffix)])
+                    break
+        return tokens | stemmed

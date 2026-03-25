@@ -34,6 +34,9 @@ class OrchestratedToolResult:
 
 class ToolOrchestrator:
     """Central orchestrator used by executors to run tools consistently."""
+
+    # Class-level signature cache: (tool_class, operation) → (supports_kwargs, supports_dict)
+    _sig_cache: Dict[tuple, tuple] = {}
     
     def __init__(self, llm_client=None, registry=None):
         self._services_cache: Dict[str, ToolServices] = {}
@@ -280,19 +283,21 @@ class ToolOrchestrator:
                 return tool.execute_capability(operation, **params)
             except Exception:
                 pass
-        supports_kwargs = False
-        supports_dict = True
-        try:
-            sig = inspect.signature(tool.execute)
-            param_count = len(sig.parameters)
-            supports_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-            )
-            supports_dict = param_count >= 2
-        except Exception:
-            # If signature inspection fails, keep conservative defaults.
+
+        cache_key = (type(tool), operation)
+        if cache_key not in ToolOrchestrator._sig_cache:
             supports_kwargs = False
             supports_dict = True
+            try:
+                sig = inspect.signature(tool.execute)
+                supports_kwargs = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                )
+                supports_dict = len(sig.parameters) >= 2
+            except Exception:
+                pass
+            ToolOrchestrator._sig_cache[cache_key] = (supports_kwargs, supports_dict)
+        supports_kwargs, supports_dict = ToolOrchestrator._sig_cache[cache_key]
 
         if supports_kwargs:
             return tool.execute(operation, **params)

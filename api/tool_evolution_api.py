@@ -95,6 +95,19 @@ async def approve_evolution(tool_name: str):
     if not success:
         raise HTTPException(status_code=404, detail="Evolution not found")
     
+    # Sync registry with the newly written tool file
+    try:
+        from tools.capability_extractor import CapabilityExtractor
+        from core.tool_registry_manager import ToolRegistryManager
+        tool_path = evolution.get("tool_path")
+        if tool_path:
+            extracted = CapabilityExtractor().extract_from_file(tool_path)
+            if extracted:
+                extracted["source_file"] = str(tool_path).replace("\\", "/")
+                ToolRegistryManager().update_tool(extracted)
+    except Exception:
+        pass  # Registry sync must not block approval
+    
     return {"success": True, "message": f"Evolution approved: {tool_name}"}
 
 @router.post("/evolution/test/{tool_name}")

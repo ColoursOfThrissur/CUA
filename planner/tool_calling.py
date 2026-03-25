@@ -214,26 +214,41 @@ When doing web research:
                     func = call.get("function", {})
                     full_name = func.get("name", "")
                     print(f"[DEBUG] Tool call: {full_name}")
-                    # Parse ToolName_operation_name format
+                    # Parse ToolName_operation format.
+                    # MCP adapters are registered as MCPAdapterTool_<server> so their
+                    # full_name looks like MCPAdapterTool_github_list_repos.
+                    # Match against actual registered tool class names first.
+                    tool_name = None
+                    operation = None
+                    if self.registry:
+                        for t in self.registry.tools:
+                            # Use instance name (e.g. MCPAdapterTool_github) not class name
+                            inst = getattr(t, 'name', None)
+                            if callable(inst):
+                                inst = t.__class__.__name__
+                            inst = inst or t.__class__.__name__
+                            if full_name.startswith(inst + "_"):
+                                tool_name = inst
+                                operation = full_name[len(inst) + 1:]
+                                break
+                    if tool_name is None:
+                        # Fallback: split on first underscore
+                        if "_" in full_name:
+                            parts = full_name.split("_", 1)
+                            tool_name = parts[0]
+                            operation = parts[1]
+                        else:
+                            tool_name = full_name
+                            operation = full_name
                     wrapped_operation = func.get("arguments", {}).get("operation")
                     wrapped_parameters = func.get("arguments", {}).get("parameters")
-                    if "_" in full_name:
-                        parts = full_name.split("_", 1)  # Split only on first underscore
-                        tool_name = parts[0]
-                        operation = parts[1] if len(parts) > 1 else full_name
-                    elif wrapped_operation and isinstance(wrapped_parameters, dict):
-                        tool_name = full_name
-                        operation = wrapped_operation
-                    else:
-                        tool_name = full_name
-                        operation = full_name
                     
                     parsed_call = {
                         "tool": tool_name,
                         "operation": operation,
                         "parameters": wrapped_parameters if wrapped_operation and isinstance(wrapped_parameters, dict) else func.get("arguments", {})
                     }
-                    if allowed_set and tool_name not in allowed_set:
+                    if allowed_set and tool_name not in allowed_set and not any(tool_name.startswith(a) for a in allowed_set):
                         print(f"[DEBUG] Skipping disallowed tool call: {tool_name}")
                         continue
                     parsed_calls.append(parsed_call)
@@ -306,7 +321,12 @@ When doing web research:
 
         if allowed_tools:
             print(f"[DEBUG] Building tool definitions for allowed tools only: {allowed_tools}")
-            tools_to_process = [t for t in self.registry.tools if t.__class__.__name__ in allowed_tools]
+            allowed_set = set(allowed_tools)
+            tools_to_process = [
+                t for t in self.registry.tools
+                if t.__class__.__name__ in allowed_set
+                or any(t.__class__.__name__.startswith(a) for a in allowed_set)
+            ]
             print(f"[DEBUG] Found {len(tools_to_process)} matching tools out of {len(self.registry.tools)} total")
         else:
             # No skill matched — derive category filter from message keywords
@@ -325,18 +345,24 @@ When doing web research:
         
         for tool in tools_to_process:
             tool_name = tool.__class__.__name__
+            # For MCP adapters, use the instance name (e.g. MCPAdapterTool_github)
+            # so the LLM sees and calls the correct tool
+            if hasattr(tool, 'name') and callable(getattr(tool, 'name', None)) is False:
+                instance_name = tool.name
+            else:
+                instance_name = tool_name
             
             # Skip hidden tools when WebAccessTool is available
-            if raw_web_tools_hidden and tool_name in {"HTTPTool", "BrowserAutomationTool"}:
+            if raw_web_tools_hidden and tool_name in {"HTTPTool"}:
                 continue
-                
+
             capabilities = tool.get_capabilities() or {}
-            
+
             for op_name, capability in capabilities.items():
                 # Build function definition
                 properties = {}
                 required = []
-                
+
                 for param in capability.parameters:
                     properties[param.name] = {
                         "type": self._map_param_type(param.type),
@@ -344,12 +370,12 @@ When doing web research:
                     }
                     if param.required:
                         required.append(param.name)
-                
+
                 tools.append({
                     "type": "function",
                     "function": {
-                        "name": f"{tool_name}_{op_name}",
-                        "description": f"{capability.description} (Tool: {tool_name})",
+                        "name": f"{instance_name}_{op_name}",
+                        "description": f"{capability.description} (Tool: {instance_name})",
                         "parameters": {
                             "type": "object",
                             "properties": properties,

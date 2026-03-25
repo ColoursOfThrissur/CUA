@@ -95,9 +95,42 @@ class BenchmarkRunnerTool(BaseTool):
             examples=[{}],
             dependencies=["self.services.storage", "self.services.shell"],
         )
+
+        batch_capability = ToolCapability(
+            name="batch",
+            description="Add batch processing support to BenchmarkRunnerTool",
+            parameters=[
+                Parameter(name='suite_ids', type=ParameterType.STRING, description='suite_ids parameter', required=True)
+            ],
+            returns="Operation result",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+            dependencies=[]
+        )
+        self.add_capability(batch_capability, self._handle_batch)
         self.add_capability(add_case_capability, self._handle_add_benchmark_case)
 
+    def _handle_batch(self, **kwargs) -> dict:
+            # Extract parameters
+            suite_ids = kwargs.get('suite_ids')
+
+            # Validate required parameters
+            if not suite_ids or not isinstance(suite_ids, list):
+                return {'error': 'Missing or invalid parameter: suite_ids'}
+
+            results = []
+            for suite_id in suite_ids:
+                result = self.services.call_tool('BenchmarkRunnerTool', '_handle_run_benchmark_suite', suite_id=suite_id)
+                if 'side_effect_observed' not in result or result['side_effect_observed'] != 'expected':
+                    return {'success': False, 'error': f"Unexpected side effect for suite {suite_id}"}
+                results.append(result)
+
+            return {'success': True, 'results': results}
+
     def execute(self, operation: str, **kwargs):
+        if operation == "batch":
+            return self._handle_batch(**kwargs)
+
         return self.execute_capability(operation, **kwargs)
 
     def _handle_run_benchmark_suite(self, **kwargs):

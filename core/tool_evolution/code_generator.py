@@ -73,7 +73,7 @@ class EvolutionCodeGenerator:
         nested = {
             "storage": "save(id, data), get(id), list(limit=10), find(filter_fn=None, limit=100), count(), update(id, updates), delete(id), exists(id)",
             "llm": "generate(prompt, temperature=0.3, max_tokens=500)",
-            "http": "get(url), post(url, data), put(url, data), delete(url), request(method, url, data=None, headers=None)",
+            "http": "get(url), post(url, data), put(url, data), delete(url)",
             "fs": "read(path), write(path, content), list(path), exists(path), delete(path), mkdir(path)",
             "json": "parse(text), stringify(data, indent=None), query(data, path)",
             "shell": "execute(command)",
@@ -104,17 +104,65 @@ class EvolutionCodeGenerator:
                 lines.append(f"- self.services.{direct[name]}")
 
         lines.append("IMPORTANT: Do not call any self.services.* API not listed above.")
+        lines.append("IMPORTANT: Do NOT import optional visualization libraries (graphviz, matplotlib, plotly, etc). Use self.services.json or self.services.storage for data output instead.")
         return "\n".join(lines)
 
     def _invalid_service_calls(self, code: str) -> List[str]:
-        """Detect self.services calls that violate the service registry allowlist."""
+        """Detect self.services calls that violate the service registry allowlist.
+
+        Also catches extra arguments on methods with fixed signatures.
+        Root cause of 'StorageService.get() got unexpected keyword argument default':
+        LLM adds Python-idiom defaults (storage.get(id, default=None)) that don't
+        exist on the actual service class. Method name check alone isn't enough.
+        """
         registry = EnhancedCodeValidator().service_registry
         nested_allow = {k: set(v or []) for k, v in registry.items() if isinstance(v, list)}
         direct_allow = {k for k, v in registry.items() if isinstance(v, list) and len(v or []) == 0}
 
+        # Methods that take exactly one positional arg (besides self)
+        # Any extra args or kwargs are invalid
+        SINGLE_ARG_METHODS = {
+            ('storage', 'get'), ('storage', 'delete'), ('storage', 'exists'),
+            ('storage', 'save'),  # save(id, data) -- 2 args, no kwargs
+            ('llm', 'generate'),  # generate(prompt, temperature, max_tokens) -- no extra kwargs
+            ('fs', 'read'), ('fs', 'delete'), ('fs', 'mkdir'),
+            ('json', 'parse'), ('json', 'stringify'),
+            ('shell', 'execute'),
+        }
+
         invalid: List[str] = []
 
-        # Nested calls: self.services.<svc>.<method>(...)
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+
+                # Correct pattern: self.services.<svc>.<method>
+                # func.value = self.services.<svc>  (Attribute)
+                # func.value.value = self.services  (Attribute)
+                # func.value.value.value = self     (Name)
+                if (isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Attribute)
+                        and isinstance(func.value.value, ast.Attribute)
+                        and isinstance(func.value.value.value, ast.Name)
+                        and func.value.value.value.id == 'self'
+                        and func.value.value.attr == 'services'):
+                    svc_name = func.value.attr
+                    method_name = func.attr
+                    # Check for unexpected keyword arguments on known fixed-signature methods
+                    if (svc_name, method_name) in SINGLE_ARG_METHODS and node.keywords:
+                        kw_names = [kw.arg for kw in node.keywords if kw.arg]
+                        invalid.append(
+                            f"self.services.{svc_name}.{method_name}() called with unexpected "
+                            f"keyword argument(s): {kw_names}. "
+                            f"Signature is {svc_name}.{method_name}() with no keyword args."
+                        )
+        except Exception:
+            pass
+
+        # Regex-based checks (method name allowlist)
         for svc, method in re.findall(r"self\.services\.(\w+)\.(\w+)\(", code):
             if svc not in nested_allow:
                 invalid.append(f"Unknown service self.services.{svc}")
@@ -123,19 +171,15 @@ class EvolutionCodeGenerator:
             if allowed and method not in allowed:
                 invalid.append(f"Unknown method self.services.{svc}.{method}")
 
-        # Direct calls: self.services.<method>(...)
         for name in re.findall(r"self\.services\.(\w+)\(", code):
-            # Avoid double-counting nested (regex doesn't match nested anyway, but be defensive).
             if name in nested_allow and (nested_allow.get(name) and name not in direct_allow):
                 continue
             if name not in direct_allow:
-                # Also allow nested-service names if the model writes self.services.storage(...) (invalid).
                 if name in nested_allow and name not in direct_allow:
                     invalid.append(f"Invalid call self.services.{name}(...) (service requires method like .save/.get)")
                 else:
                     invalid.append(f"Unknown ToolServices method self.services.{name}")
 
-        # De-dup while preserving order
         seen = set()
         out = []
         for item in invalid:
@@ -152,23 +196,28 @@ class EvolutionCodeGenerator:
         validation_error: Optional[str] = None
     ) -> Optional[str]:
         """Improve existing handlers (fix_bug/improve_logic/refactor).
-        
-        If proposal includes target_functions, only those methods are rewritten —
-        surgical edit that keeps the rest of the file untouched (safe for Qwen).
+
+        - Scopes to target_functions when specified.
+        - Complexity guard: if >COMPLEXITY_THRESHOLD handlers and no target specified,
+          skip rather than attempt a full rewrite of a large tool.
+        - Passes the evolving file state forward so each handler sees what the
+          previous handler produced.
         """
+        from core.tool_creation.code_generator.base import COMPLEXITY_THRESHOLD
+
         class_name = self._extract_class_name(current_code)
         if not class_name:
             return None
 
         service_context = self._build_service_context()
         new_services_context = self._build_new_services_context(proposal)
+        full_service_context = service_context + new_services_context
 
         all_handlers = self._extract_handlers(current_code, class_name)
         if not all_handlers:
             logger.warning("No handlers found to improve")
             return current_code
 
-        # Scope to target_functions when specified — avoids full-file regen
         target = proposal.get("target_functions") or []
         if target:
             handlers_to_improve = {k: v for k, v in all_handlers.items() if k in target}
@@ -176,17 +225,52 @@ class EvolutionCodeGenerator:
                 logger.warning(f"target_functions {target} not found in handlers {list(all_handlers)}, falling back to all")
                 handlers_to_improve = all_handlers
         else:
+            # No target specified
+            if len(all_handlers) > COMPLEXITY_THRESHOLD:
+                logger.warning(
+                    f"No target_functions specified and tool has {len(all_handlers)} handlers "
+                    f"(>{COMPLEXITY_THRESHOLD}). Skipping full rewrite to avoid empty-code failure."
+                )
+                return current_code
             handlers_to_improve = all_handlers
 
+        # Build tool purpose for context
+        analysis = proposal.get("analysis") or {}
+        tool_purpose = (
+            proposal.get("description", "")
+            + (f" | {analysis.get('summary', '')}" if analysis.get("summary") else "")
+        )
+        skill_name = ""
+        verification_mode = ""
+        exec_ctx = analysis.get("execution_context_data") or {}
+        if isinstance(exec_ctx, dict):
+            skill_name = exec_ctx.get("skill_name") or ""
+            verification_mode = exec_ctx.get("verification_mode") or ""
+
+        class_context = self._build_class_context(current_code, class_name)
+
+        # Evolve handlers one at a time, passing the growing file forward
         improved_code = current_code
         for handler_name, handler_code in handlers_to_improve.items():
             logger.info(f"Improving handler: {handler_name}")
             improved_handler = self._improve_single_handler(
-                handler_code, handler_name, proposal, class_name,
-                service_context + new_services_context, sandbox_error, validation_error
+                handler_code=handler_code,
+                handler_name=handler_name,
+                proposal=proposal,
+                class_name=class_name,
+                service_context=full_service_context,
+                sandbox_error=sandbox_error,
+                validation_error=validation_error,
+                class_context=class_context,
+                tool_purpose=tool_purpose,
+                skill_name=skill_name,
+                verification_mode=verification_mode,
+                current_file=improved_code,  # pass evolving state
             )
             if improved_handler:
                 improved_code = self._replace_handler(improved_code, handler_name, improved_handler, class_name)
+                # Refresh class_context so next handler sees updated file
+                class_context = self._build_class_context(improved_code, class_name)
 
         return improved_code
     
@@ -206,12 +290,30 @@ class EvolutionCodeGenerator:
         service_context = self._build_service_context()
         new_services_context = self._build_new_services_context(proposal)
         
-        # Generate new handler (pass validation error for feedback)
+        # Build existing capabilities summary so LLM doesn't duplicate them
+        existing_caps = self._extract_tool_structure(current_code)
+
+        # Build tool purpose from proposal + analysis
+        analysis = proposal.get("analysis") or {}
+        tool_purpose = (
+            proposal.get("description", "")
+            + (f" | {analysis.get('summary', '')}" if analysis.get("summary") else "")
+        )
+        exec_ctx = analysis.get("execution_context_data") or {}
+        skill_name = exec_ctx.get("skill_name", "") if isinstance(exec_ctx, dict) else ""
+        verification_mode = exec_ctx.get("verification_mode", "") if isinstance(exec_ctx, dict) else ""
+
+        # Generate new handler
         new_handler = self._generate_new_handler(
-            proposal, 
-            service_context + new_services_context, 
+            proposal,
+            service_context + new_services_context,
             sandbox_error,
-            validation_error
+            validation_error,
+            existing_capabilities=existing_caps,
+            current_file=current_code,
+            tool_purpose=tool_purpose,
+            skill_name=skill_name,
+            verification_mode=verification_mode,
         )
         if not new_handler:
             logger.error("Cannot add capability: handler generation failed")
@@ -246,7 +348,9 @@ class EvolutionCodeGenerator:
         context = "\n\nNEW SERVICES TO BE CREATED:\n"
         for svc_name, svc_spec in new_service_specs.items():
             context += f"- self.services.{svc_name}: {svc_spec['description']}\n"
-            context += f"  Methods: {', '.join(svc_spec['methods'])}\n"
+            methods = svc_spec.get('methods', [])
+            methods_str = ', '.join(str(m) for m in methods)
+            context += f"  Methods: {methods_str}\n"
         return context
     
     def _generate_new_handler(
@@ -254,20 +358,58 @@ class EvolutionCodeGenerator:
         proposal: Dict[str, Any],
         service_context: str,
         sandbox_error: Optional[str] = None,
-        validation_error: Optional[str] = None
+        validation_error: Optional[str] = None,
+        existing_capabilities: str = "",
+        current_file: str = "",
+        tool_purpose: str = "",
+        skill_name: str = "",
+        verification_mode: str = "",
     ) -> Optional[str]:
         """Generate new handler method for add_capability."""
+        from core.tool_creation.code_generator.base import build_handler_context
+
         error_context = ""
         if validation_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n{validation_error}\nFIX THESE ERRORS:\n"
         elif sandbox_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED:\n{sandbox_error}\n"
-        
-        # Extract operation name from proposal
+
         operation_name = self._extract_operation_name(proposal)
-        
+        expected_name = f"_handle_{operation_name}"
+
+        # Build op_spec from proposal changes so context builder has param info
+        op_spec: Dict[str, Any] = {
+            "parameters": [],
+            "returns": "dict",
+        }
+        # Try to extract param names from changes text
+        for change in (proposal.get("changes") or []):
+            import re as _re
+            for m in _re.finditer(r"parameter[s]?\s+['\"]?(\w+)['\"]?", change, _re.IGNORECASE):
+                op_spec["parameters"].append({"name": m.group(1), "type": "string", "required": True, "description": ""})
+
+        handler_ctx = build_handler_context(
+            handler_name=expected_name,
+            current_file=current_file,
+            tool_purpose=tool_purpose,
+            skill_name=skill_name,
+            verification_mode=verification_mode,
+            op_spec=op_spec,
+            already_implemented=[],
+        )
+
+        existing_section = f"\nEXISTING TOOL CAPABILITIES (do not duplicate):\n{existing_capabilities}\n" if existing_capabilities else ""
+
+        # Inject implementation sketch if proposal provides one for the new handler
+        sketch_steps = (proposal.get('implementation_sketch') or {}).get(expected_name, [])
+        sketch_section = ""
+        if sketch_steps:
+            sketch_section = "\nIMPLEMENTATION STEPS (follow these exactly):\n" + "\n".join(sketch_steps) + "\n"
+
         prompt = f"""TASK: Create NEW handler method for capability.
 
+{handler_ctx}
+{sketch_section}
 CAPABILITY TO ADD:
 {proposal['description']}
 
@@ -276,58 +418,39 @@ CHANGES:
 
 AVAILABLE SERVICES:
 {service_context}
-{error_context}
-CREATE handler method named: _handle_{operation_name}
+{existing_section}{error_context}
+CREATE handler method named: {expected_name}
 
 CRITICAL REQUIREMENTS:
-1. Method signature: def _handle_{operation_name}(self, **kwargs) -> dict
-2. Extract ALL expected parameters from kwargs:
-   - Read the CHANGES list above to identify what parameters this capability needs
-   - Use kwargs.get('param_name', default_value) for each parameter
-   - Add validation for required parameters (check if None or empty)
-3. Use ONLY self.services.X for operations (NEVER self.X directly)
-4. Add try-except error handling for all service calls
-5. Return plain dict with results (NEVER return ToolResult object)
-6. Keep implementation under 20 lines
-7. DO NOT reference undefined methods or attributes
-8. DO NOT add imports
+1. Method signature: def {expected_name}(self, **kwargs) -> dict
+2. Extract ALL expected parameters from kwargs using kwargs.get()
+3. Validate required parameters (return {{'error': '...'}}) if missing)
+4. Use ONLY self.services.X for operations
+5. Return {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
+6. Keep under 25 lines
+7. NO imports, NO class definition
 
-EXAMPLE STRUCTURE:
-def _handle_{operation_name}(self, **kwargs) -> dict:
-    # Extract parameters
-    param1 = kwargs.get('param1')
-    param2 = kwargs.get('param2', default_value)
-    
-    # Validate required parameters
-    if not param1:
-        return {{'error': 'Missing required parameter: param1'}}
-    
-    # Use services with error handling
-    try:
-        approval_id = self.services.ids.generate("example")
-        self.services.storage.save(approval_id, {{'param1': param1, 'param2': param2}})
-        return {{'success': True, 'id': approval_id}}
-    except Exception as e:
-        self.services.logging.error(f"Operation failed: {{e}}")
-        return {{'success': False, 'error': str(e)}}
+Return ONLY the method definition."""
 
-Return ONLY the method definition (no explanations)."""
-        
-        expected_name = f"_handle_{operation_name}"
         feedback = ""
-
         for attempt in range(2):
             attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
             try:
                 response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=1500, expect_json=False)
                 handler = self._extract_python_code(response)
                 if not handler or f"def {expected_name}(" not in handler:
-                    feedback = "Returned code did not include the required handler method definition with the exact name."
+                    feedback = f"Output did not contain def {expected_name}. Return only the method definition."
                     continue
 
                 invalid = self._invalid_service_calls(handler)
                 if invalid:
-                    feedback = "Invalid self.services calls detected:\n- " + "\n- ".join(invalid)
+                    feedback = "Invalid self.services calls:\n- " + "\n- ".join(invalid)
+                    continue
+
+                # Verify every code path returns a dict (no implicit None)
+                missing_return = self._check_missing_return(handler, expected_name)
+                if missing_return:
+                    feedback = missing_return
                     continue
 
                 return handler
@@ -337,35 +460,100 @@ Return ONLY the method definition (no explanations)."""
 
         return None
     
+    def _check_missing_return(self, handler_code: str, handler_name: str) -> str:
+        """Check that the handler has an explicit return on every terminal path.
+
+        Root cause of 'returned None' sandbox failures: LLM generates a handler
+        where the happy path falls through to implicit None (missing return in
+        try block, or conditional branch without return).
+
+        Returns an error string if a problem is found, empty string if OK.
+        """
+        try:
+            tree = ast.parse(textwrap.dedent(handler_code))
+            fn = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                       and n.name == handler_name), None)
+            if not fn:
+                return ""
+
+            # Collect all Return nodes in the function
+            returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+
+            # No return at all
+            if not returns:
+                return (f"{handler_name} has no return statement. "
+                        "Every code path MUST return a dict like "
+                        "{{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}")
+
+            # Check for bare return (return None implicitly)
+            bare = [r for r in returns if r.value is None]
+            if bare:
+                return (f"{handler_name} has a bare 'return' with no value on line {bare[0].lineno}. "
+                        "Replace with return {{'success': False, 'error': '...'}} or "
+                        "return {{'success': True, 'data': result}}")
+
+            # Check last statement of function body is a return
+            last = fn.body[-1]
+            if not isinstance(last, ast.Return):
+                # Last statement is not a return -- could be a try/except or if block
+                # that might not cover all paths. Warn but don't hard-fail.
+                # The sandbox will catch it if it actually returns None.
+                pass
+
+            return ""
+        except Exception:
+            return ""
+
     def _extract_operation_name(self, proposal: Dict[str, Any]) -> str:
-        """Extract operation name from proposal changes list."""
-        # Parse changes list for explicit capability name
+        """Extract operation name from proposal.
+
+        Priority order:
+        1. implementation_sketch keys — the sketch already has the correct
+           handler name (_handle_X), so strip the prefix and use it directly.
+           This avoids the text-parsing fallback that produced 'handle' instead
+           of 'handle_meta_question' and 'search' instead of 'search_tools'.
+        2. changes list — look for quoted capability name or _handle_ pattern.
+        3. description fallback — skip filler words to get the operation noun.
+        """
+        # Priority 1: sketch keys are the most reliable source
+        sketch = proposal.get('implementation_sketch') or {}
+        if sketch:
+            # Take the first key, strip _handle_ prefix
+            first_key = next(iter(sketch))
+            if first_key.startswith('_handle_'):
+                return first_key[len('_handle_'):]
+
+        # Priority 2: changes list
         changes = proposal.get('changes', [])
         for change in changes:
-            # Look for "Add a new capability named 'X'" or "Create capability 'X'"
-            if "capability named" in change.lower():
-                # Extract text between quotes
+            if 'capability named' in change.lower():
                 match = re.search(r"['\"]([^'\"]+)['\"]", change)
                 if match:
                     return match.group(1)
-            # Look for "Implement the handler method '_handle_X'"
-            if "handler method" in change.lower() and "_handle_" in change:
-                match = re.search(r"_handle_(\w+)", change)
+            if 'handler method' in change.lower() and '_handle_' in change:
+                match = re.search(r'_handle_(\w+)', change)
                 if match:
                     return match.group(1)
-        
-        # Fallback: parse description (old behavior)
+
+        # Priority 3: description fallback
         description = proposal.get('description', '')
         desc_lower = description.lower()
+        SKIP_WORDS = {'capability', 'operation', 'support', 'the', 'a', 'an', 'to', 'for', 'of', 'and', 'with'}
         for keyword in ['add', 'implement', 'create']:
             if keyword in desc_lower:
                 words = desc_lower.split()
                 if keyword in words:
                     idx = words.index(keyword)
-                    if idx + 1 < len(words):
-                        return words[idx + 1].replace('capability', '').replace('operation', '').strip()
-        
-        return description.split()[0].lower() if description else 'unknown'
+                    for w in words[idx + 1:]:
+                        cleaned = re.sub(r'[^a-z0-9_]', '', w)
+                        if cleaned and cleaned not in SKIP_WORDS:
+                            return cleaned
+
+        for w in desc_lower.split():
+            cleaned = re.sub(r'[^a-z0-9_]', '', w)
+            if cleaned and cleaned not in SKIP_WORDS:
+                return cleaned
+        return 'unknown'
     
     def _extract_handler_parameters(self, code: str, handler_name: str) -> List[tuple]:
         """Extract parameters from handler by analyzing kwargs.get() calls.
@@ -447,11 +635,21 @@ Return ONLY the method definition (no explanations)."""
         handler_params = self._extract_handler_parameters(code, f"_handle_{operation_name}")
         
         # Build parameters list for capability
+        _PLURAL_LIST_NAMES = {'datasets', 'keys', 'plans', 'texts', 'workflows', 'items', 'records',
+                              'steps', 'results', 'tags', 'ids', 'files', 'paths', 'queries', 'methods'}
+        _INTEGER_NAMES = {'limit', 'count', 'max', 'min', 'size', 'num', 'number', 'page',
+                          'offset', 'timeout', 'retries', 'priority', 'num_key_points', 'summary_length'}
         if handler_params:
             param_lines = []
             for param_name, is_required in handler_params:
+                if param_name in _PLURAL_LIST_NAMES:
+                    ptype = 'ParameterType.LIST'
+                elif param_name in _INTEGER_NAMES:
+                    ptype = 'ParameterType.INTEGER'
+                else:
+                    ptype = 'ParameterType.STRING'
                 param_lines.append(
-                    f"                Parameter(name='{param_name}', type=ParameterType.STRING, "
+                    f"                Parameter(name='{param_name}', type={ptype}, "
                     f"description='{param_name} parameter', required={is_required})"
                 )
             params_code = "[\n" + ",\n".join(param_lines) + "\n            ]"
@@ -493,73 +691,103 @@ Return ONLY the method definition (no explanations)."""
             return code
     
     def _add_execute_routing(self, code: str, proposal: Dict[str, Any], class_name: str) -> str:
-        """Add routing in execute() method for new operation."""
+        """Add routing in execute() method for new operation.
+
+        Supports two execute() patterns:
+        1. execute_capability() delegation (structural rule) -- insert before the return line
+        2. Legacy manual if/elif with raise ValueError -- insert before the raise
+
+        Root cause of previous failures: the loop stop condition used
+        `not lines[i].startswith('        ')` (8-space) to detect the next method,
+        but method defs inside a class are at 4-space indent. For single-line
+        execute() bodies the loop exited before finding execute_capability.
+        Fixed: stop when indent <= execute method's own indent (4 spaces).
+        """
         operation_name = self._extract_operation_name(proposal)
 
         try:
             lines = code.splitlines()
 
-            # Locate execute() method start using regex (avoids re-parsing modified code)
+            # Locate execute() method start
             execute_start = None
+            execute_indent = 4  # default class method indent
             for i, line in enumerate(lines):
                 if re.match(r'\s+def execute\s*\(', line):
                     execute_start = i
+                    execute_indent = len(line) - len(line.lstrip())
                     break
 
             if execute_start is None:
                 logger.error("Failed to add execute routing: execute() method not found")
                 return code
 
-            # Find raise ValueError within execute method that handles unknown operations
-            raise_line_idx = None
+            # Scan execute() body — stop when we hit the next method at same indent level
+            insert_line_idx = None
             for i in range(execute_start + 1, len(lines)):
-                stripped = lines[i].lstrip()
-                # Stop if we hit a new method definition at class level (4-space indent)
-                if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
+                line = lines[i]
+                stripped = line.lstrip()
+                current_indent = len(line) - len(stripped) if stripped else execute_indent + 4
+
+                # Stop at next method/class definition at same or lower indent
+                if stripped and current_indent <= execute_indent and re.match(r'def |class ', stripped):
                     break
-                # Match the "unsupported operation" raise — not parameter validation raises
-                if 'raise ValueError' in lines[i] and (
-                    'operation' in lines[i] or 'Unsupported' in lines[i] or 'Unknown' in lines[i]
-                ):
-                    raise_line_idx = i
+
+                # Pattern 1: execute_capability delegation -- insert before this return
+                if 'execute_capability' in line and stripped.startswith('return'):
+                    insert_line_idx = i
                     break
-            # Fallback: any raise ValueError in execute if specific one not found
-            if raise_line_idx is None:
+
+                # Pattern 2: raise ValueError for unknown operation
+                if 'raise ValueError' in line and ('operation' in line or 'Unsupported' in line or 'Unknown' in line):
+                    insert_line_idx = i
+                    break
+
+            # Fallback: any raise ValueError in execute body
+            if insert_line_idx is None:
                 for i in range(execute_start + 1, len(lines)):
-                    stripped = lines[i].lstrip()
-                    if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
+                    line = lines[i]
+                    stripped = line.lstrip()
+                    current_indent = len(line) - len(stripped) if stripped else execute_indent + 4
+                    if stripped and current_indent <= execute_indent and re.match(r'def |class ', stripped):
                         break
-                    if 'raise ValueError' in lines[i]:
-                        raise_line_idx = i
+                    if 'raise ValueError' in line:
+                        insert_line_idx = i
                         break
 
-            # Fallback: insert before execute_capability / return / last line of execute
-            if raise_line_idx is None:
-                for i in range(execute_start + 1, len(lines)):
-                    stripped = lines[i].lstrip()
-                    if re.match(r'def \w+', stripped) and not lines[i].startswith('        '):
-                        break
-                    if 'execute_capability' in lines[i] or (stripped.startswith('return') and 'execute_capability' in lines[i]):
-                        raise_line_idx = i
-                        break
-
-            if raise_line_idx is None:
-                logger.error("Failed to add execute routing: raise ValueError not found in execute()")
+            if insert_line_idx is None:
+                logger.error("Failed to add execute routing: no insertion point found in execute()")
                 return code
 
-            raise_indent = len(lines[raise_line_idx]) - len(lines[raise_line_idx].lstrip())
-            new_if = ' ' * raise_indent + f'if operation == "{operation_name}":'
-            new_return = ' ' * (raise_indent + 4) + f'return self._handle_{operation_name}(**kwargs)'
+            insert_indent = len(lines[insert_line_idx]) - len(lines[insert_line_idx].lstrip())
+            new_if = ' ' * insert_indent + f'if operation == "{operation_name}":'
+            new_return = ' ' * (insert_indent + 4) + f'return self._handle_{operation_name}(**kwargs)'
 
-            lines.insert(raise_line_idx, '')
-            lines.insert(raise_line_idx, new_return)
-            lines.insert(raise_line_idx, new_if)
+            lines.insert(insert_line_idx, '')
+            lines.insert(insert_line_idx, new_return)
+            lines.insert(insert_line_idx, new_if)
 
             return '\n'.join(lines) + '\n'
         except Exception as e:
             logger.error(f"Failed to add execute routing: {e}")
             return code
     
+    def _build_class_context(self, code: str, class_name: str) -> str:
+        """Build a compact class-level context string showing all other methods (signatures only)."""
+        try:
+            tree = ast.parse(code)
+            class_node = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+            if not class_node:
+                return ""
+            lines = code.splitlines()
+            parts = [f"class {class_name}(BaseTool):"]
+            for node in class_node.body:
+                if isinstance(node, ast.FunctionDef):
+                    sig_line = lines[node.lineno - 1].strip()
+                    parts.append(f"    {sig_line}  # ... (existing method)")
+            return "\n".join(parts)
+        except Exception:
+            return ""
+
     def _improve_single_handler(
         self,
         handler_code: str,
@@ -568,19 +796,52 @@ Return ONLY the method definition (no explanations)."""
         class_name: str,
         service_context: str,
         sandbox_error: Optional[str] = None,
-        validation_error: Optional[str] = None
+        validation_error: Optional[str] = None,
+        class_context: str = "",
+        tool_purpose: str = "",
+        skill_name: str = "",
+        verification_mode: str = "",
+        current_file: str = "",
     ) -> Optional[str]:
         """Improve a single handler method."""
-        
-        # Build error context if this is a retry
+        from core.tool_creation.code_generator.base import build_handler_context
+
         error_context = ""
         if validation_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n{validation_error}\n\nFIX THE VALIDATION ERRORS ABOVE.\n"
         elif sandbox_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED WITH ERROR:\n{sandbox_error}\n\nFIX THE ERROR ABOVE.\n"
-        
+
+        # Build rich per-handler context
+        # op_spec: try to find matching spec from proposal analysis
+        analysis = proposal.get("analysis") or {}
+        op_name = handler_name.replace("_handle_", "")
+        op_spec: Dict[str, Any] = {}
+        for cap in (analysis.get("capabilities") or []):
+            if isinstance(cap, dict) and cap.get("name") == op_name:
+                op_spec = cap
+                break
+
+        handler_ctx = build_handler_context(
+            handler_name=handler_name,
+            current_file=current_file or handler_code,
+            tool_purpose=tool_purpose,
+            skill_name=skill_name,
+            verification_mode=verification_mode,
+            op_spec=op_spec,
+            already_implemented=[],
+        )
+
+        # Inject implementation sketch if proposal provides one for this handler
+        sketch_steps = (proposal.get('implementation_sketch') or {}).get(handler_name, [])
+        sketch_section = ""
+        if sketch_steps:
+            sketch_section = "\nIMPLEMENTATION STEPS (follow these exactly):\n" + "\n".join(sketch_steps) + "\n"
+
         prompt = f"""TASK: Improve this handler method using the edit block format.
 
+{handler_ctx}
+{sketch_section}
 IMPROVEMENT PROPOSAL:
 {proposal['description']}
 
@@ -590,7 +851,7 @@ CHANGES TO MAKE:
 AVAILABLE SERVICES (use self.services.X):
 {service_context}
 {error_context}
-Edit block format — output EXACTLY this structure, nothing else:
+Edit block format -- output EXACTLY this structure, nothing else:
 <<<< ORIGINAL
 {handler_code}
 =======
@@ -600,30 +861,29 @@ Edit block format — output EXACTLY this structure, nothing else:
 CRITICAL REQUIREMENTS:
 - Keep method name: {handler_name}
 - Keep method signature unchanged
-- Preserve all parameters
 - ALWAYS use self.services.X - NEVER call self.X directly
-- Only improve internal logic using AVAILABLE SERVICES above
-- Add error handling if missing
-- Keep under 20 lines
-- Return plain dict (not ToolResult)
-- DO NOT reference undefined methods or uninitialized attributes
+- Return plain dict with 'success' key (not ToolResult)
+- Keep under 25 lines
 - DO NOT add imports"""
-        
+
         feedback = ""
         for attempt in range(3):
             try:
                 attempt_prompt = prompt + (f"\n\nVALIDATION FEEDBACK:\n{feedback}\n" if feedback else "")
                 response = self.llm._call_llm(attempt_prompt, temperature=0.2, max_tokens=1500, expect_json=False)
 
-                # Try edit block first, fall back to direct extraction
                 improved = self._parse_edit_block(response, handler_name)
                 if not improved:
                     improved = self._extract_method_from_response(response, handler_name)
-                
+
                 if improved and self._validate_handler(improved, handler_name):
                     invalid = self._invalid_service_calls(improved)
                     if invalid:
                         feedback = "Invalid self.services calls detected:\n- " + "\n- ".join(invalid)
+                        continue
+                    missing_return = self._check_missing_return(improved, handler_name)
+                    if missing_return:
+                        feedback = missing_return
                         continue
                     return improved
 
@@ -631,11 +891,11 @@ CRITICAL REQUIREMENTS:
                     f"Output did not contain a valid edit block or def {handler_name}.\n"
                     f"Use the exact format:\n<<<< ORIGINAL\n{handler_code}\n=======\n<implementation>\n>>>>"
                 )
-                
+
             except Exception as e:
                 logger.warning(f"Handler improvement attempt {attempt + 1} failed: {e}")
                 feedback = str(e)
-        
+
         return None
     
     def _parse_edit_block(self, text: str, handler_name: str):
@@ -758,6 +1018,39 @@ CRITICAL REQUIREMENTS:
         except:
             return False
     
+    def _extract_tool_structure(self, code: str) -> str:
+        """Extract registered capabilities, methods, and services used via AST."""
+        lines = []
+        try:
+            tree = ast.parse(code)
+            caps, methods, services_used = [], [], set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    if node.name not in ('__init__', 'execute', 'register_capabilities'):
+                        methods.append(node.name)
+                    for child in ast.walk(node):
+                        if isinstance(child, ast.Attribute):
+                            if (isinstance(child.value, ast.Attribute)
+                                    and isinstance(child.value.value, ast.Name)
+                                    and child.value.value.id == 'self'
+                                    and child.value.attr == 'services'):
+                                services_used.add(child.attr)
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if isinstance(func, ast.Attribute) and func.attr == 'add_capability':
+                        for kw in node.keywords:
+                            if kw.arg == 'name' and isinstance(kw.value, ast.Constant):
+                                caps.append(kw.value.value)
+            if caps:
+                lines.append(f"Registered capabilities: {', '.join(caps)}")
+            if methods:
+                lines.append(f"Methods: {', '.join(methods[:20])}")
+            if services_used:
+                lines.append(f"Services used: {', '.join(sorted(services_used))}")
+        except Exception:
+            pass
+        return '\n'.join(lines) if lines else ''
+
     def _extract_python_code(self, response: str) -> str:
         """Extract Python code from response."""
         if "```python" in response:

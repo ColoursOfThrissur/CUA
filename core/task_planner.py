@@ -129,7 +129,12 @@ Return ONLY valid JSON array, no explanation."""
             if not isinstance(steps_data, list):
                 raise ValueError("Expected JSON array")
 
-            current_tools = {t.__class__.__name__: t for t in getattr(self.tool_registry, "tools", [])}
+            current_tools = {}
+            for t in getattr(self.tool_registry, "tools", []):
+                current_tools[t.__class__.__name__] = t
+                inst = getattr(t, 'name', None)
+                if inst and not callable(inst):
+                    current_tools[inst] = t
             new_steps = []
             for sd in steps_data:
                 tool_name = sd.get("tool_name")
@@ -261,9 +266,15 @@ Return ONLY valid JSON array, no explanation."""
         
         for tool_instance in current_tools:
             tool_name = tool_instance.__class__.__name__
+            # Use instance name for tools that override .name (e.g. MCPAdapterTool_github)
+            instance_name = getattr(tool_instance, 'name', tool_name)
+            if callable(instance_name):
+                instance_name = tool_name
             if raw_web_tools_hidden and tool_name == "HTTPTool":
                 continue
-            if allowed and tool_name not in allowed:
+            # Always include MCP adapter tools regardless of skill filter
+            is_mcp = tool_name.startswith("MCPAdapterTool")
+            if allowed and instance_name not in allowed and tool_name not in allowed and not is_mcp:
                 continue
             capabilities = []
             tool_caps = tool_instance.get_capabilities() or {}
@@ -281,9 +292,8 @@ Return ONLY valid JSON array, no explanation."""
                         for p in capability.parameters
                     ]
                 })
-            
             if capabilities:
-                tools_info[tool_name] = capabilities
+                tools_info[instance_name] = capabilities
         
         return tools_info
     
@@ -309,7 +319,23 @@ Return ONLY valid JSON array, no explanation."""
                 }
                 for cap in caps
             ]
-        tools_desc = json.dumps(compact_tools, indent=2)
+
+        # Token budget: keep preferred tools whole, trim others to fit ~2000 tokens (~8000 chars)
+        _TOOLS_CHAR_BUDGET = 8000
+        preferred_set = preferred or set()
+        included: dict = {}
+        deferred: dict = {}
+        for tn, caps in compact_tools.items():
+            # MCP adapter tools always included — never trimmed by token budget
+            if tn in preferred_set or tn.startswith("MCPAdapterTool"):
+                included[tn] = caps
+            else:
+                deferred[tn] = caps
+        for tn, caps in deferred.items():
+            serialized = json.dumps({tn: caps})
+            if len(json.dumps(included)) + len(serialized) <= _TOOLS_CHAR_BUDGET:
+                included[tn] = caps
+        tools_desc = json.dumps(included, indent=2)
         context_str = f"skill: {skill_name}" if skill_name else "None"
         skill_guidance = self._build_skill_guidance(context)
         domain_guidance = self._build_domain_guidance(context)
@@ -324,9 +350,6 @@ USER GOAL: {goal}
 MEMORY CONTEXT (past approaches for similar goals):
 {unified_str}
 
-PAST SUCCESSFUL APPROACHES:
-{past_plans_str}
-
 AVAILABLE TOOLS:
 {tools_desc}
 
@@ -334,6 +357,9 @@ CONTEXT: {context_str}
 
 SKILL GUIDANCE:
 {skill_guidance}
+
+PAST SUCCESSFUL APPROACHES:
+{past_plans_str}
 
 EXAMPLES FOR THIS SKILL:
 {examples}
@@ -527,7 +553,13 @@ Return ONLY valid JSON, no explanation."""
             if field not in plan_data:
                 raise ValueError(f"Missing required field: {field}")
         
-        current_tools = {tool.__class__.__name__: tool for tool in getattr(self.tool_registry, 'tools', [])}
+        current_tools = {}
+        for tool in getattr(self.tool_registry, 'tools', []):
+            # Index by both class name and instance name so MCP tools are found
+            current_tools[tool.__class__.__name__] = tool
+            inst = getattr(tool, 'name', None)
+            if inst and not callable(inst):
+                current_tools[inst] = tool
         
         steps = []
         skipped_ids = set()  # track skipped step_ids to fix dependencies
