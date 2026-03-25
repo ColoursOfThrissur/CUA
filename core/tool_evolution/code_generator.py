@@ -390,7 +390,7 @@ class EvolutionCodeGenerator:
 
         handler_ctx = build_handler_context(
             handler_name=expected_name,
-            current_file=current_file,
+            current_file=current_file[:12000],  # cap to avoid LLM context overflow
             tool_purpose=tool_purpose,
             skill_name=skill_name,
             verification_mode=verification_mode,
@@ -824,7 +824,7 @@ Return ONLY the method definition."""
 
         handler_ctx = build_handler_context(
             handler_name=handler_name,
-            current_file=current_file or handler_code,
+            current_file=(current_file or handler_code)[:12000],  # cap to avoid LLM context overflow on large tools
             tool_purpose=tool_purpose,
             skill_name=skill_name,
             verification_mode=verification_mode,

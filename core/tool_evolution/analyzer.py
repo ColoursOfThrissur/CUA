@@ -222,12 +222,13 @@ class ToolAnalyzer:
             pass
 
         snake_case = re.sub(r'(?<!^)(?=[A-Z])', '_', tool_name).lower()
-        
+
         candidates = [
+            # Exact-case first — avoids m_c_p_adapter_tool.py style mangling
+            Path(f"tools/experimental/{tool_name}.py"),
             Path(f"tools/{tool_name}.py"),
             Path(f"tools/{tool_name.lower()}.py"),
             Path(f"tools/{snake_case}.py"),
-            Path(f"tools/experimental/{tool_name}.py"),
             Path(f"tools/experimental/{tool_name.lower()}.py"),
             Path(f"tools/experimental/{snake_case}.py"),
         ]

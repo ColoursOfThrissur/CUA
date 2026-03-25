@@ -34,7 +34,17 @@ class DependencyChecker:
     STDLIB_MODULES = {
         'json', 'os', 'sys', 'time', 'datetime', 'pathlib', 're', 'typing',
         'collections', 'itertools', 'functools', 'math', 'random', 'uuid',
-        'logging', 'traceback', 'inspect', 'ast', 'dataclasses', 'enum'
+        'logging', 'traceback', 'inspect', 'ast', 'dataclasses', 'enum',
+        'concurrent', 'threading', 'textwrap', 'hashlib', 'base64', 'copy',
+        'io', 'string', 'struct', 'csv', 'html', 'urllib', 'http',
+    }
+
+    # Libraries that must never appear in generated tool code.
+    # These cause sandbox failures and are not available in the CUA environment.
+    BLOCKED_LIBRARIES = {
+        'pandas', 'numpy', 'scipy', 'matplotlib', 'seaborn', 'plotly',
+        'graphviz', 'networkx', 'sklearn', 'tensorflow', 'torch',
+        'PIL', 'cv2', 'flask', 'django', 'fastapi', 'sqlalchemy',
     }
     
     def check_code(self, code: str) -> DependencyReport:
@@ -99,6 +109,11 @@ class DependencyChecker:
         for module in imports:
             # Skip standard library
             if module in self.STDLIB_MODULES:
+                continue
+            
+            # Hard-block libraries that must never appear in generated tool code
+            if module in self.BLOCKED_LIBRARIES:
+                missing.append(module)
                 continue
             
             # Skip local imports (tools, core, etc.)
