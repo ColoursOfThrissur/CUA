@@ -182,38 +182,18 @@ class CoordinatedAutonomyEngine:
         # Count only successful evolutions (processed minus failures) for metrics
         evolutions_succeeded = max(0, auto_result.get("processed", 0) - auto_result.get("failures", 0))
 
-        # Tool creation phase — runs after evolution when the total pending
-        # approval queue is below the cap (10). This prevents flooding the
-        # queue when the user is away, while ensuring creation always gets
-        # a turn as long as there is room.
-        # The delta condition (new_evo_this_cycle == 0) was removed because
-        # evolution always produces new pending items, permanently blocking
-        # creation. The cap alone is the right throttle.
-        CREATION_PENDING_CAP = 10
-        pending_mid = self._collect_pending_counts()
-        total_pending_now = pending_mid["pending_evolutions"] + pending_mid["pending_tools"]
-
-        if total_pending_now < CREATION_PENDING_CAP:
-            broadcast_trace_sync("auto", "Running tool creation phase", "in_progress", {"stage": "tool_creation"})
-            creation_result = await self._run_creation_phase()
-            if creation_result.get("queued"):
-                broadcast_trace_sync(
-                    "auto",
-                    f"Tool creation: {creation_result['queued']} tool(s) queued",
-                    "in_progress",
-                    {"stage": "tool_creation", "queued": creation_result["queued"]},
-                )
-        else:
-            creation_result = {
-                "skipped": True,
-                "reason": f"pending queue at cap ({total_pending_now}/{CREATION_PENDING_CAP}) — approve pending items first",
-                "queued": 0,
-            }
+        # Tool creation phase — always runs after evolution every cycle.
+        # Pending evolutions waiting for approval are NOT a blocker — that's
+        # the user's job. Creation is proactive: it analyses what the system
+        # is missing, not what users have complained about.
+        broadcast_trace_sync("auto", "Running tool creation phase", "in_progress", {"stage": "tool_creation"})
+        creation_result = await self._run_creation_phase()
+        if creation_result.get("queued"):
             broadcast_trace_sync(
                 "auto",
-                f"Tool creation skipped: queue full ({total_pending_now}/{CREATION_PENDING_CAP})",
+                f"Tool creation: {creation_result['queued']} tool(s) queued",
                 "in_progress",
-                {"stage": "tool_creation"},
+                {"stage": "tool_creation", "queued": creation_result["queued"]},
             )
 
         broadcast_trace_sync("auto", "Running self-improvement pass", "in_progress", {"stage": "improvement_loop"})
@@ -299,25 +279,22 @@ class CoordinatedAutonomyEngine:
         return result
 
     async def _run_creation_phase(self) -> dict:
-        """Queue tool creation for actionable gaps.
+        """Proactively identify and queue tool creation every cycle.
 
-        Runs every cycle after evolution. Evolution improves existing tools;
-        creation adds new ones. Both produce pending approvals the user reviews.
-        The two queues are independent — creation does not wait for evolutions
-        to be approved first. max_new_tools_per_scan caps tools created per cycle.
+        Two signal sources, merged and deduplicated:
+        1. GapTracker — user-triggered failures that surfaced a missing capability
+        2. Proactive LLM analysis — LLM reasons about the full system (skills,
+           existing tools, covered capabilities) and identifies what's missing
+           without waiting for a user to hit the gap first.
+
+        max_new_tools_per_scan caps how many tools are created per cycle.
+        Pending approvals are NOT a blocker — creation is independent.
         """
         try:
-            from core.gap_tracker import GapTracker
-            tracker = GapTracker()
-            actionable = tracker.get_actionable_gaps()
-            create_gaps = [g for g in actionable if g.suggested_action == "create_tool"]
-
-            if not create_gaps:
-                return {"skipped": True, "reason": "No actionable create_tool gaps", "queued": 0}
-
             await self.auto_orchestrator.ensure_initialized()
             max_new = int(self.auto_orchestrator.config.get("max_new_tools_per_scan", 1))
 
+            # Build covered capabilities set
             covered_caps: set = set()
             if self.registry:
                 try:
@@ -328,51 +305,179 @@ class CoordinatedAutonomyEngine:
                 except Exception:
                     pass
 
+            # --- Signal 1: user-triggered gaps from GapTracker ---
+            from core.gap_tracker import GapTracker
+            tracker = GapTracker()
+            actionable = tracker.get_actionable_gaps()
+            reactive_gaps = [
+                {"capability": g.capability, "reason": g.reasons[0] if g.reasons else "",
+                 "confidence": g.confidence_avg, "source": "gap_tracker",
+                 "preferred_name": getattr(g, "target_tool", None)}
+                for g in actionable if g.suggested_action == "create_tool"
+            ]
+
+            # --- Signal 2: proactive LLM system analysis ---
+            proactive_gaps = await self._proactive_gap_analysis(covered_caps)
+
+            # Merge, deduplicate by capability key, reactive takes priority
+            seen_caps: set = set()
+            all_gaps = []
+            for g in reactive_gaps + proactive_gaps:
+                key = (g["capability"] or "").lower().replace(":", "_").replace(" ", "_")
+                if key and key not in seen_caps and key not in covered_caps:
+                    seen_caps.add(key)
+                    all_gaps.append(g)
+
+            if not all_gaps:
+                return {"skipped": True, "reason": "No capability gaps identified (reactive=0, proactive=0)", "queued": 0}
+
             from core.evolution_queue import QueuedEvolution
             queued = 0
-            for gap in create_gaps:
+            for gap in all_gaps:
                 if queued >= max_new:
                     break
-                gap_key = (gap.capability or "").lower().replace(":", "_")
-                if gap_key in covered_caps:
-                    continue
-                tool_name = f"CREATE::{gap.capability}"
+                cap = gap["capability"]
+                tool_name = f"CREATE::{cap}"
                 if self.auto_orchestrator.queue.is_queued(tool_name):
                     continue
-                preferred_name = getattr(gap, "target_tool", None)
+
+                preferred_name = (
+                    gap.get("preferred_name")
+                    or "".join(p.capitalize() for p in str(cap).split("_")) + "Tool"
+                )
                 evolution = QueuedEvolution(
                     tool_name=tool_name,
-                    urgency_score=70.0,
-                    impact_score=60.0,
+                    urgency_score=75.0 if gap["source"] == "gap_tracker" else 60.0,
+                    impact_score=65.0,
                     feasibility_score=65.0,
                     timing_score=75.0,
-                    reason=f"Gap resolved via creation: {gap.capability} "
-                           f"({gap.occurrence_count}x, conf {gap.confidence_avg:.2f})",
+                    reason=f"[{gap['source']}] Missing capability: {cap} — {gap['reason'][:80]}",
                     metadata={
                         "kind": "create_tool",
-                        "gap_capability": gap.capability,
-                        "gap_description": f"Add capability: {gap.capability}. "
-                                           f"Reasons: {', '.join(gap.reasons[:3])}",
+                        "gap_capability": cap,
+                        "gap_description": f"Add capability: {cap}. Reason: {gap['reason']}",
                         "preferred_name": preferred_name,
+                        "source": gap["source"],
                     },
                 )
                 self.auto_orchestrator.queue.add(evolution)
-                tracker.mark_resolved(gap.capability, "create_tool")
+                if gap["source"] == "gap_tracker":
+                    tracker.mark_resolved(cap, "create_tool")
                 queued += 1
                 broadcast_trace_sync(
                     "auto",
-                    f"Queued tool creation for gap: {gap.capability}",
+                    f"Queued tool creation: {cap} [{gap['source']}]",
                     "in_progress",
-                    {"stage": "tool_creation", "capability": gap.capability},
+                    {"stage": "tool_creation", "capability": cap, "source": gap["source"]},
                 )
 
             if queued > 0:
                 await self.auto_orchestrator.run_cycle(max_items=queued)
 
-            return {"queued": queued, "gaps_checked": len(create_gaps)}
+            return {
+                "queued": queued,
+                "reactive_gaps": len(reactive_gaps),
+                "proactive_gaps": len(proactive_gaps),
+                "total_candidates": len(all_gaps),
+            }
 
         except Exception as e:
             return {"skipped": True, "reason": str(e), "queued": 0}
+
+    async def _proactive_gap_analysis(self, covered_caps: set) -> list:
+        """LLM analyses the full system every cycle to find missing capabilities.
+
+        Looks at: loaded tools, skill definitions, covered capabilities.
+        Returns gaps the system is missing regardless of user activity.
+        Capped at 2 per cycle to avoid flooding the creation queue.
+        """
+        try:
+            import json as _json
+            from pathlib import Path
+
+            # Build system snapshot
+            skills_snapshot = []
+            for skill_dir in sorted(Path("skills").iterdir()):
+                skill_json = skill_dir / "skill.json"
+                if not skill_json.exists():
+                    continue
+                try:
+                    sd = _json.loads(skill_json.read_text())
+                    skills_snapshot.append({
+                        "name": sd.get("name", skill_dir.name),
+                        "description": sd.get("description", ""),
+                        "preferred_tools": sd.get("preferred_tools", []),
+                    })
+                except Exception:
+                    pass
+
+            existing_tools = [
+                f.stem for base in [Path("tools"), Path("tools/experimental")]
+                if base.exists()
+                for f in base.glob("*.py")
+                if not f.name.startswith("__")
+            ]
+
+            prompt = (
+                "You are analysing the CUA autonomous agent system to find missing tool capabilities.\n"
+                "CUA is a local autonomous agent: plans tasks, routes via skills, calls tools, creates/evolves tools.\n\n"
+                f"SKILLS: {', '.join(s['name'] for s in skills_snapshot)}\n"
+                f"SKILL DESCRIPTIONS: {'; '.join(s['description'] for s in skills_snapshot if s['description'])}\n"
+                f"EXISTING TOOLS: {', '.join(existing_tools)}\n"
+                f"COVERED CAPABILITIES (sample): {', '.join(sorted(covered_caps)[:40])}\n\n"
+                "Identify up to 2 tool capabilities that are CLEARLY missing for a general-purpose autonomous agent.\n"
+                "Think about: scheduling, notifications, email, calendar, code execution, file watching, "
+                "image processing, PDF handling, API key management, caching, rate limiting, "
+                "data validation, report generation, template rendering.\n"
+                "Pick the 2 most impactful gaps that no existing tool covers.\n\n"
+                "Return JSON array (max 2 items):\n"
+                '[{"capability": "snake_case_name", "confidence": 0.0-1.0, '
+                '"reason": "one sentence why this is needed", '
+                '"suggested_tool_name": "ToolNameTool"}]\n'
+                "Confidence >= 0.6 is sufficient. Return [] only if the system is truly complete."
+            )
+
+            raw = await asyncio.to_thread(
+                self.llm_client._call_llm, prompt, 0.1, 600, True
+            )
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+            # LLM sometimes returns a single dict instead of a list
+            if isinstance(data, dict):
+                data = [data]
+            if not isinstance(data, list):
+                return []
+
+            results = []
+            for item in data:
+                cap = (item.get("capability") or "").strip().lower().replace(" ", "_")
+                conf = float(item.get("confidence", 0.0))
+                reason = (item.get("reason") or "").strip()
+                preferred = (item.get("suggested_tool_name") or "").strip()
+                if not cap or conf < 0.6:
+                    continue
+                cap_key = cap.replace(":", "_")
+                if cap_key in covered_caps:
+                    continue
+                results.append({
+                    "capability": cap,
+                    "confidence": conf,
+                    "reason": reason,
+                    "source": "proactive_llm",
+                    "preferred_name": preferred or None,
+                })
+
+            broadcast_trace_sync(
+                "auto",
+                f"Proactive gap analysis: {len(results)} new capability gap(s) identified",
+                "in_progress",
+                {"stage": "proactive_analysis", "gaps": [r["capability"] for r in results]},
+            )
+            return results
+
+        except Exception as e:
+            broadcast_trace_sync("auto", f"Proactive gap analysis failed: {e}", "in_progress",
+                                 {"stage": "proactive_analysis"})
+            return []
 
     async def _run_improvement_pass(self, max_iterations: int, dry_run: bool):
         controller = self.improvement_loop.controller

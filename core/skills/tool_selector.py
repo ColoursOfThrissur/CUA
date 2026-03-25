@@ -22,6 +22,14 @@ class ContextAwareToolSelector:
         for tool_name in context.preferred_tools:
             tool = self.tool_registry.get_tool_by_name(tool_name)
             if not tool:
+                # Try class name lookup as fallback
+                if hasattr(self.tool_registry, 'tools'):
+                    tool = next(
+                        (t for t in self.tool_registry.tools
+                         if t.__class__.__name__ == tool_name),
+                        None
+                    )
+            if not tool:
                 context.warnings.append(f"Preferred tool {tool_name} not found in registry")
                 continue
 

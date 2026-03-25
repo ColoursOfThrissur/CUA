@@ -235,6 +235,35 @@ class EvolutionSandboxRunner:
                 return False
             
             success_count += 1
+
+            # Content quality check: if the result is a targeted op and its data
+            # contains a list where ALL primary content fields are None, the handler
+            # is broken (e.g. llm.generate() result stored as None due to wrong type check).
+            # This catches cases like {'success': True, 'evaluations': [{'evaluation': None}]}
+            # that pass the success check but produce no real output.
+            if targeted_ops and op in targeted_ops and result.data and isinstance(result.data, dict):
+                for list_key, list_val in result.data.items():
+                    if isinstance(list_val, list) and len(list_val) > 0:
+                        # Check if all items in the list have None for their primary content field
+                        # (any field that isn't 'plan', 'id', 'name', 'error', 'success')
+                        _meta_keys = {'plan', 'id', 'name', 'error', 'success', 'index'}
+                        all_none = all(
+                            isinstance(item, dict) and all(
+                                v is None for k, v in item.items() if k not in _meta_keys
+                            )
+                            for item in list_val
+                            if isinstance(item, dict)
+                        )
+                        if all_none and any(isinstance(item, dict) for item in list_val):
+                            warn_msg = (
+                                f"Verification failed (retry): Structural errors: "
+                                f"{tool_instance.__class__.__name__}.{op} returned "
+                                f"list '{list_key}' where all content fields are None — "
+                                f"handler likely applied wrong type check on service result"
+                            )
+                            logger.error(f"Sandbox: {warn_msg}")
+                            output_lines.append(f"\u2717 Operation '{op}' failed: {warn_msg}")
+                            return False
         
         # CRITICAL: Require at least 1 successful operation
         # If all operations skipped with no successes, this is a failure

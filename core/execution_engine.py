@@ -509,6 +509,8 @@ class ExecutionEngine:
                 raise ValueError(f"Referenced step not found: {step_id}")
 
             step_result = state.step_results[step_id]
+            if step_result.status == StepStatus.SKIPPED:
+                raise ValueError(f"Referenced step was skipped (invalid tool/op): {step_id}")
             if step_result.status != StepStatus.COMPLETED:
                 raise ValueError(f"Referenced step not completed: {step_id} (status: {step_result.status.value})")
 

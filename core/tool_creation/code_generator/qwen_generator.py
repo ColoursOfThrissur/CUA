@@ -342,8 +342,17 @@ Methods to implement:
             for name in handler_names:
                 handler_code = self._extract_handler_method(raw, name)
                 if handler_code:
-                    code = self._splice_handler_into_code(code, name, handler_code)
-                    spliced += 1
+                    # Pre-splice service call + missing return checks
+                    from core.tool_creation.code_generator.base import check_handler_service_calls, check_handler_missing_return
+                    svc_errors = check_handler_service_calls(handler_code)
+                    ret_error = check_handler_missing_return(handler_code, name)
+                    if svc_errors or ret_error:
+                        issues = "; ".join(svc_errors + ([ret_error] if ret_error else []))
+                        logger.warning(f"Attempt {attempt+1}: handler {name} pre-check failed: {issues}")
+                        # Don't splice bad handler — keep stub
+                    else:
+                        code = self._splice_handler_into_code(code, name, handler_code)
+                        spliced += 1
 
             if spliced == 0:
                 logger.warning(f"Attempt {attempt+1}: no handlers found in LLM response")
@@ -358,10 +367,93 @@ Methods to implement:
                 return code
 
             logger.warning(f"Attempt {attempt+1} validation failed: {err}")
-            # Narrow the prompt on retry to just fix the contract violation
             prompt = prompt + f"\n\nPrevious attempt failed validation: {err}\nFix by using ONLY the allowed self.services.* methods listed in the contract."
 
         return None
+
+    def _build_context_window(
+        self,
+        full_code: str,
+        current_handler: str,
+        already_implemented: List[str],
+        max_chars: int = 8000,
+    ) -> str:
+        """Build a focused context window instead of sending the full file.
+
+        Priority order (until max_chars):
+        1. Class skeleton (signatures only) — always included
+        2. Already-implemented handlers in full — LLM must stay consistent
+        3. Current handler stub — always included
+        4. Remaining handlers as signatures only
+
+        Fixes BrowserAutomationTool (24 handlers) where full file ~800 lines
+        pushes the LLM over its effective context window.
+        """
+        import ast as _ast
+        try:
+            tree = _ast.parse(full_code)
+        except Exception:
+            return full_code[:max_chars]
+
+        cls = next((n for n in tree.body if isinstance(n, _ast.ClassDef)), None)
+        if not cls:
+            return full_code[:max_chars]
+
+        src_lines = full_code.splitlines()
+
+        def get_src(node) -> str:
+            return "\n".join(src_lines[node.lineno - 1:node.end_lineno])
+
+        def get_sig(node) -> str:
+            return "    " + src_lines[node.lineno - 1].strip() + "  # ..."
+
+        # 1. Skeleton
+        parts = [f"class {cls.name}(BaseTool):"]
+        for node in cls.body:
+            if isinstance(node, _ast.FunctionDef) and node.name in ('__init__', 'register_capabilities', 'execute'):
+                parts.append(get_sig(node))
+        skeleton = "\n".join(parts)
+        budget = max_chars - len(skeleton)
+
+        # 2. Already-implemented handlers in full
+        improved_blocks = []
+        for node in cls.body:
+            if isinstance(node, _ast.FunctionDef) and node.name in already_implemented:
+                src = get_src(node)
+                if budget - len(src) > 500:
+                    improved_blocks.append(src)
+                    budget -= len(src)
+
+        # 3. Current handler stub
+        current_src = ""
+        for node in cls.body:
+            if isinstance(node, _ast.FunctionDef) and node.name == current_handler:
+                current_src = get_src(node)
+                budget -= len(current_src)
+                break
+
+        # 4. Remaining as signatures only
+        sig_lines = []
+        for node in cls.body:
+            if isinstance(node, _ast.FunctionDef):
+                if node.name in already_implemented or node.name == current_handler:
+                    continue
+                if node.name in ('__init__', 'register_capabilities', 'execute'):
+                    continue
+                sig_lines.append(get_sig(node))
+
+        sections = [skeleton]
+        if improved_blocks:
+            sections.append("\n# --- Already implemented this session ---")
+            sections.extend(improved_blocks)
+        if current_src:
+            sections.append("\n# --- Current handler (being implemented) ---")
+            sections.append(current_src)
+        if sig_lines:
+            sections.append("\n# --- Other handlers (signatures only) ---")
+            sections.extend(sig_lines)
+
+        return "\n".join(sections)
 
     def _parse_edit_block(self, text: str, handler_name: str) -> Optional[str]:
         """Extract the UPDATED section from an aider-style edit block."""
@@ -451,6 +543,9 @@ Methods to implement:
 
             stub = self._extract_handler_stub(current_code, handler_name)
 
+            # Build focused context window instead of full file (fixes large tool overflow)
+            context_window = self._build_context_window(current_code, handler_name, implemented)
+
             prompt = f"""Implement ONE handler method for a CUA tool.
 Output ONLY the method definition — no class wrapper, no imports.
 
@@ -458,7 +553,7 @@ Output ONLY the method definition — no class wrapper, no imports.
 {sketch_section}
 Current file state (for context — do NOT repeat it, only output the new method):
 ```python
-{current_code}
+{context_window}
 ```
 
 Contract:
@@ -491,6 +586,14 @@ Requirements:
                 handler_code = self._extract_handler_method(raw, handler_name)
                 if not handler_code:
                     feedback = f"Output did not contain def {handler_name}. Return only the method."
+                    continue
+
+                # Pre-splice service call + missing return checks
+                from core.tool_creation.code_generator.base import check_handler_service_calls, check_handler_missing_return
+                svc_errors = check_handler_service_calls(handler_code)
+                ret_error = check_handler_missing_return(handler_code, handler_name)
+                if svc_errors or ret_error:
+                    feedback = "Fix these issues:\n" + "\n".join(svc_errors + ([ret_error] if ret_error else []))
                     continue
 
                 candidate = self._splice_handler_into_code(current_code, handler_name, handler_code)

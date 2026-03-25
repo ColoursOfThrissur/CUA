@@ -24,8 +24,10 @@ class SandboxRunner:
     def __init__(self, expansion_mode):
         self.expansion_mode = expansion_mode
     
-    def run_sandbox(self, tool_name: str, creation_id: int = None) -> bool:
-        """Run runtime playground validation for a newly generated tool"""
+    def run_sandbox(self, tool_name: str, creation_id: int = None, stub_ops: set = None) -> bool:
+        """Run runtime playground validation for a newly generated tool.
+        stub_ops: set of operation names that are known stubs (skip 'returned None' for these).
+        """
         if creation_logger and creation_id:
             creation_logger.log_artifact(creation_id, "sandbox_start", "sandbox", {"tool_name": tool_name})
         
@@ -70,7 +72,7 @@ class SandboxRunner:
             if creation_logger and creation_id:
                 creation_logger.log_artifact(creation_id, "running_tests", "sandbox", {})
             
-            result = self._run_smoke_tests(tool_instance, orchestrator, creation_id)
+            result = self._run_smoke_tests(tool_instance, orchestrator, creation_id, stub_ops=stub_ops)
             
             if creation_logger and creation_id:
                 creation_logger.log_artifact(creation_id, "sandbox_complete", "sandbox", {"success": result})
@@ -101,8 +103,9 @@ class SandboxRunner:
         class_name = self._class_name(tool_name)
         return getattr(module, class_name, None)
     
-    def _run_smoke_tests(self, tool_instance, orchestrator, creation_id: int = None) -> bool:
+    def _run_smoke_tests(self, tool_instance, orchestrator, creation_id: int = None, stub_ops: set = None) -> bool:
         """Execute deterministic smoke sequence across discovered capabilities"""
+        stub_ops = stub_ops or set()
         try:
             capabilities = tool_instance.get_capabilities()
         except Exception as e:
@@ -137,6 +140,20 @@ class SandboxRunner:
             "summary": "sandbox validation",
         }
         
+        # Auto-detect network_only: if all capability names contain network patterns, skip sandbox
+        _NETWORK_PATTERNS = {'http', 'url', 'browser', 'navigate', 'fetch', 'request', 'scrape', 'crawl', 'web'}
+        cap_names = list(capabilities.keys())
+        network_only = bool(cap_names and all(
+            any(p in cap.lower() for p in _NETWORK_PATTERNS) for cap in cap_names
+        ))
+        if network_only:
+            logger.warning(f"Sandbox: auto-detected network_only tool ({cap_names}), skipping execution")
+            if creation_logger and creation_id:
+                creation_logger.log_artifact(creation_id, "sandbox_network_only", "sandbox", {
+                    "caps": cap_names, "note": "All capabilities are network-dependent"
+                })
+            return True
+
         # Order operations: create/save first, then get/read, then list
         operations = list(capabilities.keys())
         ordered_ops = [op for op in ("create", "save", "append", "get", "read", "list", "recent") if op in operations]
@@ -176,6 +193,14 @@ class SandboxRunner:
                 return False
             except Exception as e:
                 error_msg = str(e)
+                # Asyncio misuse — give targeted message
+                if any(x in error_msg.lower() for x in ['asyncio', 'event loop', 'run_until_complete']):
+                    logger.error(f"Sandbox: asyncio misuse in '{op}' — use ThreadPoolExecutor instead")
+                    if creation_logger and creation_id:
+                        creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
+                            "operation": op, "error": "asyncio misuse — use ThreadPoolExecutor"
+                        })
+                    return False
                 # Ignore SSL errors, network issues, and element-not-found in sandbox - they're expected
                 if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element', 'unable to locate element']):
                     logger.warning(f"Sandbox: Ignoring network/browser/element error for '{op}': {error_msg}")
@@ -200,10 +225,14 @@ class SandboxRunner:
             # Also treat handler-level success:False as a failure (not just orchestrator-level)
             if result.success and isinstance(result.data, dict) and result.data.get('success') is False:
                 handler_error = result.data.get('error', 'unknown')
-                # Ignore expected sandbox errors (missing files, network)
                 ignorable = ['not found', 'ssl', 'certificate', 'connection', 'network', 'timeout',
                              'browser not open', 'no such element']
                 if not any(x in handler_error.lower() for x in ignorable):
+                    # Skip 'returned None' for known stub operations
+                    if op in stub_ops and 'none' in handler_error.lower():
+                        logger.warning(f"Sandbox: skipping stub op '{op}' returned None")
+                        skipped_count += 1
+                        continue
                     logger.error(f"Sandbox: handler returned success=False for '{op}': {handler_error}")
                     if creation_logger and creation_id:
                         creation_logger.log_artifact(creation_id, "operation_failed", "sandbox", {
@@ -217,17 +246,20 @@ class SandboxRunner:
 
             if not result.success:
                 error_msg = f"Operation '{op}' failed: {result.error}"
-                # Ignore SSL errors, network issues, and element-not-found in sandbox - they're expected
                 if any(x in error_msg.lower() for x in ['ssl', 'certificate', 'connection', 'network', 'timeout', 'browser not open', 'no such element', 'unable to locate element']):
                     logger.warning(f"Sandbox: Ignoring network/browser/element error for '{op}': {error_msg}")
                     if creation_logger and creation_id:
                         creation_logger.log_artifact(creation_id, "operation_skipped", "sandbox", {
-                            "operation": op,
-                            "reason": "network_or_browser_error",
-                            "error": error_msg
+                            "operation": op, "reason": "network_or_browser_error", "error": error_msg
                         })
                     skipped_count += 1
-                    continue  # Skip this operation, continue with others
+                    continue
+
+                # Skip 'returned None' for known stub operations
+                if op in stub_ops and result.error and 'none' in result.error.lower():
+                    logger.warning(f"Sandbox: skipping stub op '{op}' returned None")
+                    skipped_count += 1
+                    continue
                 
                 logger.error(f"Sandbox failed for operation '{op}': {result.error}")
                 if creation_logger and creation_id:

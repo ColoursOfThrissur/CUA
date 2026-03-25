@@ -298,101 +298,144 @@ Return ONLY valid JSON array, no explanation."""
         return tools_info
     
     def _build_planning_prompt(self, goal: str, tools: Dict, context: Optional[Dict], past_plans: list = None, unified_context: str = "") -> str:
-        """Build prompt for LLM to generate plan."""
-        skill_name = (context or {}).get("skill_context", {}).get("skill_name", "")
-        preferred = set((context or {}).get("skill_context", {}).get("preferred_tools", []))
-        # Always include summarizer as optional utility
+        """Build a layered planning prompt: goal → skill context → tools → rules → format."""
+        skill_context = (context or {}).get("skill_context", {})
+        skill_name = skill_context.get("skill_name", "")
+        preferred = set(skill_context.get("preferred_tools", []))
         preferred.add("ContextSummarizerTool")
 
-        # Filter tool schema to preferred tools only; fall back to full set if no match
+        # ── Layer 1: tool schema — preferred tools only, one line per op ─────
         filtered = {k: v for k, v in tools.items() if k in preferred} if preferred else tools
         if not filtered:
             filtered = tools
 
-        compact_tools = {}
+        tool_lines = []
         for tool_name, caps in filtered.items():
-            compact_tools[tool_name] = [
-                {
-                    "name": cap["name"],
-                    "required": [p["name"] for p in cap.get("parameters", []) if p.get("required")],
-                    "optional": [p["name"] for p in cap.get("parameters", []) if not p.get("required")],
-                }
-                for cap in caps
-            ]
+            tool_lines.append(f"{tool_name}:")
+            for cap in caps:
+                req = ", ".join(p["name"] for p in cap.get("parameters", []) if p.get("required"))
+                opt = ", ".join(f'[{p["name"]}]' for p in cap.get("parameters", []) if not p.get("required"))
+                sig = ", ".join(filter(None, [req, opt]))
+                desc = cap.get("description", "")[:80]
+                tool_lines.append(f"  {cap['name']}({sig})  # {desc}")
+        tools_desc = "\n".join(tool_lines)
 
-        # Token budget: keep preferred tools whole, trim others to fit ~2000 tokens (~8000 chars)
-        _TOOLS_CHAR_BUDGET = 8000
-        preferred_set = preferred or set()
-        included: dict = {}
-        deferred: dict = {}
-        for tn, caps in compact_tools.items():
-            # MCP adapter tools always included — never trimmed by token budget
-            if tn in preferred_set or tn.startswith("MCPAdapterTool"):
-                included[tn] = caps
-            else:
-                deferred[tn] = caps
-        for tn, caps in deferred.items():
-            serialized = json.dumps({tn: caps})
-            if len(json.dumps(included)) + len(serialized) <= _TOOLS_CHAR_BUDGET:
-                included[tn] = caps
-        tools_desc = json.dumps(included, indent=2)
-        context_str = f"skill: {skill_name}" if skill_name else "None"
-        skill_guidance = self._build_skill_guidance(context)
-        domain_guidance = self._build_domain_guidance(context)
-        past_plans_str = self._build_past_plans_guidance(past_plans or [])
-        unified_str = unified_context.strip() if unified_context else "No additional memory context."
-        examples = self._build_skill_examples(skill_name)
+        # ── Layer 2: skill guidance — what this skill expects ─────────────────
+        skill_lines = []
+        if skill_name:
+            skill_lines.append(f"Skill: {skill_name} ({skill_context.get('category', '')})")
+        if skill_context.get("instructions_summary"):
+            skill_lines.append(f"Instructions: {skill_context['instructions_summary'][:200]}")
+        if skill_context.get("verification_mode"):
+            skill_lines.append(f"Verification: {skill_context['verification_mode']}")
+        if skill_context.get("output_types"):
+            skill_lines.append(f"Expected outputs: {', '.join(skill_context['output_types'])}")
+        if skill_context.get("required_tools"):
+            skill_lines.append(f"Required tools: {', '.join(skill_context['required_tools'])}")
+        if skill_context.get("skill_constraints"):
+            skill_lines.append(f"Constraints: {'; '.join(skill_context['skill_constraints'])}")
+        skill_guidance = "\n".join(skill_lines) if skill_lines else "No skill selected — use best available tools."
 
-        return f"""You are a task planning AI. Break down the user's goal into executable steps using available tools.
+        # ── Layer 3: parallelism rules — skill-specific only ──────────────────
+        parallelism_rules = self._build_parallelism_rules(skill_name)
 
-USER GOAL: {goal}
+        # ── Layer 4: one concrete example for this skill ──────────────────────
+        example = self._build_skill_example_compact(skill_name)
 
-MEMORY CONTEXT (past approaches for similar goals):
-{unified_str}
+        # ── Layer 5: past plans — compact, capped ─────────────────────────────
+        past_str = self._build_past_plans_guidance(past_plans or [])
+
+        # ── Layer 6: memory — hard cap 400 chars ──────────────────────────────
+        mem = (unified_context or "").strip()
+        if len(mem) > 400:
+            mem = mem[:400] + "..."
+        mem_str = mem or "none"
+
+        return f"""Plan executable steps for this goal.
+
+GOAL: {goal}
+
+SKILL CONTEXT:
+{skill_guidance}
 
 AVAILABLE TOOLS:
 {tools_desc}
 
-CONTEXT: {context_str}
-
-SKILL GUIDANCE:
-{skill_guidance}
-
-PAST SUCCESSFUL APPROACHES:
-{past_plans_str}
-
-EXAMPLES FOR THIS SKILL:
-{examples}
-
 PARALLELISM RULES:
-- dependencies:[] means runs in parallel with other dependency-free steps
+- dependencies:[] means the step runs immediately (parallel with others)
 - Only add a dependency when a step needs the OUTPUT of a prior step
-- Never run multiple BrowserAutomationTool.navigate in parallel (shared browser)
-- get_current_page MUST depend on the navigate/fetch step that loaded the page
-- take_screenshot MUST depend on the last navigate before it
+{parallelism_rules}
 
-Generate a JSON execution plan:
+EXAMPLE:
+{example}
+
+PAST APPROACHES (reference only):
+{past_str}
+
+MEMORY: {mem_str}
+
+Return ONLY this JSON, no explanation:
 {{
-  "goal": "restated goal",
+  "goal": "{goal}",
   "complexity": "simple|moderate|complex",
   "estimated_duration": <seconds>,
   "requires_approval": false,
   "steps": [
-    {{
-      "step_id": "step_1",
-      "domain": "web|computer|development|other",
-      "description": "what this step does",
-      "tool_name": "ToolName",
-      "operation": "operation_name",
-      "parameters": {{}},
-      "dependencies": [],
-      "expected_output": "what we expect",
-      "retry_on_failure": true
-    }}
+    {{"step_id": "step_1", "tool_name": "ToolName", "operation": "op", "parameters": {{}}, "dependencies": [], "expected_output": "...", "description": "...", "domain": "web|computer|development|other", "retry_on_failure": true}}
   ]
-}}
+}}"""
 
-Return ONLY valid JSON, no explanation."""
+    def _build_parallelism_rules(self, skill_name: str) -> str:
+        """Return skill-specific parallelism rules — only what's relevant."""
+        rules = {
+            "browser_automation": (
+                "- Never run two navigate steps in parallel (shared browser instance)\n"
+                "- get_page_content MUST depend on the navigate step that loaded the page\n"
+                "- take_screenshot MUST depend on the last navigate before it"
+            ),
+            "computer_automation": (
+                "- File read/write steps on the same path must be sequential"
+            ),
+            "finance_analysis": (
+                "- get_advisor_insight runs all sub-layers internally — use it as a single step"
+            ),
+        }
+        return rules.get(skill_name, "- Steps with no shared outputs can run in parallel")
+
+    def _build_skill_example_compact(self, skill_name: str) -> str:
+        """One concrete step-flow example per skill."""
+        examples = {
+            "browser_automation": (
+                'Goal: "search cats on google" →\n'
+                '  step_1: navigate(url="https://google.com") deps:[]\n'
+                '  step_2: fill_input(selector="input[name=q]", text="cats") deps:[step_1]\n'
+                '  step_3: click_element(selector="input[type=submit]") deps:[step_2]'
+            ),
+            "computer_automation": (
+                'Goal: "read config.yaml" →\n'
+                '  step_1: read_file(path="config.yaml") deps:[]'
+            ),
+            "code_workspace": (
+                'Goal: "run tests" →\n'
+                '  step_1: execute(command="pytest -q") deps:[]'
+            ),
+            "data_operations": (
+                'Goal: "query tool logs" →\n'
+                '  step_1: query_logs(limit=20) deps:[]'
+            ),
+            "knowledge_management": (
+                'Goal: "save auth snippet" →\n'
+                '  step_1: save_snippet(name="auth", code="...", language="python") deps:[]'
+            ),
+            "finance_analysis": (
+                'Goal: "how is AAPL doing" →\n'
+                '  step_1: get_advisor_insight(holdings={"AAPL": 1}, question="how is AAPL doing") deps:[]'
+            ),
+            "web_research": (
+                '(web_research is handled by WebResearchAgent — single step: search_web or fetch_url)'
+            ),
+        }
+        return examples.get(skill_name, 'Use the most appropriate tool operation for the goal.')
 
     def _build_past_plans_guidance(self, past_plans: list) -> str:
         if not past_plans:
@@ -408,66 +451,6 @@ Return ONLY valid JSON, no explanation."""
                 lines.append(f"    {s.get('tool','?')}.{s.get('operation','?')} [{s.get('domain','')}]")
         return "\n".join(lines)
 
-    def _build_skill_guidance(self, context: Optional[Dict]) -> str:
-        skill_context = (context or {}).get("skill_context")
-        if not skill_context:
-            return "No skill selected. Plan from the available tools and user goal only."
-
-        return (
-            f"Selected skill: {skill_context.get('skill_name', 'unknown')}\n"
-            f"Category: {skill_context.get('category', 'unknown')}\n"
-            f"Instructions summary: {skill_context.get('instructions_summary', '')}\n"
-            f"Preferred tools: {', '.join(skill_context.get('preferred_tools', [])) or 'none'}\n"
-            f"Required tools: {', '.join(skill_context.get('required_tools', [])) or 'none'}\n"
-            f"Verification mode: {skill_context.get('verification_mode', 'default')}\n"
-            f"Expected outputs: {', '.join(skill_context.get('output_types', [])) or 'unspecified'}\n"
-            f"Constraints: {'; '.join(skill_context.get('skill_constraints', [])) or 'none'}"
-        )
-
-    def _build_skill_examples(self, skill_name: str) -> str:
-        examples = {
-            "web_research": [
-                '(web_research tasks are handled by the reactive WebResearchAgent — no DAG plan needed)',
-            ],
-            "browser_automation": [
-                'Goal: "go to google and search cats" → navigate(url="https://google.com") → fill_input(selector="input[name=q]", text="cats", deps:[step_1]) → click_element(selector="input[type=submit]", deps:[step_2])',
-                'Goal: "take screenshot of github" → navigate(url="https://github.com") → take_screenshot(deps:[step_1])',
-                'NOTE: never run two navigate steps in parallel — shared browser instance.',
-            ],
-            "computer_automation": [
-                'Goal: "list files in data folder" → list_directory(path="data")',
-                'Goal: "read config.yaml and show contents" → read_file(path="config.yaml")',
-            ],
-            "code_workspace": [
-                'Goal: "run tests" → execute(command="pytest -q")',
-                'Goal: "read main.py" → read_file(path="main.py")',
-            ],
-            "data_operations": [
-                'Goal: "parse this JSON string" → parse(text="{...}")',
-                'Goal: "query tool execution logs" → query_logs(limit=20)',
-            ],
-            "knowledge_management": [
-                'Goal: "save this code snippet" → save_snippet(name="...", code="...", language="python")',
-                'Goal: "find snippets about auth" → search(query="auth")',
-            ],
-        }
-        lines = examples.get(skill_name, [
-            'Use the most appropriate tool for the goal.',
-            'Prefer search_web for live/dynamic content, fetch_url for static pages.',
-        ])
-        return "\n".join(f"- {l}" for l in lines)
-
-    def _build_domain_guidance(self, context: Optional[Dict]) -> str:
-        domain_catalog = (context or {}).get("domain_catalog")
-        if not domain_catalog:
-            return "No domain catalog available."
-        # Compact: just domain name → tool names, skip full descriptions
-        lines = []
-        for domain in (domain_catalog.get("domains") or []):
-            tools = [t.get("name", "") for t in (domain.get("tools") or [])]
-            lines.append(f"{domain.get('name', '?')}: {', '.join(tools)}")
-        return "\n".join(lines) if lines else json.dumps(domain_catalog, indent=2)
-    
     def _parse_plan_response(self, response: str) -> Dict:
         """Parse LLM response into plan data."""
         # Extract JSON from response
@@ -544,6 +527,10 @@ Return ONLY valid JSON, no explanation."""
         "press_key": "keyboard_action",
         "key_press": "keyboard_action",
         "screenshot": "take_screenshot",
+        "get_current_page": "get_page_content",
+        "get_page_source": "get_page_content",
+        "read_page": "get_page_content",
+        "get_page_text": "get_page_content",
     }
 
     def _validate_plan(self, plan_data: Dict, original_goal: str) -> ExecutionPlan:
@@ -602,8 +589,14 @@ Return ONLY valid JSON, no explanation."""
                 skipped_ids.add(step_id)
                 continue
             
+            # If ALL dependencies were skipped, skip this step too (dead reference cascade)
+            raw_deps = step_data.get("dependencies", [])
+            if raw_deps and all(d in skipped_ids for d in raw_deps):
+                logger.warning(f"Step {step_id} all dependencies skipped, cascading skip")
+                skipped_ids.add(step_id)
+                continue
             # Remove dependencies on skipped steps
-            deps = [d for d in step_data.get("dependencies", []) if d not in skipped_ids]
+            deps = [d for d in raw_deps if d not in skipped_ids]
 
             # Auto-fix: get_current_page with no deps must depend on its paired navigate/open step.
             # Pairing: find the navigate step whose index is closest-before this step and not yet

@@ -4,6 +4,8 @@ from typing import Tuple, Optional, Any
 from pathlib import Path
 from core.tool_evolution_logger import get_evolution_logger
 from core.correlation_context import CorrelationContextManager
+from core.evolution_constraint_memory import EvolutionConstraintMemory
+from core.tool_evolution.failure_classifier import EvolutionFailureClassifier, OVERFLOW_SIZE_BYTES
 
 logger = logging.getLogger(__name__)
 evo_logger = get_evolution_logger()
@@ -18,6 +20,8 @@ class ToolEvolutionOrchestrator:
         self.llm_client = llm_client
         self.conversation_log = []
         self.last_skill_updates = []
+        self.constraint_memory = EvolutionConstraintMemory()
+        self.classifier = EvolutionFailureClassifier()
     
     def evolve_tool(
         self,
@@ -99,6 +103,14 @@ class ToolEvolutionOrchestrator:
         # Step 2: LLM proposes changes
         from core.tool_evolution.proposal_generator import EvolutionProposalGenerator
         proposal_gen = EvolutionProposalGenerator(self.llm_client)
+
+        # Inject any persisted constraints for this tool into the analysis
+        # so the proposal generator includes them in the LLM prompt.
+        self.constraint_memory.seed_known_constraints(tool_name)
+        constraint_block = self.constraint_memory.build_constraint_block(tool_name)
+        if constraint_block:
+            analysis['constraint_block'] = constraint_block
+            logger.info(f"[Evolution {evolution_id}] Injecting {len(constraint_block)} char constraint block")
         
         try:
             proposal = proposal_gen.generate_proposal(analysis)
@@ -129,16 +141,53 @@ class ToolEvolutionOrchestrator:
         sandbox_error = None
         validation_error = None
         confidence = proposal.get('confidence', 0)
+        tool_path = Path(analysis.get('tool_path', ''))
+        tool_size = tool_path.stat().st_size if tool_path.exists() else 0
         
         for attempt in range(3):  # Increased from 2 to allow validation feedback retry
             try:
-                # Generate code (and pass validation error for feedback on retry)
-                improved_code = code_gen.generate_improved_code(
-                    analysis['current_code'],
-                    proposal,
-                    sandbox_error=sandbox_error,
-                    validation_error=validation_error
-                )
+                # --- Classify failure from previous attempt and route strategy ---
+                if attempt > 0:
+                    last_error = validation_error or sandbox_error or ""
+                    step_name = "validation" if validation_error else "sandbox"
+                    evo_ctx = self.classifier.classify(tool_name, step_name, last_error, attempt)
+                    self.constraint_memory.record_failure(tool_name, step_name, last_error)
+
+                    if evo_ctx.failure_type == "OVERFLOW" or tool_size > OVERFLOW_SIZE_BYTES:
+                        logger.info(f"[Evolution {evolution_id}] OVERFLOW detected — switching to chunk strategy")
+                        improved_code = self._chunk_evolve(
+                            analysis['current_code'], proposal, tool_name,
+                            sandbox_error=sandbox_error, validation_error=validation_error
+                        )
+                        if not improved_code:
+                            evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation",
+                                               "Chunk strategy returned empty", confidence, health_before)
+                            return False, "Chunk evolution failed: empty output"
+                    elif evo_ctx.failure_type == "DEP_BLOCKED":
+                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation",
+                                           f"Dependency blocked: {last_error[:100]}", confidence, health_before)
+                        return False, f"Blocked dependency — cannot evolve: {last_error[:100]}"
+                    else:
+                        # PATTERN_LOOP or UNKNOWN — refresh constraint block and retry
+                        refreshed_block = self.constraint_memory.build_constraint_block(tool_name)
+                        if refreshed_block:
+                            proposal['constraint_block'] = refreshed_block
+                        improved_code = code_gen.generate_improved_code(
+                            analysis['current_code'], proposal,
+                            sandbox_error=sandbox_error, validation_error=validation_error
+                        )
+                else:
+                    # First attempt — use chunk strategy immediately for large tools
+                    if tool_size > OVERFLOW_SIZE_BYTES:
+                        logger.info(f"[Evolution {evolution_id}] Large tool ({tool_size}B) — using chunk strategy")
+                        improved_code = self._chunk_evolve(
+                            analysis['current_code'], proposal, tool_name
+                        )
+                    else:
+                        improved_code = code_gen.generate_improved_code(
+                            analysis['current_code'], proposal,
+                            sandbox_error=sandbox_error, validation_error=validation_error
+                        )
                 
                 # Validate generated code
                 if not improved_code or not improved_code.strip():
@@ -315,6 +364,120 @@ class ToolEvolutionOrchestrator:
             evo_logger.log_run(tool_name, user_prompt, "failed", "pending", str(e), confidence, health_before)
             return False, f"Failed to create pending evolution: {str(e)}"
     
+    def _chunk_evolve(
+        self,
+        current_code: str,
+        proposal: dict,
+        tool_name: str,
+        sandbox_error: Optional[str] = None,
+        validation_error: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Chunk evolution strategy for large tools (>8KB).
+        Extracts only target_functions, evolves each in isolation (~150 lines),
+        then stitches back into the original file.
+        Falls back to full-file generation if no target_functions specified.
+        """
+        import ast as _ast
+        import textwrap as _tw
+
+        target = proposal.get('target_functions') or []
+        constraint_block = (
+            proposal.get('constraint_block')
+            or self.constraint_memory.build_constraint_block(tool_name)
+        )
+        error_ctx = ""
+        if validation_error:
+            error_ctx = f"\nPREVIOUS VALIDATION ERROR (fix this):\n{validation_error}\n"
+        elif sandbox_error:
+            error_ctx = f"\nPREVIOUS SANDBOX ERROR (fix this):\n{sandbox_error[:400]}\n"
+
+        if not target:
+            logger.warning("_chunk_evolve: no target_functions — cannot chunk, returning current code")
+            return current_code
+
+        try:
+            tree = _ast.parse(current_code)
+        except SyntaxError:
+            return None
+
+        lines = current_code.splitlines()
+        evolved = current_code
+
+        for fn_name in target:
+            # Find the function node
+            fn_node = None
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef) and node.name == fn_name:
+                    fn_node = node
+                    break
+            if not fn_node:
+                logger.warning(f"_chunk_evolve: {fn_name} not found in AST")
+                continue
+
+            fn_source = "\n".join(lines[fn_node.lineno - 1:fn_node.end_lineno])
+
+            prompt = f"""{constraint_block}
+
+Rewrite ONLY this function. Return ONLY the function code, nothing else.
+Do NOT include class definition, imports, or any other code.
+
+Function: {fn_name}
+Goal: {proposal.get('description', '')}
+Changes: {'; '.join(proposal.get('changes', []))}
+{error_ctx}
+Current implementation:
+{fn_source}
+
+CRITICAL:
+- Keep method name {fn_name} and signature unchanged
+- Use ONLY self.services.X for operations
+- Return dict with 'success' key
+- Keep under 30 lines
+- NO imports"""
+
+            try:
+                response = self.llm_client._call_llm(prompt, temperature=0.2, max_tokens=800, expect_json=False)
+                # Extract just the function
+                import re as _re
+                code_block = response
+                if "```python" in response:
+                    m = _re.search(r'```python\s*(.+?)```', response, _re.DOTALL)
+                    code_block = m.group(1).strip() if m else response
+                elif "```" in response:
+                    m = _re.search(r'```\s*(.+?)```', response, _re.DOTALL)
+                    code_block = m.group(1).strip() if m else response
+
+                # Validate it parses and contains the function
+                dedented = _tw.dedent(code_block).strip()
+                _ast.parse(dedented)  # syntax check
+                if f"def {fn_name}(" not in dedented:
+                    logger.warning(f"_chunk_evolve: response for {fn_name} missing def, skipping")
+                    continue
+
+                # Stitch back
+                evolved_lines = evolved.splitlines()
+                # Re-parse evolved to get updated line numbers
+                evolved_tree = _ast.parse(evolved)
+                target_node = None
+                for node in _ast.walk(evolved_tree):
+                    if isinstance(node, _ast.FunctionDef) and node.name == fn_name:
+                        target_node = node
+                        break
+                if not target_node:
+                    continue
+
+                normalized = ["    " + l if l else "" for l in dedented.splitlines()]
+                evolved_lines[target_node.lineno - 1:target_node.end_lineno] = normalized
+                evolved = "\n".join(evolved_lines) + "\n"
+                logger.info(f"_chunk_evolve: stitched {fn_name} ({len(dedented)} chars)")
+
+            except Exception as e:
+                logger.warning(f"_chunk_evolve: failed for {fn_name}: {e}")
+                continue
+
+        return evolved if evolved != current_code else None
+
     def _select_generator(self):
         """Return the evolution-specific code generator."""
         from core.tool_evolution.code_generator import EvolutionCodeGenerator

@@ -285,6 +285,7 @@ When doing web research:
         "development":  {"FilesystemTool", "ShellTool", "ContextSummarizerTool"},
         "data":         {"HTTPTool", "JSONTool", "DatabaseQueryTool"},
         "productivity": {"LocalCodeSnippetLibraryTool", "LocalRunNoteTool"},
+        "finance":      {"FinancialAnalysisTool"},
     }
     # Always included regardless of category
     _CORE_TOOLS = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool"}

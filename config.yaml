@@ -198,4 +198,4 @@ mcp_servers:
   transport: stdio
   command: npx -y @modelcontextprotocol/server-gdrive
   env_key: GDRIVE_CLIENT_ID
-  enabled: true
+  enabled: false

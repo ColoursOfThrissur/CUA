@@ -437,9 +437,12 @@ class StorageService:
         return data
     
     def get(self, item_id: str) -> dict:
-        """Get data by ID."""
+        """Get data by ID. Returns None if not found."""
         path = f"{self.base_dir}/{self._safe_id(item_id)}.json"
-        return self.broker.read_json(path)
+        try:
+            return self.broker.read_json(path)
+        except FileNotFoundError:
+            return None
     
     def list(self, limit: int = 10, sort_by: str = "created_at_utc") -> List[dict]:
         """List items with limit and sorting."""

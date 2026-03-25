@@ -546,6 +546,14 @@ CRITICAL API RULES:
 - Every return MUST have 'success' key: {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
 - For filtering: specify exact field and comparison (e.g. 'keep items where query in item["description"]')
 
+SERVICE RETURN TYPES (critical — do NOT assume wrong types):
+- llm.generate() — returns a plain STRING, never a dict. Store it directly: result_str = self.services.llm.generate(prompt)
+- storage.get(id) — returns a dict or None
+- storage.list(limit) — returns a list of dicts
+- http.get/post() — returns a dict with 'status' and 'body' keys
+- json.parse() — returns a Python object (dict/list)
+- json.stringify() — returns a string
+
 Available services:
 {services_text}
 

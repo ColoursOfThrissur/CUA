@@ -397,36 +397,64 @@ class ToolCreationOrchestrator:
             )
             return False, msg
         
-        # Step 7: Run sandbox validation (with retry on failure)
+        # Step 7: Run sandbox validation (with classifier-guided retry)
         from core.tool_creation.sandbox_runner import SandboxRunner
+        from core.tool_creation.failure_classifier import CreationFailureClassifier
         sandbox_runner = SandboxRunner(self.expansion_mode)
+        classifier = CreationFailureClassifier()
 
         last_validation_error = validation_error if not is_valid else None
 
         max_retries = 5
+        sandbox_passed = False
         for attempt in range(max_retries):
             sandbox_passed = sandbox_runner.run_sandbox(tool_spec['name'], creation_id=creation_id)
             if sandbox_passed:
                 break
 
             if attempt < max_retries - 1:
-                logger.info(f"Sandbox failed (attempt {attempt+1}/{max_retries}), regenerating with error feedback")
-
                 error_msg = creation_logger.get_last_error(creation_id, "sandbox") or "Sandbox validation failed"
 
-                correction_prompt = self._build_correction_prompt(
-                    tool_spec,
-                    filled_code,
-                    error_msg,
-                    last_validation_error,
-                )
+                # Classify failure — abort early if DEP_BLOCKED or PATTERN_LOOP
+                failure_ctx = classifier.classify(tool_name, "sandbox", error_msg, attempt)
+                classifier.record_attempt(tool_name, failure_ctx.error_fingerprint)
+                creation_logger.log_artifact(creation_id, f"failure_classification_{attempt+1}", "sandbox", {
+                    "type": failure_ctx.failure_type,
+                    "strategy": failure_ctx.recommended_strategy,
+                    "abort": failure_ctx.should_abort,
+                })
 
+                if failure_ctx.should_abort:
+                    logger.warning(f"Aborting sandbox retries: {failure_ctx.failure_type} — {error_msg[:120]}")
+                    break
+
+                logger.info(f"Sandbox failed (attempt {attempt+1}/{max_retries}, type={failure_ctx.failure_type}), regenerating")
+
+                correction_prompt = self._build_correction_prompt(
+                    tool_spec, filled_code, error_msg, last_validation_error
+                )
                 tool_spec['_correction_prompt'] = correction_prompt
                 tool_spec['_retry_attempt'] = attempt + 1
 
                 try:
                     filled_code = generator.generate(None, tool_spec)
                     if filled_code:
+                        # Early syntax check with code context before full validation
+                        try:
+                            import ast as _ast
+                            _ast.parse(filled_code)
+                        except SyntaxError as syn_err:
+                            code_lines = filled_code.splitlines()
+                            start = max(0, (syn_err.lineno or 1) - 3)
+                            end = min(len(code_lines), (syn_err.lineno or 1) + 2)
+                            broken = "\n".join(
+                                f"{'>>>' if i + 1 == syn_err.lineno else '   '} {i+1}: {code_lines[i]}"
+                                for i in range(start, end)
+                            )
+                            last_validation_error = f"Syntax error line {syn_err.lineno}: {syn_err.msg}\n{broken}"
+                            creation_logger.log_artifact(creation_id, f"syntax_error_{attempt+1}", "sandbox_retry", last_validation_error)
+                            continue
+
                         retry_valid, retry_error = validator.validate(filled_code, tool_spec)
                         last_validation_error = retry_error if not retry_valid else None
                         if retry_valid:
@@ -438,7 +466,7 @@ class ToolCreationOrchestrator:
                             creation_logger.log_artifact(creation_id, f"validation_error_{attempt+1}", "validation", retry_error)
                 except Exception as e:
                     logger.warning(f"Retry generation failed: {e}")
-        
+
         if not sandbox_passed:
             self._cleanup_artifacts(tool_spec["name"])
             creation_logger.update_creation(
@@ -612,15 +640,24 @@ class ToolCreationOrchestrator:
         }
     
     def _validate_skill_alignment(self, tool_spec: dict, skill_context: dict) -> Optional[str]:
-        """Validate tool aligns with skill expectations."""
+        """Validate tool aligns with skill expectations.
+        Only enforces verification_mode constraints when the tool's own capability
+        names indicate it actually belongs to that domain (mirrors evolution validator).
+        """
         skill_name = skill_context.get("skill_name")
         if not skill_name:
             return None
-        
+
+        # Collect registered capability names from spec inputs
+        cap_names = [
+            inp.get("operation", "").lower()
+            for inp in tool_spec.get("inputs", [])
+            if isinstance(inp, dict)
+        ]
+
         # Check input types match skill expected_input_types
         skill_input_types = skill_context.get("expected_input_types", [])
         tool_inputs = tool_spec.get("inputs", [])
-        
         if skill_input_types:
             tool_param_types = set()
             for inp in tool_inputs:
@@ -628,27 +665,34 @@ class ToolCreationOrchestrator:
                     for param in inp.get("parameters", []):
                         if isinstance(param, dict):
                             tool_param_types.add(param.get("type", ""))
-            
-            # At least one input type should match
             if not any(t in skill_input_types for t in tool_param_types):
                 return f"Tool input types {tool_param_types} don't match skill expected types {skill_input_types}"
-        
+
         # Check output types match skill expected_output_types
         skill_output_types = skill_context.get("expected_output_types", [])
         tool_outputs = tool_spec.get("outputs", [])
-        
         if skill_output_types and tool_outputs:
             if not any(out in skill_output_types for out in tool_outputs):
                 return f"Tool output types {tool_outputs} don't match skill expected types {skill_output_types}"
-        
-        # Check verification_mode compatibility
+
+        # Capability-aware verification_mode enforcement
         verification_mode = skill_context.get("verification_mode")
         if verification_mode == "source_backed":
-            # Tool must return sources
+            _WEB_CAPS = {'search', 'fetch', 'crawl', 'scrape', 'browse', 'lookup', 'research'}
+            is_web_tool = any(any(w in c for w in _WEB_CAPS) for c in cap_names)
+            if not is_web_tool:
+                return None  # Not a web tool — don't enforce source_backed
             has_sources = any("source" in str(out).lower() for out in tool_outputs)
             if not has_sources:
-                return f"Skill requires source_backed verification but tool doesn't return sources"
-        
+                return "Skill requires source_backed verification but tool doesn't return sources"
+
+        elif verification_mode == "side_effect_observed":
+            _FILE_CAPS = {'write', 'execute', 'run', 'create_file', 'save_file',
+                          'download', 'export', 'generate_file', 'render'}
+            is_file_tool = any(any(w in c for w in _FILE_CAPS) for c in cap_names)
+            if not is_file_tool:
+                return None  # Not a file/shell tool — don't enforce side_effect_observed
+
         return None
     
     def _is_qwen_model(self, llm_client) -> bool:

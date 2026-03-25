@@ -13,6 +13,7 @@ CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
     "LocalCodeSnippetLibraryTool",
     "LocalRunNoteTool",
     "BenchmarkRunnerTool",
+    "FinancialAnalysisTool",
 )
 
 _EXPERIMENTAL_LOAD_TIMEOUT = 5  # seconds per tool

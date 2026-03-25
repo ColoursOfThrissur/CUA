@@ -17,7 +17,8 @@ class SkillSelector:
         "development": {"code", "repo", "repository", "bug", "feature", "refactor", "test", "tests", "implement", "module", "function", "class", "method", "debug", "analyze"},
         "automation": {"automate", "automation", "browser", "click", "form", "button", "element", "screenshot", "interact", "selenium", "headless", "scrape", "fill", "open", "type", "login", "navigate", "chatgpt", "website", "tab", "input", "submit", "scroll", "hover", "iframe", "dropdown", "keyboard", "cookie", "cookies", "javascript"},
         "data": {"api", "http", "json", "database", "query", "sql", "transform", "parse", "endpoint", "request", "response", "data", "structure"},
-        "productivity": {"snippet", "snippets", "note", "notes", "save", "store", "library", "knowledge", "organize", "search", "retrieve", "tag", "tags"}
+        "productivity": {"snippet", "snippets", "note", "notes", "save", "store", "library", "knowledge", "organize", "search", "retrieve", "tag", "tags"},
+        "finance": {"stock", "stocks", "ticker", "portfolio", "invest", "investing", "investment", "investments", "market", "markets", "trading", "trade", "shares", "equity", "finance", "financial", "aapl", "nvda", "msft", "tsla", "amzn", "googl", "meta", "spy", "etf", "rsi", "macd", "bullish", "bearish", "dividend", "earnings", "pe", "ratio", "sharpe", "drawdown", "sector", "exposure", "hedge", "rebalance", "trim", "position", "holdings", "yfinance", "nasdaq", "nyse", "sp500", "crypto", "bitcoin", "btc", "eth"}
     }
 
     _CONVERSATION_PATTERNS = [

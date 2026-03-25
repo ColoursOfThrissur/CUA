@@ -1,0 +1,45 @@
+{
+  "name": "finance_analysis",
+  "category": "finance",
+  "description": "Analyse stocks, portfolios, and financial markets. Provides price data, technical indicators, news sentiment, portfolio risk metrics, and LLM-powered advisor insights.",
+  "trigger_examples": [
+    "how is my portfolio doing",
+    "analyse AAPL stock",
+    "what is the RSI for NVDA",
+    "should I buy or sell Tesla",
+    "portfolio risk analysis",
+    "stock market analysis",
+    "check my investments",
+    "financial analysis for",
+    "how am I doing today",
+    "trim my position in",
+    "sector exposure in my portfolio",
+    "is MSFT overbought",
+    "give me a market update",
+    "what are the technicals for",
+    "news sentiment for"
+  ],
+  "preferred_tools": [
+    "FinancialAnalysisTool"
+  ],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": [
+    "ticker",
+    "tickers",
+    "portfolio",
+    "holdings",
+    "question"
+  ],
+  "output_types": [
+    "price_data",
+    "technicals",
+    "sentiment",
+    "portfolio_analysis",
+    "advisor_insight"
+  ],
+  "verification_mode": "output_validation",
+  "risk_level": "low",
+  "ui_renderer": "default",
+  "fallback_strategy": "direct_tool_routing"
+}

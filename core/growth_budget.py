@@ -51,11 +51,18 @@ class GrowthBudget:
         """Load growth history from disk"""
         path = Path(self.history_file)
         if path.exists():
-            with open(path) as f:
-                data = json.load(f)
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                # Guard against corrupt file (list instead of dict)
+                if not isinstance(data, dict):
+                    data = {}
                 self.current_cycle = data.get("current_cycle", 0)
                 self.new_tools_created = data.get("new_tools_created", 0)
                 self.structural_changes_made = data.get("structural_changes_made", 0)
+            except Exception:
+                # Corrupt or unreadable — start fresh
+                pass
     
     def _save_history(self):
         """Save growth history to disk"""

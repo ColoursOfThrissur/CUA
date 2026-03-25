@@ -17,6 +17,11 @@ class ToolValidator:
     
     def __init__(self):
         self.enhanced_validator = EnhancedCodeValidator()
+        try:
+            from core.cua_code_analyzer import CUACodeAnalyzer
+            self._cua_analyzer = CUACodeAnalyzer()
+        except Exception:
+            self._cua_analyzer = None
     
     def validate(self, code: str, tool_spec: dict, skill_definition: Optional[SkillDefinition] = None) -> Tuple[bool, str]:
         """Validate generated tool code with comprehensive checks including service patterns"""
@@ -30,6 +35,17 @@ class ToolValidator:
         is_valid, error = self.enhanced_validator.validate(code, expected_class)
         if not is_valid:
             return False, self._format_error("Enhanced validation", error, code)
+
+        # 0.4. CUA architecture analysis — block CRITICAL/HIGH issues
+        if self._cua_analyzer:
+            try:
+                cua_issues = self._cua_analyzer.analyze(code, tool_spec)
+                critical = [i for i in cua_issues if getattr(i, 'severity', '') in ('CRITICAL', 'HIGH')]
+                if critical:
+                    msgs = "; ".join(getattr(i, 'description', str(i)) for i in critical[:3])
+                    return False, self._format_error("CUA analysis", msgs, code)
+            except Exception:
+                pass  # analyzer failure must never block creation
         
         # 0.5. Service pattern validation (NEW)
         if skill_definition:

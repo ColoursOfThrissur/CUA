@@ -49,6 +49,10 @@ class EvolutionProposalGenerator:
         # Build structured tool context for LLM
         tool_structure = self._extract_tool_structure(analysis.get('current_code', ''))
 
+        # Inject persisted constraints for this tool (from EvolutionConstraintMemory)
+        constraint_block = analysis.get('constraint_block', '')
+        constraint_section = f"\n{constraint_block}\n" if constraint_block else ""
+
         prompt = f"""Analyze this tool and propose ONLY necessary improvements.
 
 Tool: {analysis['tool_name']}
@@ -56,7 +60,7 @@ Health Score: {analysis['health_score']:.1f}/100
 Code Quality: {category}
 Success Rate: {analysis['success_rate']:.1%}
 {f"User Request: {user_prompt}" if user_prompt else ""}
-
+{constraint_section}
 Tool structure (registered capabilities, methods, services):
 {tool_structure}
 
@@ -98,6 +102,7 @@ Generate improvement proposal as JSON:
 target_functions: list the exact _handle_* method names that need changing (e.g. ["_handle_search"]). NEVER include 'execute', 'register_capabilities', or '__init__' — only _handle_* methods. Leave empty [] only for add_capability.
 implementation_sketch: for EACH method in target_functions, provide numbered pseudocode steps describing exactly what the implementation should do. Rules for sketches:
 - Use exact service API signatures: storage.save(id, data) takes TWO args, storage.get(id) takes ONE arg, storage.list(limit=N) returns a list
+- SERVICE RETURN TYPES: llm.generate() returns a plain STRING (never a dict) — store it directly, do NOT check isinstance(result, dict); storage.get() returns a dict or None; storage.list() returns a list of dicts; http.get/post() returns a dict with 'status' and 'body' keys
 - For filtering/searching: specify the exact field to check and the comparison (e.g. 'keep items where query.lower() in item.get("description","").lower()')
 - Every return statement must include 'success' key: return {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
 - Use plain English, not Python. Max 6 steps per handler.

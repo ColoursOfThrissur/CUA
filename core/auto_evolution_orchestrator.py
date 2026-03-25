@@ -253,8 +253,9 @@ class AutoEvolutionOrchestrator:
         
         try:
             # 0) Proactive system-wide gap analysis — LLM reasons about full CUA architecture
-            broadcast_trace_sync("auto", "Running system gap analysis", "in_progress", {"stage": "system_analysis"})
-            await self._analyze_system_gaps()
+            # System gap analysis now runs in CoordinatedAutonomyEngine._proactive_gap_analysis
+            # every cycle with results fed directly into tool creation.
+            # Removed from here to avoid running the same LLM call twice per cycle.
 
             # 1) Queue evolutions based on real usage signals (tool execution logs)
             try:

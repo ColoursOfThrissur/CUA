@@ -251,6 +251,7 @@ class EvolutionCodeGenerator:
 
         # Evolve handlers one at a time, passing the growing file forward
         improved_code = current_code
+        already_improved: List[str] = []  # accumulates like creation pipeline
         for handler_name, handler_code in handlers_to_improve.items():
             logger.info(f"Improving handler: {handler_name}")
             improved_handler = self._improve_single_handler(
@@ -265,10 +266,12 @@ class EvolutionCodeGenerator:
                 tool_purpose=tool_purpose,
                 skill_name=skill_name,
                 verification_mode=verification_mode,
-                current_file=improved_code,  # pass evolving state
+                current_file=improved_code,
+                already_implemented=already_improved,
             )
             if improved_handler:
                 improved_code = self._replace_handler(improved_code, handler_name, improved_handler, class_name)
+                already_improved.append(handler_name)  # tell next handler what's done
                 # Refresh class_context so next handler sees updated file
                 class_context = self._build_class_context(improved_code, class_name)
 
@@ -390,7 +393,7 @@ class EvolutionCodeGenerator:
 
         handler_ctx = build_handler_context(
             handler_name=expected_name,
-            current_file=current_file[:12000],  # cap to avoid LLM context overflow
+            current_file=self._build_context_window(current_file, expected_name, []),
             tool_purpose=tool_purpose,
             skill_name=skill_name,
             verification_mode=verification_mode,
@@ -410,6 +413,7 @@ class EvolutionCodeGenerator:
 
 {handler_ctx}
 {sketch_section}
+{f"{proposal.get('constraint_block', '')}" if proposal.get('constraint_block') else ""}
 CAPABILITY TO ADD:
 {proposal['description']}
 
@@ -560,7 +564,10 @@ Return ONLY the method definition."""
         Returns list of (param_name, is_required) tuples.
         """
         try:
-            tree = ast.parse(code)
+            import textwrap as _tw
+            # Dedent before parsing — handler code extracted from class has 4-space indent
+            dedented = _tw.dedent(code)
+            tree = ast.parse(dedented)
             
             # Find the handler function
             handler_node = None
@@ -802,6 +809,7 @@ Return ONLY the method definition."""
         skill_name: str = "",
         verification_mode: str = "",
         current_file: str = "",
+        already_implemented: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Improve a single handler method."""
         from core.tool_creation.code_generator.base import build_handler_context
@@ -812,8 +820,8 @@ Return ONLY the method definition."""
         elif sandbox_error:
             error_context = f"\n\nPREVIOUS ATTEMPT FAILED WITH ERROR:\n{sandbox_error}\n\nFIX THE ERROR ABOVE.\n"
 
-        # Build rich per-handler context
-        # op_spec: try to find matching spec from proposal analysis
+        # Build op_spec from analysis capabilities — try dict first (full spec),
+        # then fall back to extracting params from the handler source itself.
         analysis = proposal.get("analysis") or {}
         op_name = handler_name.replace("_handle_", "")
         op_spec: Dict[str, Any] = {}
@@ -821,15 +829,25 @@ Return ONLY the method definition."""
             if isinstance(cap, dict) and cap.get("name") == op_name:
                 op_spec = cap
                 break
+        # If capabilities are strings (regex-extracted), build op_spec from handler source
+        if not op_spec:
+            params = self._extract_handler_parameters(handler_code, handler_name)
+            if params:
+                op_spec = {
+                    "parameters": [
+                        {"name": n, "type": "string", "required": r, "description": ""}
+                        for n, r in params
+                    ]
+                }
 
         handler_ctx = build_handler_context(
             handler_name=handler_name,
-            current_file=(current_file or handler_code)[:12000],  # cap to avoid LLM context overflow on large tools
+            current_file=self._build_context_window(current_file or handler_code, handler_name, already_implemented or []),
             tool_purpose=tool_purpose,
             skill_name=skill_name,
             verification_mode=verification_mode,
             op_spec=op_spec,
-            already_implemented=[],
+            already_implemented=already_implemented or [],
         )
 
         # Inject implementation sketch if proposal provides one for this handler
@@ -842,6 +860,7 @@ Return ONLY the method definition."""
 
 {handler_ctx}
 {sketch_section}
+{f"{proposal.get('constraint_block', '')}" if proposal.get('constraint_block') else ""}
 IMPROVEMENT PROPOSAL:
 {proposal['description']}
 
@@ -898,6 +917,94 @@ CRITICAL REQUIREMENTS:
 
         return None
     
+    def _build_context_window(
+        self,
+        full_code: str,
+        current_handler: str,
+        already_implemented: List[str],
+        max_chars: int = 10000,
+    ) -> str:
+        """
+        Build a focused context window for the LLM instead of sending the full file.
+
+        Includes (in priority order until max_chars):
+        1. Class skeleton (signatures only) — always included, cheap
+        2. Already-improved handlers in full — LLM must stay consistent with them
+        3. The current handler being improved — always included
+        4. Remaining handlers as signatures only
+
+        This replaces the hard 12KB char cap which blindly truncated the file
+        and could cut off handlers that were already improved this session.
+        """
+        try:
+            tree = ast.parse(full_code)
+        except Exception:
+            return full_code[:max_chars]
+
+        cls = next((n for n in tree.body if isinstance(n, ast.ClassDef)), None)
+        if not cls:
+            return full_code[:max_chars]
+
+        src_lines = full_code.splitlines()
+
+        def get_fn_source(node) -> str:
+            return "\n".join(src_lines[node.lineno - 1:node.end_lineno])
+
+        def get_fn_sig(node) -> str:
+            return "    " + src_lines[node.lineno - 1].strip() + "  # ..."
+
+        # 1. Class header + __init__ + register_capabilities signature
+        parts = []
+        header = f"class {cls.name}(BaseTool):"
+        parts.append(header)
+        for node in cls.body:
+            if isinstance(node, ast.FunctionDef):
+                if node.name in ('__init__', 'register_capabilities', 'execute'):
+                    parts.append(get_fn_sig(node))
+
+        skeleton = "\n".join(parts)
+        budget = max_chars - len(skeleton)
+
+        # 2. Already-improved handlers in full (most important for consistency)
+        improved_blocks = []
+        for node in cls.body:
+            if isinstance(node, ast.FunctionDef) and node.name in already_implemented:
+                src = get_fn_source(node)
+                if budget - len(src) > 500:  # keep at least 500 for current handler
+                    improved_blocks.append(src)
+                    budget -= len(src)
+
+        # 3. Current handler in full
+        current_src = ""
+        for node in cls.body:
+            if isinstance(node, ast.FunctionDef) and node.name == current_handler:
+                current_src = get_fn_source(node)
+                budget -= len(current_src)
+                break
+
+        # 4. Remaining handlers as signatures only
+        sig_lines = []
+        for node in cls.body:
+            if isinstance(node, ast.FunctionDef):
+                if node.name in already_implemented or node.name == current_handler:
+                    continue
+                if node.name in ('__init__', 'register_capabilities', 'execute'):
+                    continue
+                sig_lines.append(get_fn_sig(node))
+
+        sections = [skeleton]
+        if improved_blocks:
+            sections.append("\n# --- Already improved this session ---")
+            sections.extend(improved_blocks)
+        if current_src:
+            sections.append("\n# --- Current handler (being improved) ---")
+            sections.append(current_src)
+        if sig_lines:
+            sections.append("\n# --- Other handlers (signatures only) ---")
+            sections.extend(sig_lines)
+
+        return "\n".join(sections)
+
     def _parse_edit_block(self, text: str, handler_name: str):
         """Extract the UPDATED section from an aider-style edit block."""
         if '```' in text:

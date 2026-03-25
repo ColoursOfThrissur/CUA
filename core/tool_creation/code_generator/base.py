@@ -47,11 +47,91 @@ def canonical_class_name(tool_name: str) -> str:
     name = (tool_name or "").strip()
     if not name:
         return "GeneratedTool"
-    # Already CamelCase (no underscores/hyphens, has interior uppercase) — keep stable
     if "_" not in name and "-" not in name and any(ch.isupper() for ch in name[1:]):
         return name[:1].upper() + name[1:]
     parts = [p for p in name.replace("-", "_").split("_") if p]
     return "".join((p[:1].upper() + p[1:]) for p in parts)
+
+
+def check_handler_service_calls(handler_code: str) -> List[str]:
+    """Detect invalid self.services calls in a single handler method.
+    Returns list of error strings, empty if all calls are valid.
+    Ported from EvolutionCodeGenerator._invalid_service_calls.
+    """
+    from core.enhanced_code_validator import EnhancedCodeValidator
+    registry = EnhancedCodeValidator().service_registry
+    nested_allow = {k: set(v or []) for k, v in registry.items() if isinstance(v, list)}
+    direct_allow = {k for k, v in registry.items() if isinstance(v, list) and len(v or []) == 0}
+
+    # Methods with fixed signatures where extra kwargs are invalid
+    SINGLE_ARG_METHODS = {
+        ('storage', 'get'), ('storage', 'delete'), ('storage', 'exists'),
+        ('storage', 'save'), ('llm', 'generate'),
+        ('fs', 'read'), ('fs', 'delete'), ('fs', 'mkdir'),
+        ('json', 'parse'), ('json', 'stringify'), ('shell', 'execute'),
+    }
+
+    invalid: List[str] = []
+    try:
+        tree = ast.parse(handler_code)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Attribute)
+                and isinstance(func.value.value, ast.Attribute)
+                and isinstance(func.value.value.value, ast.Name)
+                and func.value.value.value.id == 'self'
+                and func.value.value.attr == 'services'
+            ):
+                svc = func.value.attr
+                method = func.attr
+                if (svc, method) in SINGLE_ARG_METHODS and node.keywords:
+                    kw_names = [kw.arg for kw in node.keywords if kw.arg]
+                    invalid.append(
+                        f"self.services.{svc}.{method}() called with unexpected kwargs {kw_names}"
+                    )
+    except Exception:
+        pass
+
+    import re as _re
+    for svc, method in _re.findall(r"self\.services\.(\w+)\.(\w+)\(", handler_code):
+        if svc not in nested_allow:
+            invalid.append(f"Unknown service self.services.{svc}")
+            continue
+        allowed = nested_allow.get(svc, set())
+        if allowed and method not in allowed:
+            invalid.append(f"Unknown method self.services.{svc}.{method}()")
+
+    seen: set = set()
+    return [x for x in invalid if not (seen.add(x) or x in seen)]
+
+
+def check_handler_missing_return(handler_code: str, handler_name: str) -> str:
+    """Check that every code path in a handler returns a dict.
+    Returns error string if a problem is found, empty string if OK.
+    Ported from EvolutionCodeGenerator._check_missing_return.
+    """
+    import textwrap as _tw
+    try:
+        tree = ast.parse(_tw.dedent(handler_code))
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == handler_name), None)
+        if not fn:
+            return ""
+        returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+        if not returns:
+            return (f"{handler_name} has no return statement. "
+                    "Every code path MUST return {{'success': True/False, ...}}")
+        bare = [r for r in returns if r.value is None]
+        if bare:
+            return (f"{handler_name} has a bare 'return' on line {bare[0].lineno}. "
+                    "Replace with return {{'success': False, 'error': '...'}}")
+        return ""
+    except Exception:
+        return ""
 
 
 def build_handler_context(

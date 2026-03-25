@@ -116,15 +116,44 @@ def select_skill_for_message(message: str, skill_reg, skill_sel, llm, reg) -> Di
                 "reason": f"error:{e}", "fallback_mode": "direct_tool_routing", "candidate_skills": []}
 
 
-def build_planner_context(skill_selection: Dict) -> Optional[Dict]:
+def build_planner_context(skill_selection: Dict, skill_reg=None) -> Optional[Dict]:
     if not skill_selection.get("matched"):
         return None
-    return {
-        "skill_name": skill_selection.get("skill_name"),
+
+    skill_name = skill_selection.get("skill_name")
+    base = {
+        "skill_name": skill_name,
         "category": skill_selection.get("category"),
         "confidence": skill_selection.get("confidence"),
         "planning_context": skill_selection.get("planning_context"),
     }
+
+    # Enrich with full skill definition so planner gets preferred_tools,
+    # verification_mode, output_types, instructions_summary, constraints.
+    if skill_reg and skill_name:
+        skill_def = skill_reg.get(skill_name)
+        if skill_def:
+            instructions_summary = ""
+            try:
+                from pathlib import Path
+                md = Path(skill_def.instructions_path).read_text(encoding="utf-8")
+                # First non-empty paragraph after the heading
+                lines = [l.strip() for l in md.splitlines() if l.strip() and not l.startswith("#")]
+                instructions_summary = " ".join(lines[:3])[:300]
+            except Exception:
+                pass
+            base["skill_context"] = {
+                "skill_name": skill_name,
+                "category": skill_def.category,
+                "preferred_tools": skill_def.preferred_tools,
+                "required_tools": skill_def.required_tools,
+                "verification_mode": skill_def.verification_mode,
+                "output_types": skill_def.output_types,
+                "ui_renderer": skill_def.ui_renderer,
+                "instructions_summary": instructions_summary,
+                "skill_constraints": [],
+            }
+    return base
 
 
 def needs_runtime_refresh(message: str) -> bool:
@@ -554,7 +583,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         goal_text=goal_text, success_criteria=[],
                         max_iterations=5, require_approval=False,
                     )
-                    _skill_context = {"skill_context": {"skill_name": skill_selection.get("skill_name", "")}}
+                    _skill_context = build_planner_context(skill_selection, skill_reg) or {"skill_context": {"skill_name": skill_selection.get("skill_name", "")}}
                     conv_history = [
                         {"role": m["role"], "content": m["content"]}
                         for m in sessions[session_id]["messages"][-8:]
@@ -689,7 +718,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         response_text = result.get("message", "Task failed")
 
                     # Build rich components from agent step outputs
-                    agent_components = list(screenshot_components)
+                    agent_components = list(screenshot_components) if 'screenshot_components' in dir() else []
                     if result.get("success") and all_step_data:
                         from core.output_analyzer import OutputAnalyzer
                         # Use the richest single output (largest dict or longest string)
