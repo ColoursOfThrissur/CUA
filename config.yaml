@@ -161,7 +161,7 @@ mcp_servers:
   enabled: true
 - name: filesystem
   transport: stdio
-  command: npx -y @modelcontextprotocol/server-filesystem
+  command: npx -y @modelcontextprotocol/server-filesystem C:\Users\derik\Desktop\Derik\Projects\CUA
   enabled: true
 - name: git
   transport: stdio

@@ -571,6 +571,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     import api.chat_helpers as _self
                     # Resolve short follow-up references using recent conversation history
                     goal_text = request.message
+                    prev_context = ""
                     recent = sessions[session_id]["messages"]
                     if len(request.message.split()) <= 8:
                         prev_assistant = next(
@@ -578,12 +579,14 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             None,
                         )
                         if prev_assistant:
-                            goal_text = f"{request.message} (context from previous reply: {prev_assistant[:300]})"
+                            prev_context = prev_assistant[:300]
                     goal = AgentGoal(
                         goal_text=goal_text, success_criteria=[],
                         max_iterations=5, require_approval=False,
                     )
                     _skill_context = build_planner_context(skill_selection, skill_reg) or {"skill_context": {"skill_name": skill_selection.get("skill_name", "")}}
+                    if prev_context:
+                        _skill_context["previous_context"] = prev_context
                     conv_history = [
                         {"role": m["role"], "content": m["content"]}
                         for m in sessions[session_id]["messages"][-8:]

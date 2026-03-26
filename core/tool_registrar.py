@@ -2,10 +2,13 @@
 ToolRegistrar - Dynamically registers tools at runtime
 """
 import importlib
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, Optional, List
 from tools.tool_interface import BaseTool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistrar:
@@ -46,20 +49,13 @@ class ToolRegistrar:
 
             # Instantiate tool with orchestrator/registry injection
             try:
-                # Try new signature with orchestrator/registry
-                print(f"[REGISTRAR] Attempting to instantiate {tool_class.__name__} with orchestrator={self.orchestrator}")
                 tool_instance = tool_class(orchestrator=self.orchestrator, registry=self.registry)
-                print(f"[REGISTRAR] Success with orchestrator+registry")
-            except TypeError as e:
-                print(f"[REGISTRAR] TypeError with orchestrator+registry: {e}, trying orchestrator only")
+            except TypeError:
                 try:
                     tool_instance = tool_class(orchestrator=self.orchestrator)
-                    print(f"[REGISTRAR] Success with orchestrator only")
-                except TypeError as e2:
-                    print(f"[REGISTRAR] TypeError with orchestrator only: {e2}, trying no args")
-                    # Fallback to legacy signature without parameters
+                except TypeError:
                     tool_instance = tool_class()
-                    print(f"[REGISTRAR] Success with no args")
+            logger.debug(f"[REGISTRAR] Loaded {tool_class.__name__}")
             
             # Register with registry
             self.registry.register_tool(tool_instance)

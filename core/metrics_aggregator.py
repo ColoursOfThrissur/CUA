@@ -15,77 +15,16 @@ class MetricsAggregator:
     """Aggregates raw execution data into hourly metrics."""
     
     def __init__(self, 
-                 executions_db: str = "data/tool_executions.db",
-                 metrics_db: str = "data/metrics.db"):
+                 executions_db: str = "data/cua.db",
+                 metrics_db: str = "data/cua.db"):
         self.executions_db = Path(executions_db)
         self.metrics_db = Path(metrics_db)
         self.metrics_db.parent.mkdir(exist_ok=True)
         self._init_db()
     
     def _init_db(self):
-        """Initialize metrics database schema."""
-        conn = safe_connect(self.metrics_db)
-        if not conn:
-            logger.warning("Metrics DB unavailable; metrics disabled for now")
-            return
-        try:
-            # Tool metrics by hour
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tool_metrics_hourly (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tool_name TEXT NOT NULL,
-                    hour_timestamp INTEGER NOT NULL,
-                    total_executions INTEGER NOT NULL,
-                    successes INTEGER NOT NULL,
-                    failures INTEGER NOT NULL,
-                    avg_duration_ms REAL,
-                    p50_duration_ms REAL,
-                    p95_duration_ms REAL,
-                    p99_duration_ms REAL,
-                    error_rate_percent REAL,
-                    avg_output_size INTEGER,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(tool_name, hour_timestamp)
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_metrics_tool ON tool_metrics_hourly(tool_name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_metrics_hour ON tool_metrics_hourly(hour_timestamp)")
-            
-            # System-wide metrics by hour
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS system_metrics_hourly (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    hour_timestamp INTEGER NOT NULL UNIQUE,
-                    total_chat_requests INTEGER DEFAULT 0,
-                    total_tool_calls INTEGER NOT NULL,
-                    total_evolutions INTEGER DEFAULT 0,
-                    evolution_success_rate REAL DEFAULT 0,
-                    avg_response_time_ms REAL,
-                    unique_tools_used INTEGER,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_system_metrics_hour ON system_metrics_hourly(hour_timestamp)")
-            
-            # Auto-evolution metrics (for upcoming feature)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS auto_evolution_metrics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    hour_timestamp INTEGER NOT NULL,
-                    tools_analyzed INTEGER DEFAULT 0,
-                    evolutions_triggered INTEGER DEFAULT 0,
-                    evolutions_pending INTEGER DEFAULT 0,
-                    evolutions_approved INTEGER DEFAULT 0,
-                    evolutions_rejected INTEGER DEFAULT 0,
-                    avg_health_improvement REAL DEFAULT 0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(hour_timestamp)
-                )
-            """)
-            
-            conn.commit()
-        finally:
-            safe_close(conn)
+        """Tables are managed by cua_db.py — nothing to init here."""
+        pass
     
     def aggregate_tool_metrics(self, hours_back: int = 1):
         """Aggregate tool execution data into hourly metrics."""
@@ -180,30 +119,24 @@ class MetricsAggregator:
             unique_tools = row[1] if row else 0
             avg_time = row[2] if row else 0
             
-            # Get evolution stats if available
-            evolution_db = Path("data/tool_evolution.db")
+            # Get evolution stats from cua.db (consolidated DB)
             total_evolutions = 0
             success_rate = 0
-            
-            if evolution_db.exists():
-                evo_conn = safe_connect(evolution_db)
-                if evo_conn:
-                    try:
-                        cursor = evo_conn.execute("""
-                            SELECT 
-                                COUNT(*) as total,
-                                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
-                            FROM evolution_runs
-                            WHERE timestamp >= ? AND timestamp < ?
-                        """, (datetime.fromtimestamp(start_hour).isoformat(),
-                              datetime.fromtimestamp(start_hour + 3600).isoformat()))
-                        
-                        row = cursor.fetchone()
-                        if row and row[0]:
-                            total_evolutions = row[0]
-                            success_rate = (row[1] / row[0] * 100) if row[0] > 0 else 0
-                    finally:
-                        safe_close(evo_conn)
+            try:
+                cursor = exec_conn.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
+                    FROM evolution_runs
+                    WHERE timestamp >= ? AND timestamp < ?
+                """, (datetime.fromtimestamp(start_hour).isoformat(),
+                      datetime.fromtimestamp(start_hour + 3600).isoformat()))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    total_evolutions = row[0]
+                    success_rate = (row[1] / row[0] * 100) if row[0] > 0 else 0
+            except Exception:
+                pass
             
             metrics_conn = safe_connect(self.metrics_db)
             if not metrics_conn:

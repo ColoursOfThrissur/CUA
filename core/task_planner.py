@@ -349,7 +349,8 @@ Return ONLY valid JSON array, no explanation."""
         mem = (unified_context or "").strip()
         if len(mem) > 400:
             mem = mem[:400] + "..."
-        mem_str = mem or "none"
+        prev_ctx = (context or {}).get("previous_context", "")
+        mem_str = (f"Previous reply: {prev_ctx[:200]}\n" if prev_ctx else "") + (mem or "none")
 
         return f"""Plan executable steps for this goal.
 

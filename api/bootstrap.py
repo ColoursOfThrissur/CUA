@@ -17,6 +17,7 @@ CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
 )
 
 _EXPERIMENTAL_LOAD_TIMEOUT = 5  # seconds per tool
+_MCP_LOAD_TIMEOUT = 20  # MCP servers need more time (npx download + process start + handshake)
 
 
 @dataclass
@@ -242,12 +243,11 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             if tool:
                 registry.register_tool(tool)
 
-        # Load MCP adapters — stdio transport spawns the process directly, no port check needed
+        # Load MCP adapters in parallel threads — each gets _MCP_LOAD_TIMEOUT seconds
         from core.mcp_process_manager import get_mcp_process_manager
         mcp_manager = get_mcp_process_manager()
-        for mcp_server in (config.mcp_servers or []):
-            if not mcp_server.enabled:
-                continue
+
+        def _load_mcp(mcp_server):
             try:
                 from tools.experimental.MCPAdapterTool import MCPAdapterTool
                 adapter = MCPAdapterTool(
@@ -267,6 +267,19 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
                     print(f"MCP server '{mcp_server.name}' not ready: {err}")
             except Exception as e:
                 print(f"Warning: Could not load MCP adapter for '{mcp_server.name}': {e}")
+
+        mcp_threads = []
+        for mcp_server in (config.mcp_servers or []):
+            if not mcp_server.enabled:
+                continue
+            t = threading.Thread(target=_load_mcp, args=(mcp_server,), daemon=True)
+            t.start()
+            mcp_threads.append((mcp_server.name, t))
+
+        for name, t in mcp_threads:
+            t.join(timeout=_MCP_LOAD_TIMEOUT)
+            if t.is_alive():
+                print(f"Warning: MCP server '{name}' load timed out after {_MCP_LOAD_TIMEOUT}s — skipped")
 
         executor = SecureExecutor(registry)
         parser = PlanParser()

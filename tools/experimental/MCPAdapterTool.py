@@ -346,6 +346,15 @@ class MCPAdapterTool(BaseTool):
         time.sleep(wait)
         if not client.is_alive():
             raise RuntimeError("MCP stdio process exited immediately after start")
+        # MCP initialize handshake (required by newer servers before tools/list)
+        try:
+            client.call("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "cua", "version": "1.0"},
+            })
+        except Exception:
+            pass  # older servers don't require it
         return client
 
     def _build_env(self) -> Optional[Dict]:
