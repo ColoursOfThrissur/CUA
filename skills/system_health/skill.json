@@ -1,0 +1,30 @@
+{
+  "name": "system_health",
+  "category": "system",
+  "description": "Monitor system health, diagnose performance issues, check if Ollama and CUA services are running, detect agent loops, and get actionable fixes.",
+  "trigger_examples": [
+    "why is CUA slow",
+    "check system health",
+    "is Ollama running",
+    "how much memory am I using",
+    "what tools are failing",
+    "check agent performance",
+    "system status",
+    "health report",
+    "what's using all my RAM",
+    "are there any circuit breakers open",
+    "is the system healthy",
+    "diagnose performance",
+    "check pending queues",
+    "how many LLM calls per hour"
+  ],
+  "preferred_tools": ["SystemHealthTool"],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": ["query", "hours"],
+  "output_types": ["health_report", "system_metrics", "agent_behavior", "llm_runtime"],
+  "verification_mode": "output_validation",
+  "risk_level": "low",
+  "ui_renderer": "default",
+  "fallback_strategy": "direct_tool_routing"
+}

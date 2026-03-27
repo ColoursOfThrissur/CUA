@@ -286,6 +286,8 @@ When doing web research:
         "data":         {"HTTPTool", "JSONTool", "DatabaseQueryTool"},
         "productivity": {"LocalCodeSnippetLibraryTool", "LocalRunNoteTool"},
         "finance":      {"FinancialAnalysisTool"},
+        "system":       {"SystemHealthTool"},
+        "code_analysis": {"CodeAnalysisTool"},
     }
     # Always included regardless of category
     _CORE_TOOLS = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool"}
@@ -297,6 +299,9 @@ When doing web research:
         "development":  {"code", "repo", "bug", "feature", "refactor", "test", "implement", "function", "class", "debug", "analyze"},
         "data":         {"api", "http", "json", "database", "query", "sql", "parse", "endpoint", "request", "response", "data"},
         "productivity": {"snippet", "note", "notes", "save", "store", "library", "knowledge", "organize", "retrieve"},
+        "finance":      {"stock", "ticker", "portfolio", "invest", "market", "trading", "finance", "financial", "crypto"},
+        "system":       {"health", "cpu", "ram", "memory", "disk", "ollama", "slow", "performance", "latency", "status", "monitor", "diagnose", "circuit", "breaker", "queue", "pending"},
+        "code_analysis": {"analyse", "analyze", "complexity", "maintainability", "refactor", "dead", "unused", "imports", "dependencies", "review", "quality", "issues", "lint", "static"},
     }
 
     def _infer_category_tools(self, user_message: str) -> Optional[List[str]]:

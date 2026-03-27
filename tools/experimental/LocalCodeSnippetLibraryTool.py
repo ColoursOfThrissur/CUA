@@ -1,7 +1,7 @@
 """
 LocalCodeSnippetLibraryTool - Auto-generated tool
 """
-import json
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 from tools.tool_interface import BaseTool
@@ -179,19 +179,20 @@ class LocalCodeSnippetLibraryTool(BaseTool):
                     description = s.get('description', '').lower()
                     code_content = s.get('code_content', '').lower()
 
-                    # Apply boolean logic and wildcard matching
-                    query_parts = query.split()
+                    if language and s.get('language', '').lower() != language.lower():
+                        continue
+                    if tags and not any(t in s.get('tags', []) for t in tags):
+                        continue
+
                     match = True
-                    for part in query_parts:
+                    for part in query.split():
                         if part.startswith('-'):
-                            negated_query = part[1:]
-                            if negated_query in description or negated_query in code_content:
+                            negated = part[1:]
+                            if negated in description or negated in code_content:
                                 match = False
                                 break
                         elif '*' in part:
-                            wildcard_query = part.replace('*', '.*')
-                            import re
-                            pattern = re.compile(wildcard_query)
+                            pattern = re.compile(part.replace('*', '.*'))
                             if not (pattern.search(description) or pattern.search(code_content)):
                                 match = False
                                 break
@@ -200,11 +201,7 @@ class LocalCodeSnippetLibraryTool(BaseTool):
                                 match = False
                                 break
 
-                    if language and s.get('language', '').lower() != language.lower():
-                        continue
-                    if tags and not any(t in s.get('tags', []) for t in tags):
-                        continue
-                    if match or (not language and not tags):
+                    if match:
                         results.append(s)
 
                 return {'success': True, 'data': results} if results else {'success': False, 'error': 'No results found'}

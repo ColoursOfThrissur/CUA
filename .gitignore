@@ -53,3 +53,7 @@ workspace/
 # Root-level junk
 tmp_*.txt
 *_features.txt
+
+# Personal financial data
+holdings.csv
+*.csv

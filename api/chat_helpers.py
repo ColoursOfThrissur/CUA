@@ -645,6 +645,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                                     "skill_confidence": skill_selection.get("confidence"),
                                     "fallback_used": False,
                                     "components": agent_components,
+                                    "primary_result": wra_raw[0] if wra_raw else None,
                                     "ui_renderer": selected_ui_renderer(skill_selection),
                                 },
                             )
@@ -706,10 +707,14 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
 
                         if step_outputs:
                             content_lines = [f"{k}: {v}" for o in step_outputs[:6] for k, v in o.items() if k != "step"]
+                            has_rich = len(all_step_data) >= 2
+                            word_target = "100-200 words" if has_rich else "1-3 sentences"
                             summary_prompt = (
-                                f"The user asked: {request.message}\n\nHere is what was done and the results:\n"
+                                f"The user asked: {request.message}\n\nResults:\n"
                                 + "\n".join(f"- {line}" for line in content_lines)
-                                + "\n\nAnswer the user's question directly using the actual data above. Be concise but complete."
+                                + f"\n\nWrite a {word_target} response that directly answers the user's question using the actual data above."
+                                + "\nHighlight key findings and specific values. Do NOT say 'I executed' or 'the tool returned'."
+                                + "\nStructured details (charts, tables) will appear below your response."
                             )
                             try:
                                 response_text = llm.generate_response(summary_prompt, [])
@@ -722,10 +727,11 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
 
                     # Build rich components from agent step outputs
                     agent_components = list(screenshot_components) if 'screenshot_components' in dir() else []
-                    if result.get("success") and all_step_data:
+                    all_step_data_safe = all_step_data if 'all_step_data' in dir() else []
+                    if result.get("success") and all_step_data_safe:
                         from core.output_analyzer import OutputAnalyzer
                         # Use the richest single output (largest dict or longest string)
-                        primary = max(all_step_data, key=lambda x: len(str(x)))
+                        primary = max(all_step_data_safe, key=lambda x: len(str(x)))
                         last_tool = None
                         last_op = None
                         if final_state and hasattr(final_state, "step_results"):
@@ -751,6 +757,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         get_event_bus().emit_sync("agent_plan_clear", {})
                     except Exception as e:
                         print(f"[WARN] Event bus emit failed: {e}")
+                    primary_data = max(all_step_data_safe, key=lambda x: len(str(x))) if all_step_data_safe else None
                     return ChatResponse(
                         response=response_text, session_id=session_id, success=True,
                         execution_result={
@@ -760,28 +767,11 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             "skill_confidence": skill_selection.get("confidence"),
                             "fallback_used": False,
                             "components": agent_components,
+                            "primary_result": primary_data,
                         },
                     )
                 except Exception as e:
                     print(f"[DEBUG] Autonomous agent failed: {e}, falling back to tool calling")
-
-            # Simple conversational short-circuit
-            msg_lower = request.message.lower().strip()
-            if (
-                len(request.message.strip()) < 30
-                and not any(a in msg_lower for a in [
-                    "open", "search", "find", "get", "fetch", "run", "execute",
-                    "create", "make", "build", "write", "read", "list", "show",
-                    "take", "click", "navigate", "go to", "download", "upload", "delete", "move", "copy",
-                ])
-                and "?" not in request.message
-            ):
-                response_text = llm.generate_response(request.message, sessions[session_id]["messages"][-5:])
-                execution_result = {"success": True, "mode": "conversation", "simple_response": True}
-                sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
-                if conv_mem:
-                    conv_mem.save_message(session_id, "assistant", response_text)
-                return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
 
             # Native tool calling
             from planner.tool_calling import ToolCallingClient
@@ -937,28 +927,87 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             aggregated_errors.append(f"Output validation failed: {validation_error}")
 
                     if not validation_failed:
-                        summary_prompt = (
-                            f"You just executed tools successfully. Explain what you did naturally.\n"
-                            f"Tool history: {truncate_for_history(executed_history, 1200)}\n"
-                            f"Result summary: {str(result_data)[:500]}\n"
-                            "Be concise (1-2 sentences). Don't say 'I executed' - say what you DID."
-                        )
-                        try:
-                            response_text = final_direct_response or llm.generate_response(summary_prompt, [])
-                        except Exception:
-                            response_text = final_direct_response or "Done."
+                        # Check if result is from DataVisualizationTool render_output
+                        viz_output = None
+                        if isinstance(result_data, dict) and result_data.get("type") in ("chart_image", "table", "metrics", "code", "text"):
+                            viz_output = result_data
+                        
+                        if viz_output:
+                            # DataVisualizationTool already formatted the output
+                            # Build proper component structure: overview + detail
+                            components = []
+                            
+                            # Add overview card if there's context
+                            if skill_selection.get("skill_name"):
+                                components.append({
+                                    "type": "agent_result",
+                                    "renderer": selected_ui_renderer(skill_selection) or "agent_result",
+                                    "title": skill_selection.get("skill_name", "").replace("_", " ").title(),
+                                    "summary": "",  # LLM summary goes in message bubble
+                                    "skill": skill_selection.get("skill_name"),
+                                    "category": skill_selection.get("category"),
+                                    "tool_name": tool_name,
+                                    "operation": operation,
+                                    "output_types": selected_output_types(skill_selection),
+                                    "highlights": [],
+                                })
+                            
+                            # Add the formatted output as detail component
+                            components.append(viz_output)
+                            
+                            # LLM generates natural language summary
+                            if final_direct_response:
+                                response_text = final_direct_response
+                            else:
+                                summary_prompt = (
+                                    f"The user asked: {request.message}\n\n"
+                                    f"Result type: {viz_output.get('type')}\n"
+                                    f"Data summary: {str(result_data)[:500]}\n\n"
+                                    f"Write a 2-3 sentence natural language response that:\n"
+                                    f"- Directly answers the user's question\n"
+                                    f"- Mentions what type of output is shown (chart/table/metrics)\n"
+                                    f"- Highlights 1-2 key findings from the data\n"
+                                    f"- Does NOT say 'I executed' or 'the tool returned'\n"
+                                    f"The formatted visualization appears below your response."
+                                )
+                                try:
+                                    response_text = llm.generate_response(summary_prompt, [])
+                                except Exception:
+                                    response_text = "Here's the formatted output:"
+                        else:
+                            # Fallback to OutputAnalyzer for non-viz outputs
+                            from core.output_analyzer import OutputAnalyzer
+                            components = OutputAnalyzer.analyze(
+                                result_data, tool_name, operation,
+                                preferred_renderer=selected_ui_renderer(skill_selection),
+                                summary="",
+                                skill_name=skill_selection.get("skill_name", ""),
+                                category=skill_selection.get("category", ""),
+                                output_types=selected_output_types(skill_selection),
+                            )
+                            # LLM writes the header — length scales with output richness
+                            has_rich_components = len(components) >= 2
+                            if final_direct_response:
+                                response_text = final_direct_response
+                            else:
+                                word_target = "100-200 words" if has_rich_components else "1-3 sentences"
+                                summary_prompt = (
+                                    f"The user asked: {request.message}\n\n"
+                                    f"Tool: {tool_name}.{operation}\n"
+                                    f"Result: {str(result_data)[:800]}\n\n"
+                                    f"Write a {word_target} response that:\n"
+                                    f"- Directly answers the user's question\n"
+                                    f"- Highlights the most important findings\n"
+                                    f"- Mentions specific numbers/values from the result\n"
+                                    f"- Does NOT say 'I executed' or 'the tool returned'\n"
+                                    f"Structured details (charts, tables) will appear below your response."
+                                )
+                                try:
+                                    response_text = llm.generate_response(summary_prompt, [])
+                                except Exception:
+                                    response_text = "Done."
                         if not response_text:
-                            response_text = "Task completed successfully."
-
-                        from core.output_analyzer import OutputAnalyzer
-                        components = OutputAnalyzer.analyze(
-                            result_data, tool_name, operation,
-                            preferred_renderer=selected_ui_renderer(skill_selection),
-                            summary=response_text,
-                            skill_name=skill_selection.get("skill_name", ""),
-                            category=skill_selection.get("category", ""),
-                            output_types=selected_output_types(skill_selection),
-                        )
+                            response_text = "Task completed."
                         execution_result = {
                             "success": True, "results": aggregated_results, "primary_result": result_data,
                             "tool_history": executed_history, "tool_calling": True, "components": components,

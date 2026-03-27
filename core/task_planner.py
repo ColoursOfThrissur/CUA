@@ -309,6 +309,11 @@ Return ONLY valid JSON array, no explanation."""
         if not filtered:
             filtered = tools
 
+        # Hard guard: if skill has preferred tools, NEVER include other tools in the prompt
+        # This prevents the LLM from picking LocalRunNoteTool for finance tasks etc.
+        if preferred:
+            filtered = {k: v for k, v in tools.items() if k in preferred}
+
         tool_lines = []
         for tool_name, caps in filtered.items():
             tool_lines.append(f"{tool_name}:")
@@ -324,6 +329,8 @@ Return ONLY valid JSON array, no explanation."""
         skill_lines = []
         if skill_name:
             skill_lines.append(f"Skill: {skill_name} ({skill_context.get('category', '')})")
+        if preferred:
+            skill_lines.append(f"ONLY USE THESE TOOLS: {', '.join(sorted(preferred))} — do NOT use any other tool")
         if skill_context.get("instructions_summary"):
             skill_lines.append(f"Instructions: {skill_context['instructions_summary'][:200]}")
         if skill_context.get("verification_mode"):
@@ -343,7 +350,8 @@ Return ONLY valid JSON array, no explanation."""
         example = self._build_skill_example_compact(skill_name)
 
         # ── Layer 5: past plans — compact, capped ─────────────────────────────
-        past_str = self._build_past_plans_guidance(past_plans or [])
+        # Filter past plans to only show steps using preferred tools
+        past_str = self._build_past_plans_guidance(past_plans or [], preferred_filter=preferred)
 
         # ── Layer 6: memory — hard cap 400 chars ──────────────────────────────
         mem = (unified_context or "").strip()
@@ -351,6 +359,17 @@ Return ONLY valid JSON array, no explanation."""
             mem = mem[:400] + "..."
         prev_ctx = (context or {}).get("previous_context", "")
         mem_str = (f"Previous reply: {prev_ctx[:200]}\n" if prev_ctx else "") + (mem or "none")
+
+        # Check if DataVisualizationTool is available
+        has_viz = "DataVisualizationTool" in tools
+        viz_hint = (
+            "\n\nOUTPUT FORMATTING RULE:\n"
+            "- ALWAYS add a final step using DataVisualizationTool.render_output to format the output.\n"
+            "- Pass the data from previous steps and a context hint: 'metrics', 'comparison', 'trend', 'distribution', 'table', 'code', 'text', 'health', 'finance'.\n"
+            "- This automatically chooses the best visualization (chart, table, metrics cards, formatted text, etc.).\n"
+            "- Example: DataVisualizationTool.render_output(data='{previous_step_output}', context='metrics', title='System Health')\n"
+            "- For charts specifically, use context='trend' for line charts, 'comparison' for bar charts, 'distribution' for pie charts."
+        ) if has_viz else ""
 
         return f"""Plan executable steps for this goal.
 
@@ -373,7 +392,7 @@ EXAMPLE:
 PAST APPROACHES (reference only):
 {past_str}
 
-MEMORY: {mem_str}
+MEMORY: {mem_str}{viz_hint}
 
 Return ONLY this JSON, no explanation:
 {{
@@ -398,7 +417,12 @@ Return ONLY this JSON, no explanation:
                 "- File read/write steps on the same path must be sequential"
             ),
             "finance_analysis": (
-                "- get_advisor_insight runs all sub-layers internally — use it as a single step"
+                "- FinancialAnalysisTool handles everything internally — always use a SINGLE step\n"
+                "- generate_morning_note: use for 'morning note', 'morning brief', 'market brief', 'daily brief'\n"
+                "- generate_full_report: use for 'full report', 'investment report', 'portfolio report'\n"
+                "- get_advisor_insight: use for portfolio questions, stock analysis, 'how am I doing'\n"
+                "- save_portfolio: use for 'save my portfolio', 'update my portfolio'\n"
+                "- NEVER use LocalRunNoteTool or LocalCodeSnippetLibraryTool for financial tasks"
             ),
         }
         return rules.get(skill_name, "- Steps with no shared outputs can run in parallel")
@@ -429,8 +453,14 @@ Return ONLY this JSON, no explanation:
                 '  step_1: save_snippet(name="auth", code="...", language="python") deps:[]'
             ),
             "finance_analysis": (
+                'Goal: "generate my morning note" →\n'
+                '  step_1: FinancialAnalysisTool.generate_morning_note(portfolio_name="main") deps:[]\n'
+                'Goal: "generate full report" →\n'
+                '  step_1: FinancialAnalysisTool.generate_full_report(portfolio_name="main") deps:[]\n'
                 'Goal: "how is AAPL doing" →\n'
-                '  step_1: get_advisor_insight(holdings={"AAPL": 1}, question="how is AAPL doing") deps:[]'
+                '  step_1: FinancialAnalysisTool.get_advisor_insight(holdings={"AAPL": 1}, question="how is AAPL doing") deps:[]\n'
+                'Goal: "how is nifty doing" →\n'
+                '  step_1: FinancialAnalysisTool.get_advisor_insight(holdings={"^NSEI": 1}, question="how is nifty doing today") deps:[]'
             ),
             "web_research": (
                 '(web_research is handled by WebResearchAgent — single step: search_web or fetch_url)'
@@ -438,11 +468,15 @@ Return ONLY this JSON, no explanation:
         }
         return examples.get(skill_name, 'Use the most appropriate tool operation for the goal.')
 
-    def _build_past_plans_guidance(self, past_plans: list) -> str:
+    def _build_past_plans_guidance(self, past_plans: list, preferred_filter: set = None) -> str:
         if not past_plans:
             return "No similar past plans found."
         lines = []
         for rec in past_plans:
+            if preferred_filter:
+                plan_tools = {s.get("tool", "") for s in rec.steps[:6]}
+                if plan_tools and not plan_tools.intersection(preferred_filter):
+                    continue
             lines.append(
                 f"- Goal: '{rec.goal_sample}' | Skill: {rec.skill_name} "
                 f"| Win rate: {rec.win_rate():.0%} ({rec.success_count}✓/{rec.fail_count}✗) "
@@ -450,7 +484,7 @@ Return ONLY this JSON, no explanation:
             )
             for s in rec.steps[:6]:  # cap at 6 steps to keep prompt tight
                 lines.append(f"    {s.get('tool','?')}.{s.get('operation','?')} [{s.get('domain','')}]")
-        return "\n".join(lines)
+        return "\n".join(lines) if lines else "No relevant past plans found."
 
     def _parse_plan_response(self, response: str) -> Dict:
         """Parse LLM response into plan data."""
@@ -532,6 +566,17 @@ Return ONLY this JSON, no explanation:
         "get_page_source": "get_page_content",
         "read_page": "get_page_content",
         "get_page_text": "get_page_content",
+        # finance aliases
+        "morning_note": "generate_morning_note",
+        "morning_notes": "generate_morning_note",
+        "morning_brief": "generate_morning_note",
+        "market_brief": "generate_morning_note",
+        "daily_brief": "generate_morning_note",
+        "full_report": "generate_full_report",
+        "investment_report": "generate_full_report",
+        "portfolio_report": "generate_full_report",
+        "advisor_insight": "get_advisor_insight",
+        "portfolio_analysis": "get_portfolio_analysis",
     }
 
     def _validate_plan(self, plan_data: Dict, original_goal: str) -> ExecutionPlan:

@@ -19,7 +19,7 @@ class BrowserAutomationTool(BaseTool):
                 Parameter("wait_for_load", ParameterType.BOOLEAN, "Wait for page to fully load before returning", required=False),
             ],
             returns="Page title, URL, and visible text.",
-            safety_level=SafetyLevel.LOW, examples=[{"url": "https://example.com"}], dependencies=[],
+            safety_level=SafetyLevel.LOW, examples=[{"url": "https://wikipedia.org"}], dependencies=[],
         ), self._handle_navigate)
 
         self.add_capability(ToolCapability(

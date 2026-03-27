@@ -14,6 +14,8 @@ CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
     "LocalRunNoteTool",
     "BenchmarkRunnerTool",
     "FinancialAnalysisTool",
+    "SystemHealthTool",
+    "CodeAnalysisTool",
 )
 
 _EXPERIMENTAL_LOAD_TIMEOUT = 5  # seconds per tool

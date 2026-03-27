@@ -158,11 +158,11 @@ mcp_servers:
 - name: puppeteer
   transport: stdio
   command: mcp-server-puppeteer
-  enabled: true
+  enabled: false
 - name: filesystem
   transport: stdio
   command: npx -y @modelcontextprotocol/server-filesystem C:\Users\derik\Desktop\Derik\Projects\CUA
-  enabled: true
+  enabled: false
 - name: git
   transport: stdio
   command: npx -y @modelcontextprotocol/server-git

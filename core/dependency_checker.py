@@ -42,9 +42,9 @@ class DependencyChecker:
     # Libraries that must never appear in generated tool code.
     # These cause sandbox failures and are not available in the CUA environment.
     BLOCKED_LIBRARIES = {
-        'pandas', 'numpy', 'scipy', 'matplotlib', 'seaborn', 'plotly',
-        'graphviz', 'networkx', 'sklearn', 'tensorflow', 'torch',
+        'pandas', 'numpy', 'scipy', 'sklearn', 'tensorflow', 'torch',
         'PIL', 'cv2', 'flask', 'django', 'fastapi', 'sqlalchemy',
+        'graphviz', 'networkx',
     }
     
     def check_code(self, code: str) -> DependencyReport:

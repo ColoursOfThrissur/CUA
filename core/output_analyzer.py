@@ -44,6 +44,21 @@ class OutputAnalyzer:
         
         # Handle dict outputs
         if isinstance(data, dict):
+            # CodeAnalysisTool outputs
+            if operation in ("get_code_review", "get_file_metrics", "detect_issues", "get_dependencies", "get_change_impact") or tool_name == "CodeAnalysisTool":
+                components.extend(OutputAnalyzer._build_code_analysis_components(data, operation))
+                return components
+
+            # SystemHealthTool outputs
+            if operation in ("get_health_report", "get_system_metrics", "get_agent_behavior", "get_llm_runtime", "get_cua_internals") or tool_name == "SystemHealthTool":
+                components.extend(OutputAnalyzer._build_health_components(data, operation))
+                return components
+
+            # FinancialAnalysisTool outputs
+            if operation in ("get_advisor_insight", "get_price_data", "get_technicals", "get_portfolio_analysis", "get_sentiment", "generate_morning_note", "generate_full_report", "save_portfolio") or tool_name == "FinancialAnalysisTool":
+                components.extend(OutputAnalyzer._build_finance_components(data, operation))
+                return components
+
             # File write/read result
             if 'path' in data and ('bytes_written' in data or 'content' in data or 'size' in data):
                 content = data.get('content', '')
@@ -281,6 +296,325 @@ class OutputAnalyzer:
                 'title': 'Raw Data'
             })
         
+        return components
+
+    @staticmethod
+    def _build_code_analysis_components(data: dict, operation: str) -> list:
+        components = []
+        if not isinstance(data, dict):
+            return components
+
+        # Header stats — include by_severity breakdown
+        stats = []
+        if data.get("by_severity") and isinstance(data["by_severity"], dict):
+            for sev, count in data["by_severity"].items():
+                if count > 0:
+                    stats.append({"label": sev.upper(), "value": count, "format": "number"})
+        if data.get("maintainability"):
+            m = data["maintainability"]
+            stats.append({"label": "Maintainability", "value": f"{m['score']}/100 ({m['grade']})", "format": "text"})
+        if data.get("complexity"):
+            c = data["complexity"]
+            stats.append({"label": "Avg Complexity", "value": c["avg"], "format": "number"})
+            stats.append({"label": "Max Complexity", "value": c["max"], "format": "number"})
+        if data.get("lines"):
+            stats.append({"label": "Lines of Code", "value": data["lines"]["code"], "format": "number"})
+        if data.get("issue_count") is not None:
+            stats.append({"label": "Total Issues", "value": data["issue_count"], "format": "number"})
+        if data.get("evolution_priority"):
+            stats.append({"label": "Evolution Priority", "value": data["evolution_priority"].upper(), "format": "text"})
+        if stats:
+            components.append({"type": "stats", "renderer": "stats", "metrics": stats, "title": data.get("file", "Code Analysis")})
+
+        # Summary
+        if data.get("summary"):
+            components.append({"type": "text_content", "renderer": "text_content", "content": data["summary"], "title": "Summary"})
+
+        # Issues table
+        if data.get("issues") and isinstance(data["issues"], list):
+            components.append({"type": "table", "renderer": "table", "data": data["issues"],
+                                "title": f"Issues ({data.get('issue_count', len(data['issues']))})",
+                                "columns": ["severity", "type", "message", "location"]})
+
+        # Refactor candidates
+        if data.get("refactor_candidates") and isinstance(data["refactor_candidates"], list):
+            components.append({"type": "table", "renderer": "table", "data": data["refactor_candidates"],
+                                "title": "Refactor Candidates", "columns": ["function", "reason", "suggestion"]})
+
+        # Quick wins as list
+        if data.get("quick_wins") and isinstance(data["quick_wins"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["quick_wins"], "title": "Quick Wins"})
+
+        # High-complexity functions
+        layers = data.get("layers", {})
+        metrics = layers.get("metrics", data)
+        if metrics.get("complexity", {}).get("high_complexity"):
+            chart_data = [{"label": f["name"], "value": f["complexity"]}
+                          for f in metrics["complexity"]["high_complexity"]]
+            components.append({"type": "chart", "renderer": "chart_bar",
+                                "data": chart_data, "title": "Function Complexity"})
+            components.append({"type": "table", "renderer": "table",
+                                "data": metrics["complexity"]["high_complexity"],
+                                "title": "High Complexity Functions",
+                                "columns": ["name", "complexity", "rank", "lineno"]})
+
+        # Dependencies
+        deps = layers.get("dependencies", data)
+        if deps.get("external_packages"):
+            components.append({"type": "list", "renderer": "list",
+                                "items": deps["external_packages"], "title": "External Packages"})
+        if deps.get("unused_imports"):
+            components.append({"type": "list", "renderer": "list",
+                                "items": deps["unused_imports"], "title": "Unused Imports"})
+
+        # Risks
+        if data.get("risks") and isinstance(data["risks"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["risks"], "title": "Risks"})
+
+        return components
+
+    @staticmethod
+    def _build_health_components(data: dict, operation: str) -> list:
+        components = []
+        if not isinstance(data, dict):
+            return components
+
+        # Status badge + summary
+        stats = []
+        if data.get("status"):
+            stats.append({"label": "Status", "value": data["status"].upper(), "format": "text"})
+        layers = data.get("layers", {})
+        system = layers.get("system", data)
+        if system.get("cpu_percent") is not None:
+            stats.append({"label": "CPU", "value": f"{system['cpu_percent']}%", "format": "text"})
+        if system.get("memory"):
+            m = system["memory"]
+            stats.append({"label": "RAM", "value": f"{m['used_gb']}GB / {m['total_gb']}GB ({m['percent']}%)", "format": "text"})
+        if system.get("gpu"):
+            g = system["gpu"]
+            stats.append({"label": "GPU", "value": f"{g['name']} {g['memory_used_mb']}MB/{g['memory_total_mb']}MB", "format": "text"})
+        llm_rt = layers.get("llm_runtime", data)
+        if llm_rt.get("ollama"):
+            o = llm_rt["ollama"]
+            stats.append({"label": "Ollama", "value": "Running" if o.get("running") else "NOT RUNNING", "format": "text"})
+            if o.get("memory_gb"):
+                stats.append({"label": "Ollama RAM", "value": f"{o['memory_gb']}GB", "format": "text"})
+        if stats:
+            components.append({"type": "stats", "renderer": "stats", "metrics": stats, "title": "System Health"})
+
+        if data.get("summary"):
+            components.append({"type": "text_content", "renderer": "text_content", "content": data["summary"], "title": "Diagnosis"})
+
+        if data.get("bottlenecks") and isinstance(data["bottlenecks"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["bottlenecks"], "title": "Bottlenecks"})
+
+        if data.get("actions") and isinstance(data["actions"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["actions"], "title": "Recommended Actions"})
+
+        if data.get("warnings") and isinstance(data["warnings"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["warnings"], "title": "Warnings"})
+
+        # Top processes table
+        if system.get("top_processes"):
+            components.append({"type": "table", "renderer": "table", "data": system["top_processes"],
+                                "title": "Top Processes", "columns": ["name", "memory_mb", "cpu_pct", "pid"]})
+
+        # Tool success rates
+        agent = layers.get("agent_behavior", data)
+        if agent.get("tool_success_rates"):
+            chart_data = [{"label": k.split(".")[0], "value": round(v["success_rate"] * 100, 1)}
+                          for k, v in agent["tool_success_rates"].items()]
+            components.append({"type": "chart", "renderer": "chart_horizontal",
+                                "data": chart_data, "title": "Tool Success Rates", "unit": "%"})
+            rows = [{"tool": k, **v} for k, v in agent["tool_success_rates"].items()]
+            components.append({"type": "table", "renderer": "table", "data": rows,
+                                "title": "Tool Success Rates", "columns": ["tool", "total", "success_rate", "avg_ms"]})
+
+        if agent.get("loop_detection"):
+            components.append({"type": "table", "renderer": "table", "data": agent["loop_detection"],
+                                "title": "Loop Detection", "columns": ["call", "count"]})
+
+        # Pending queues
+        internals = layers.get("cua_internals", data)
+        if internals.get("pending_queues"):
+            rows = [{"queue": k, "count": v} for k, v in internals["pending_queues"].items()]
+            components.append({"type": "table", "renderer": "table", "data": rows,
+                                "title": "Pending Queues", "columns": ["queue", "count"]})
+
+        return components
+
+    @staticmethod
+    def _build_finance_components(data: dict, operation: str) -> list:
+        components = []
+        if not isinstance(data, dict):
+            return components
+
+        layers = data.get("layers", {})
+
+        # Morning note specific fields
+        if data.get("one_liner"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["one_liner"], "title": f"Morning Note — {data.get('date', '')}"})
+        if data.get("market_mood"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["market_mood"], "title": "Market Mood"})
+        if data.get("portfolio_snapshot"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["portfolio_snapshot"], "title": "Portfolio Snapshot"})
+        if data.get("watchlist") and isinstance(data["watchlist"], list):
+            components.append({"type": "list", "renderer": "list",
+                                "items": data["watchlist"], "title": "Watchlist"})
+        if data.get("earnings_this_week") and isinstance(data["earnings_this_week"], dict) and data["earnings_this_week"]:
+            rows = [{"ticker": t, **v} for t, v in data["earnings_this_week"].items()]
+            components.append({"type": "table", "renderer": "table", "data": rows,
+                                "title": "⚠ Earnings This Week", "columns": ["ticker", "earnings_date", "days_away"]})
+
+        # Full report specific fields
+        if data.get("executive_summary"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["executive_summary"], "title": "Executive Summary"})
+        if data.get("performance_vs_benchmark"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["performance_vs_benchmark"], "title": "Performance vs Benchmark"})
+        if data.get("holding_analysis") and isinstance(data["holding_analysis"], dict):
+            rows = [{"ticker": t, **{k: v for k, v in d.items()}} for t, d in data["holding_analysis"].items() if isinstance(d, dict)]
+            if rows:
+                components.append({"type": "table", "renderer": "table", "data": rows,
+                                    "title": "Holding Analysis", "columns": ["ticker", "trend", "valuation", "recommendation"]})
+        if data.get("risk_assessment"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["risk_assessment"], "title": "Risk Assessment"})
+        if data.get("outlook"):
+            components.append({"type": "text_content", "renderer": "text_content",
+                                "content": data["outlook"], "title": "Outlook"})
+        if data.get("markdown_report"):
+            components.append({"type": "code", "renderer": "code",
+                                "content": data["markdown_report"], "language": "markdown", "title": "Full Report (Markdown)"})
+
+        # Rating badge for full report
+        if data.get("rating"):
+            components.append({"type": "stats", "renderer": "stats",
+                                "metrics": [{"label": "Overall Rating", "value": data["rating"].upper(), "format": "text"}],
+                                "title": "Report Rating"})
+
+        # Macro snapshot
+        macro = layers.get("macro", {})
+        if macro:
+            macro_stats = []
+            for label, v in macro.items():
+                if isinstance(v, dict) and v.get("value") is not None:
+                    change_str = f" ({'+' if (v.get('change_pct') or 0) >= 0 else ''}{v.get('change_pct')}%)" if v.get('change_pct') is not None else ""
+                    macro_stats.append({"label": label, "value": f"{v['value']}{change_str}", "format": "text"})
+            if macro_stats:
+                components.append({"type": "stats", "renderer": "stats",
+                                    "metrics": macro_stats, "title": "Macro Snapshot"})
+
+        # Insights, actions, risks, risk_flags — top level lists
+        if data.get("insights") and isinstance(data["insights"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["insights"], "title": "Insights"})
+        if data.get("actions") and isinstance(data["actions"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["actions"], "title": "Recommended Actions"})
+        if data.get("recommendations") and isinstance(data["recommendations"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["recommendations"], "title": "Recommendations"})
+        if data.get("risks") and isinstance(data["risks"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["risks"], "title": "Risks"})
+        if data.get("risk_flags") and isinstance(data["risk_flags"], list):
+            components.append({"type": "list", "renderer": "list", "items": data["risk_flags"], "title": "Risk Flags"})
+
+        # Price data table
+        price = layers.get("price_data", data.get("data", {}))
+        if isinstance(price, dict):
+            rows = []
+            ohlcv_rows = []
+            for ticker, info in price.items():
+                if not isinstance(info, dict) or info.get("error"):
+                    continue
+                rows.append({
+                    "ticker": ticker,
+                    "price": info.get("current_price"),
+                    "change_%": info.get("price_change_pct"),
+                    "52w_high": info.get("high_52w"),
+                    "52w_low": info.get("low_52w"),
+                    "avg_volume": info.get("avg_volume"),
+                    "pe_ratio": info.get("pe_ratio"),
+                    "beta": info.get("beta"),
+                    "sector": info.get("sector"),
+                })
+                # OHLCV tail as its own table
+                if info.get("ohlcv_tail") and isinstance(info["ohlcv_tail"], list):
+                    for row in info["ohlcv_tail"]:
+                        ohlcv_rows.append({"ticker": ticker, **row})
+            if rows:
+                components.append({"type": "table", "renderer": "table", "data": rows,
+                                    "title": "Price Overview",
+                                    "columns": ["ticker", "price", "change_%", "52w_high", "52w_low", "avg_volume", "pe_ratio", "beta", "sector"]})
+            if ohlcv_rows:
+                components.append({"type": "table", "renderer": "table", "data": ohlcv_rows,
+                                    "title": "Recent OHLCV",
+                                    "columns": ["ticker", "Open", "High", "Low", "Close", "Volume"]})
+
+        # Technicals table
+        tech = layers.get("technicals", {})
+        if tech:
+            rows = []
+            for t, d in tech.items():
+                if isinstance(d, dict):
+                    rows.append({
+                        "ticker": t,
+                        "price": d.get("current_price"),
+                        "rsi": d.get("rsi"),
+                        "rsi_signal": d.get("rsi_signal"),
+                        "macd": d.get("macd"),
+                        "macd_crossover": d.get("macd_crossover"),
+                        "ma20": d.get("ma20"),
+                        "ma50": d.get("ma50"),
+                        "trend": d.get("trend"),
+                        "bb_upper": d.get("bollinger_upper"),
+                        "bb_lower": d.get("bollinger_lower"),
+                        "bb_position": d.get("bollinger_position"),
+                    })
+            if rows:
+                components.append({"type": "table", "renderer": "table", "data": rows,
+                                    "title": "Technical Indicators",
+                                    "columns": ["ticker", "price", "rsi", "rsi_signal", "macd", "macd_crossover", "trend", "bb_position"]})
+
+        # Sentiment
+        sentiment = layers.get("sentiment", {})
+        if sentiment:
+            for ticker, s in sentiment.items():
+                if not isinstance(s, dict):
+                    continue
+                stats = [
+                    {"label": "Sentiment", "value": s.get("sentiment", "").upper(), "format": "text"},
+                    {"label": "Score", "value": s.get("score"), "format": "number"},
+                ]
+                components.append({"type": "stats", "renderer": "stats", "metrics": stats, "title": f"Sentiment — {ticker}"})
+                if s.get("summary"):
+                    components.append({"type": "text_content", "renderer": "text_content",
+                                        "content": s["summary"], "title": "Sentiment Summary"})
+                if s.get("headlines") and isinstance(s["headlines"], list):
+                    components.append({"type": "list", "renderer": "list",
+                                        "items": s["headlines"], "title": "Headlines"})
+
+        # Portfolio metrics
+        portfolio = layers.get("portfolio", {})
+        if portfolio.get("sector_exposure_pct"):
+            pie_data = [{"label": k, "value": v} for k, v in portfolio["sector_exposure_pct"].items()]
+            components.append({"type": "chart", "renderer": "chart_donut",
+                                "data": pie_data, "title": "Sector Exposure", "chartType": "donut", "unit": "%"})
+            rows = [{"sector": k, "weight_%": v} for k, v in portfolio["sector_exposure_pct"].items()]
+            components.append({"type": "table", "renderer": "table", "data": rows,
+                                "title": "Sector Exposure", "columns": ["sector", "weight_%"]})
+        stats = []
+        if portfolio.get("sharpe_ratio") is not None:
+            stats.append({"label": "Sharpe Ratio", "value": portfolio["sharpe_ratio"], "format": "number"})
+        if portfolio.get("max_drawdown_pct") is not None:
+            stats.append({"label": "Max Drawdown", "value": f"{portfolio['max_drawdown_pct']}%", "format": "text"})
+        if portfolio.get("concentration_risk"):
+            stats.append({"label": "Concentration Risk", "value": portfolio["concentration_risk"].upper(), "format": "text"})
+        if stats:
+            components.append({"type": "stats", "renderer": "stats", "metrics": stats, "title": "Portfolio Metrics"})
+
         return components
 
     @staticmethod

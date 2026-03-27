@@ -184,6 +184,64 @@ class FilesystemTool(BaseTool):
             examples=[{"path": "output/result.json", "data": {"key": "value"}}],
         ), self._handle_write_json)
 
+        self.add_capability(ToolCapability(
+            name="edit_file",
+            description="Make line-based edits to a text file. Each edit replaces exact text with new content. Returns a diff of changes made.",
+            parameters=[
+                Parameter("path", ParameterType.FILE_PATH, "Path to the file to edit"),
+                Parameter("old_text", ParameterType.STRING, "Exact text to find and replace"),
+                Parameter("new_text", ParameterType.STRING, "Replacement text"),
+                Parameter("dry_run", ParameterType.BOOLEAN, "Preview changes without writing. Default: false", required=False),
+            ],
+            returns="Diff of changes made, or preview if dry_run=true.",
+            safety_level=SafetyLevel.HIGH,
+            examples=[{"path": "output/file.txt", "old_text": "foo", "new_text": "bar"}],
+        ), self._handle_edit_file)
+
+        self.add_capability(ToolCapability(
+            name="directory_tree",
+            description="Get a recursive tree view of files and directories as a structured list. Each entry has name, type (file/directory), and children.",
+            parameters=[
+                Parameter("path", ParameterType.FILE_PATH, "Root directory path"),
+                Parameter("exclude_patterns", ParameterType.LIST, "Glob patterns to exclude e.g. ['*.pyc','__pycache__']", required=False),
+            ],
+            returns="Nested dict tree structure.",
+            safety_level=SafetyLevel.LOW,
+            examples=[{"path": ".", "exclude_patterns": ["__pycache__", "*.pyc"]}],
+        ), self._handle_directory_tree)
+
+        self.add_capability(ToolCapability(
+            name="list_directory_with_sizes",
+            description="List files and directories with their sizes. Optionally sort by name or size.",
+            parameters=[
+                Parameter("path", ParameterType.FILE_PATH, "Directory path"),
+                Parameter("sort_by", ParameterType.STRING, "Sort by 'name' or 'size'. Default: name", required=False),
+            ],
+            returns="List of dicts with name, type, size_bytes.",
+            safety_level=SafetyLevel.LOW,
+            examples=[{"path": ".", "sort_by": "size"}],
+        ), self._handle_list_directory_with_sizes)
+
+        self.add_capability(ToolCapability(
+            name="read_multiple_files",
+            description="Read the contents of multiple files simultaneously. Returns each file's content keyed by path.",
+            parameters=[
+                Parameter("paths", ParameterType.LIST, "List of file paths to read"),
+            ],
+            returns="Dict of path → content. Failed reads include an error key.",
+            safety_level=SafetyLevel.LOW,
+            examples=[{"paths": ["config.yaml", "requirements.txt"]}],
+        ), self._handle_read_multiple_files)
+
+        self.add_capability(ToolCapability(
+            name="list_allowed_directories",
+            description="Returns the list of directories this tool is allowed to access.",
+            parameters=[],
+            returns="List of allowed root paths.",
+            safety_level=SafetyLevel.LOW,
+            examples=[],
+        ), self._handle_list_allowed_directories)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _validate_path(self, path: str) -> bool:
@@ -332,6 +390,77 @@ class FilesystemTool(BaseTool):
         import json
         content = json.dumps(data, indent=indent, ensure_ascii=False)
         return self._handle_write_file(path, content)
+
+    def _handle_edit_file(self, path: str, old_text: str, new_text: str, dry_run: bool = False, **kwargs) -> str:
+        self._check(path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File '{path}' not found")
+        with open(path, "r", encoding="utf-8") as f:
+            original = f.read()
+        if old_text not in original:
+            raise ValueError(f"Text not found in '{path}': {old_text[:80]!r}")
+        updated = original.replace(old_text, new_text, 1)
+        # Build a simple unified diff
+        import difflib
+        diff = "".join(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile=f"a/{path}", tofile=f"b/{path}", lineterm=""
+        ))
+        if not dry_run:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        return diff or "(no changes)"
+
+    def _handle_directory_tree(self, path: str, exclude_patterns: list = None, **kwargs) -> dict:
+        self._check(path)
+        if not os.path.isdir(path):
+            raise NotADirectoryError(f"'{path}' is not a directory")
+        exclude_patterns = exclude_patterns or []
+
+        def _build(p: Path) -> dict:
+            node = {"name": p.name, "type": "directory" if p.is_dir() else "file"}
+            if p.is_dir():
+                children = []
+                try:
+                    for child in sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name)):
+                        if any(fnmatch.fnmatch(child.name, pat) for pat in exclude_patterns):
+                            continue
+                        children.append(_build(child))
+                except PermissionError:
+                    pass
+                node["children"] = children
+            return node
+
+        return _build(Path(path))
+
+    def _handle_list_directory_with_sizes(self, path: str, sort_by: str = "name", **kwargs) -> list:
+        self._check(path)
+        if not os.path.isdir(path):
+            raise NotADirectoryError(f"'{path}' is not a directory")
+        entries = []
+        with os.scandir(path) as it:
+            for e in it:
+                stat = e.stat()
+                entries.append({
+                    "name": e.name,
+                    "type": "directory" if e.is_dir() else "file",
+                    "size_bytes": stat.st_size,
+                })
+        key = (lambda x: x["size_bytes"]) if sort_by == "size" else (lambda x: x["name"])
+        return sorted(entries, key=key)
+
+    def _handle_read_multiple_files(self, paths: list, **kwargs) -> dict:
+        result = {}
+        for path in paths:
+            try:
+                result[path] = self._handle_read_file(path)
+            except Exception as e:
+                result[path] = {"error": str(e)}
+        return result
+
+    def _handle_list_allowed_directories(self, **kwargs) -> list:
+        return [os.path.abspath(r) for r in self.allowed_roots]
 
     def execute(self, operation: str, parameters: Dict[str, Any]):
         if operation in self._capabilities:

@@ -289,9 +289,16 @@ class ExecutionEngine:
                     for sid, r in state.step_results.items()
                     if r.status == StepStatus.COMPLETED and r.output is not None
                 }
+                failed_outputs = {
+                    sid: r.error
+                    for sid, r in state.step_results.items()
+                    if r.status == StepStatus.FAILED and r.error
+                }
+                replan_ctx = dict(replan_ctx)
                 if completed_outputs:
-                    replan_ctx = dict(replan_ctx)
                     replan_ctx["completed_summary"] = completed_outputs
+                if failed_outputs:
+                    replan_ctx.setdefault("failed_errors", {}).update(failed_outputs)
                 new_steps = self.task_planner.replan_remaining(
                     original_goal=plan.goal,
                     remaining_steps=remaining_after,

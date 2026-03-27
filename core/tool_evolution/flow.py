@@ -115,7 +115,7 @@ class ToolEvolutionOrchestrator:
         try:
             proposal = proposal_gen.generate_proposal(analysis)
             if not proposal:
-                evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", "Failed to generate proposal", health_before=health_before, evolution_id=evolution_id)
+                evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", "Failed to generate proposal", health_before=health_before)
                 return False, "Failed to generate improvement proposal"
             
             # Store proposal artifact

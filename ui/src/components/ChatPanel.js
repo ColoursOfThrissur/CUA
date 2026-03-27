@@ -251,7 +251,7 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
                     </div>
                   </div>
                 )}
-                {msg.components && <OutputRenderer components={msg.components} />}
+                {msg.components && <OutputRenderer components={msg.components} rawData={msg.execution_result?.primary_result} />}
                 {msg.timestamp && (
                   <div className="message-time">{msg.timestamp}</div>
                 )}

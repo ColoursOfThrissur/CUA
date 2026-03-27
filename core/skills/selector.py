@@ -18,7 +18,7 @@ class SkillSelector:
         "automation": {"automate", "automation", "browser", "click", "form", "button", "element", "screenshot", "interact", "selenium", "headless", "scrape", "fill", "open", "type", "login", "navigate", "chatgpt", "website", "tab", "input", "submit", "scroll", "hover", "iframe", "dropdown", "keyboard", "cookie", "cookies", "javascript"},
         "data": {"api", "http", "json", "database", "query", "sql", "transform", "parse", "endpoint", "request", "response", "data", "structure"},
         "productivity": {"snippet", "snippets", "note", "notes", "save", "store", "library", "knowledge", "organize", "search", "retrieve", "tag", "tags"},
-        "finance": {"stock", "stocks", "ticker", "portfolio", "invest", "investing", "investment", "investments", "market", "markets", "trading", "trade", "shares", "equity", "finance", "financial", "aapl", "nvda", "msft", "tsla", "amzn", "googl", "meta", "spy", "etf", "rsi", "macd", "bullish", "bearish", "dividend", "earnings", "pe", "ratio", "sharpe", "drawdown", "sector", "exposure", "hedge", "rebalance", "trim", "position", "holdings", "yfinance", "nasdaq", "nyse", "sp500", "crypto", "bitcoin", "btc", "eth"}
+        "finance": {"stock", "stocks", "ticker", "portfolio", "invest", "investing", "investment", "investments", "market", "markets", "trading", "trade", "shares", "equity", "finance", "financial", "aapl", "nvda", "msft", "tsla", "amzn", "googl", "meta", "spy", "etf", "rsi", "macd", "bullish", "bearish", "dividend", "earnings", "pe", "ratio", "sharpe", "drawdown", "sector", "exposure", "hedge", "rebalance", "trim", "position", "holdings", "yfinance", "nasdaq", "nyse", "sp500", "crypto", "bitcoin", "btc", "eth", "morning", "brief", "report", "nifty", "sensex", "canbk", "infy", "tcs", "reliance", "nsei", "bse", "midcap", "smallcap", "flexi", "elss", "mf", "mutual", "fund", "sgb", "gold", "bond"}
     }
 
     _CONVERSATION_PATTERNS = [
@@ -49,13 +49,7 @@ class SkillSelector:
                         fallback_mode="direct_response", candidate_skills=["conversation"]
                     )
 
-        # LLM-first: ask the LLM to classify before keyword scoring
-        if llm_client:
-            llm_result = self._llm_fallback(message, registry, llm_client, [], minimum_confidence=0.4)
-            if llm_result.matched:
-                return llm_result
-
-        # Keyword scoring fallback (LLM unavailable or low confidence)
+        # Keyword scoring first — more reliable than LLM for well-defined skills
         tokens = self._tokenize(message)
         scored = []
 
@@ -78,11 +72,30 @@ class SkillSelector:
             scored[1] = (scored[1][0], max(0.0, scored[1][1] - 0.05))
             scored.sort(key=lambda x: x[1], reverse=True)
 
-        if not scored or scored[0][1] < 0.15:
+        best_skill, confidence = scored[0] if scored else (None, 0.0)
+
+        # If keyword scoring is confident (>=0.35), use it directly — skip LLM
+        if best_skill and confidence >= 0.35:
+            return SkillSelection(
+                matched=True,
+                skill_name=best_skill.name,
+                category=best_skill.category,
+                confidence=confidence,
+                reason="keyword_match",
+                fallback_mode=best_skill.fallback_strategy,
+                candidate_skills=candidates,
+            )
+
+        # LLM fallback only when keyword scoring is uncertain
+        if llm_client:
+            llm_result = self._llm_fallback(message, registry, llm_client, candidates, minimum_confidence=0.4)
+            if llm_result.matched:
+                return llm_result
+
+        if not scored or confidence < 0.15:
             return SkillSelection(matched=False, reason="no_confident_skill_match",
                                   fallback_mode="direct_tool_routing", candidate_skills=candidates)
 
-        best_skill, confidence = scored[0]
         return SkillSelection(
             matched=True,
             skill_name=best_skill.name,
@@ -112,6 +125,17 @@ class SkillSelector:
 
         hint_overlap = tokens.intersection(self.KEYWORD_HINTS.get(skill.category, set()))
         score += min(0.20, 0.07 * len(hint_overlap))
+
+        # Negative signal: penalise knowledge_management for financial/market queries
+        _FINANCE_PHRASES = {"morning note", "morning notes", "morning brief", "market brief",
+                            "full report", "investment report", "portfolio report",
+                            "generate report", "how is nifty", "how is sensex",
+                            "how is the market", "market update"}
+        if skill.name == "knowledge_management":
+            for phrase in _FINANCE_PHRASES:
+                if phrase in message_lower:
+                    score -= 0.5
+                    break
 
         # Trigger example phrase matching
         for example in skill.trigger_examples:

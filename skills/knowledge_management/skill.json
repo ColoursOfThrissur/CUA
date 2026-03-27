@@ -1,14 +1,16 @@
 {
   "name": "knowledge_management",
   "category": "productivity",
-  "description": "Code snippet storage, note-taking, and knowledge organization.",
+  "description": "Save and retrieve code snippets and personal notes. NOT for financial analysis, market data, or morning market briefs.",
   "trigger_examples": [
     "save this code snippet",
     "store this note",
     "find code examples for",
     "retrieve my notes about",
     "organize my code library",
-    "search my snippets"
+    "search my snippets",
+    "save a note about",
+    "create a note"
   ],
   "preferred_tools": [
     "LocalCodeSnippetLibraryTool",

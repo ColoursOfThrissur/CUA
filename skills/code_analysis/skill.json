@@ -1,0 +1,30 @@
+{
+  "name": "code_analysis",
+  "category": "development",
+  "description": "Analyse Python code for complexity, issues, dependencies, and change impact. Review files before evolution, find refactor candidates, detect dead code and bare excepts.",
+  "trigger_examples": [
+    "analyse this file",
+    "review the code in",
+    "what's wrong with",
+    "check code quality",
+    "find issues in",
+    "complexity of",
+    "refactor candidates in",
+    "dead code in",
+    "dependencies of",
+    "what imports this file",
+    "is this file well tested",
+    "code review for",
+    "maintainability score",
+    "which functions are too complex"
+  ],
+  "preferred_tools": ["CodeAnalysisTool"],
+  "required_tools": [],
+  "preferred_connectors": [],
+  "input_types": ["file_path", "tool_name", "context"],
+  "output_types": ["metrics", "issues", "dependencies", "change_impact", "code_review"],
+  "verification_mode": "output_validation",
+  "risk_level": "low",
+  "ui_renderer": "default",
+  "fallback_strategy": "direct_tool_routing"
+}

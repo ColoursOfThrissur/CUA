@@ -27,6 +27,51 @@ class ToolRegistryManager:
         self.tools_dir = Path(tools_dir)
         self.registry_path.parent.mkdir(exist_ok=True)
     
+    def sync_from_live(self, registry) -> Dict:
+        """Sync registry from live tool instances — no LLM needed, always accurate."""
+        results = {"synced": [], "failed": [], "timestamp": datetime.now().isoformat()}
+        for tool in getattr(registry, 'tools', []):
+            try:
+                tool_name = tool.__class__.__name__
+                if tool_name in self.DISABLED_TOOLS:
+                    continue
+                # Use instance name for MCP adapters
+                inst_name = getattr(tool, 'name', None)
+                if callable(inst_name):
+                    inst_name = tool_name
+                name = inst_name or tool_name
+
+                caps = tool.get_capabilities() or {}
+                operations = {}
+                for op_name, cap in caps.items():
+                    operations[op_name] = {
+                        "parameters": [p.name for p in cap.parameters],
+                        "required": [p.name for p in cap.parameters if p.required],
+                        "description": cap.description,
+                        "safety_level": cap.safety_level.value.upper(),
+                    }
+
+                # Find source file
+                import inspect
+                try:
+                    source_file = inspect.getfile(tool.__class__)
+                except Exception:
+                    source_file = ""
+
+                tool_data = {
+                    "name": name,
+                    "description": getattr(tool, 'description', ''),
+                    "operations": operations,
+                    "source_file": source_file,
+                    "status": "active",
+                }
+                self.update_tool(tool_data)
+                results["synced"].append(name)
+            except Exception as e:
+                results["failed"].append({"tool": tool.__class__.__name__, "error": str(e)})
+        results["count"] = len(results["synced"])
+        return results
+
     def sync_all_tools(self, llm_client) -> Dict:
         """Sync all tools using LLM to analyze code"""
         results = {"synced": [], "failed": [], "timestamp": datetime.now().isoformat()}
@@ -184,8 +229,25 @@ Respond with only valid JSON."""
         if "tools" not in registry:
             registry["tools"] = {}
 
+        existing = registry["tools"].get(tool_name, {})
         merged = dict(tool_data)
         merged["last_updated"] = datetime.now().isoformat()
+
+        # Version: increment if capabilities changed, else keep existing
+        old_hash = existing.get("capability_hash", "")
+        new_hash = self._capability_hash(tool_data)
+        merged["capability_hash"] = new_hash
+        if old_hash and old_hash != new_hash:
+            merged["version"] = (existing.get("version") or 1) + 1
+        else:
+            merged["version"] = existing.get("version") or 1
+
+        # Status: preserve existing unless explicitly set
+        merged["status"] = tool_data.get("status") or existing.get("status") or "active"
+
+        # Reputation: preserve existing score, don't overwrite with None
+        if "reputation_score" not in tool_data:
+            merged["reputation_score"] = existing.get("reputation_score", 0.5)
 
         # Remove stale aliases that point to the same source file.
         source_norm = str(merged.get("source_file", "")).replace("\\", "/")
@@ -202,6 +264,13 @@ Respond with only valid JSON."""
             json.dump(registry, f, indent=2)
 
         return True
+
+    @staticmethod
+    def _capability_hash(tool_data: Dict) -> str:
+        """SHA1 of sorted operation names — changes when capabilities are added/removed."""
+        import hashlib
+        ops = sorted((tool_data.get("operations") or {}).keys())
+        return hashlib.sha1("|".join(ops).encode()).hexdigest()[:12]
 
     def prune_tools_not_in_sources(self, keep_sources: List[str]) -> int:
         """Remove registry entries whose source_file is not in keep_sources."""
