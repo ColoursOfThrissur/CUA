@@ -376,7 +376,7 @@ class ToolEvolutionOrchestrator:
         Chunk evolution strategy for large tools (>8KB).
         Extracts only target_functions, evolves each in isolation (~150 lines),
         then stitches back into the original file.
-        Falls back to full-file generation if no target_functions specified.
+        Auto-extracts target_functions from proposal if not specified.
         """
         import ast as _ast
         import textwrap as _tw
@@ -392,9 +392,16 @@ class ToolEvolutionOrchestrator:
         elif sandbox_error:
             error_ctx = f"\nPREVIOUS SANDBOX ERROR (fix this):\n{sandbox_error[:400]}\n"
 
+        # Auto-extract target_functions from proposal if not specified
         if not target:
-            logger.warning("_chunk_evolve: no target_functions — cannot chunk, returning current code")
-            return current_code
+            target = self._extract_target_functions_from_proposal(proposal, current_code)
+            if not target:
+                logger.warning("_chunk_evolve: no target_functions found — falling back to all handlers")
+                target = self._extract_all_handlers(current_code)
+            if not target:
+                logger.error("_chunk_evolve: no handlers found in code")
+                return current_code
+            logger.info(f"_chunk_evolve: auto-extracted {len(target)} target functions: {target}")
 
         try:
             tree = _ast.parse(current_code)
@@ -417,9 +424,10 @@ class ToolEvolutionOrchestrator:
 
             fn_source = "\n".join(lines[fn_node.lineno - 1:fn_node.end_lineno])
 
-            prompt = f"""{constraint_block}
-
-Rewrite ONLY this function. Return ONLY the function code, nothing else.
+            # Build comprehensive prompt with constraint block at top
+            constraint_section = f"{constraint_block}\n\n" if constraint_block else ""
+            
+            prompt = f"""{constraint_section}TASK: Rewrite ONLY this function. Return ONLY the function code, nothing else.
 Do NOT include class definition, imports, or any other code.
 
 Function: {fn_name}
@@ -429,15 +437,21 @@ Changes: {'; '.join(proposal.get('changes', []))}
 Current implementation:
 {fn_source}
 
-CRITICAL:
+CRITICAL REQUIREMENTS:
 - Keep method name {fn_name} and signature unchanged
-- Use ONLY self.services.X for operations
-- Return dict with 'success' key
+- Use ONLY self.services.X for operations (NO direct self.X calls)
+- Return dict with 'success' key: {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
 - Keep under 30 lines
-- NO imports"""
+- NO imports, NO class definition
+- Follow all constraints listed above"""
 
             try:
                 response = self.llm_client._call_llm(prompt, temperature=0.2, max_tokens=800, expect_json=False)
+                
+                if not response or len(response.strip()) < 20:
+                    logger.warning(f"_chunk_evolve: empty/short response for {fn_name}, skipping")
+                    continue
+                
                 # Extract just the function
                 import re as _re
                 code_block = response
@@ -450,7 +464,12 @@ CRITICAL:
 
                 # Validate it parses and contains the function
                 dedented = _tw.dedent(code_block).strip()
-                _ast.parse(dedented)  # syntax check
+                try:
+                    _ast.parse(dedented)  # syntax check
+                except SyntaxError as syn_err:
+                    logger.warning(f"_chunk_evolve: syntax error in {fn_name}: {syn_err}, skipping")
+                    continue
+                    
                 if f"def {fn_name}(" not in dedented:
                     logger.warning(f"_chunk_evolve: response for {fn_name} missing def, skipping")
                     continue
@@ -465,6 +484,7 @@ CRITICAL:
                         target_node = node
                         break
                 if not target_node:
+                    logger.warning(f"_chunk_evolve: {fn_name} not found in evolved tree, skipping")
                     continue
 
                 normalized = ["    " + l if l else "" for l in dedented.splitlines()]
@@ -477,6 +497,54 @@ CRITICAL:
                 continue
 
         return evolved if evolved != current_code else None
+
+    def _extract_target_functions_from_proposal(self, proposal: dict, current_code: str) -> list:
+        """Extract function names from proposal changes/description."""
+        import re as _re
+        import ast as _ast
+        
+        targets = set()
+        
+        # Extract from changes list
+        for change in (proposal.get('changes') or []):
+            # Look for _handle_X or handler mentions
+            for match in _re.finditer(r'_handle_(\w+)|handler[:\s]+(\w+)', change, _re.IGNORECASE):
+                fn_name = match.group(1) or match.group(2)
+                if fn_name and fn_name.startswith('_handle_'):
+                    targets.add(fn_name)
+                elif fn_name:
+                    targets.add(f'_handle_{fn_name}')
+        
+        # Extract from description
+        desc = proposal.get('description', '')
+        for match in _re.finditer(r'_handle_(\w+)', desc):
+            targets.add(match.group(0))
+        
+        # Validate targets exist in code
+        try:
+            tree = _ast.parse(current_code)
+            valid_targets = []
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef) and node.name in targets:
+                    valid_targets.append(node.name)
+            return valid_targets
+        except Exception:
+            return list(targets)
+    
+    def _extract_all_handlers(self, current_code: str) -> list:
+        """Extract all _handle_* methods from code."""
+        import ast as _ast
+        
+        try:
+            tree = _ast.parse(current_code)
+            handlers = []
+            for node in _ast.walk(tree):
+                if isinstance(node, _ast.FunctionDef):
+                    if node.name.startswith('_handle_') and node.name not in ['__init__', 'execute']:
+                        handlers.append(node.name)
+            return handlers[:5]  # Limit to 5 handlers to avoid overwhelming LLM
+        except Exception:
+            return []
 
     def _select_generator(self):
         """Return the evolution-specific code generator."""
