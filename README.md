@@ -1,13 +1,14 @@
-# CUA — Autonomous Agent System
+# Forge — Autonomous Agent Platform
 
-> **A local-first, self-evolving AI agent built for Qwen 14B via Ollama.**
+> **A local-first, self-evolving AI agent built for Qwen models via Ollama.**
 > Plans tasks, calls tools, detects capability gaps, generates new tools, and improves itself — all on your own hardware, with human approval gates at every critical step.
+> **Now supports Qwen3.5 reasoning models with real-time thinking traces.**
 
 ---
 
 ## Table of contents
 
-- [What CUA does](#what-cua-does)
+- [What Forge does](#what-forge-does)
 - [Quick start](#quick-start)
 - [System architecture](#system-architecture)
 - [Request execution flow](#request-execution-flow)
@@ -30,13 +31,14 @@
 
 ---
 
-## What CUA does
+## What Forge does
 
-CUA is an autonomous agent loop designed to run entirely offline on a local LLM. It:
+Forge is an autonomous agent platform designed to run entirely offline on a local LLM. Desktop automation is one subsystem inside the platform, not the platform itself. It:
 
 - **Plans and executes** multi-step tasks as parallel DAG waves
 - **Routes intelligently** via a 7-skill system with 3-signal scoring and LLM fallback
 - **Calls tools natively** using function calling across 20+ tools
+- **Perceives visually** through a layered vision and planning pipeline tuned for local execution
 - **Detects capability gaps** when tools fail repeatedly and resolves them automatically
 - **Generates and evolves tools** through LLM-driven pipelines with 20-gate AST validation
 - **Repairs evolution failures** via a typed strategy system — infra bugs, context overflow, LLM pattern loops, and blocked dependencies each get a dedicated repair path
@@ -51,7 +53,11 @@ CUA is an autonomous agent loop designed to run entirely offline on a local LLM.
 ## Quick start
 
 ```bash
-# 1. Install Ollama and pull the model
+# 1. Install Ollama and pull a model
+# Option A: Qwen3.5 9B (reasoning model with vision, faster)
+ollama pull qwen3.5:9b
+
+# Option B: Qwen 14B (pure code model, 8GB VRAM)
 ollama pull qwen2.5-coder:14b
 
 # 2. Install Python dependencies
@@ -68,6 +74,8 @@ cd ui && npm install && npm start
 - API docs: `http://localhost:8000/docs`
 
 **Windows:** Use `setup.bat` for first-time setup, then `start.bat` to run.
+
+**Model Selection:** Qwen3.5:9b is the recommended local chat/planning model for vision-heavy tasks.
 
 ---
 
@@ -176,6 +184,30 @@ flowchart TD
     U --> V[GapTracker\npersist if ≥3 occurrences\nconf ≥0.7]
     V --> W[Next autonomy cycle\nCapabilityResolver]
 ```
+
+---
+
+## Computer use orchestration
+
+For desktop automation requests, the `ComputerUseController` manages a specialised Observe→Act→Evaluate→Adapt loop using four internal sub-agents:
+
+```mermaid
+flowchart TD
+    A([Desktop Goal]) --> B[PlannerAgent\nGenerates execution chunk\nVision policy hints]
+    B --> C[ExecutorAgent\nExecutes steps with smart-retry\nState capture before & after]
+    C --> D[VerifierAgent\nObjective success evaluation\nLLM verification on interactions]
+    D --> E{Goal fully\ncomplete?}
+    E -->|No| F{Failure\noccurred?}
+    E -->|Yes| End([Task complete])
+    F -->|No| B
+    F -->|Yes| G[CriticAgent\nRoot cause determination\nGenerates structured adaptation strategy]
+    G --> B
+```
+
+**Key mechanisms:**
+- **Explicit Goal Checking:** The controller uses a final LLM confirmation reflection to determine if the overarching task intent is genuinely achieved instead of trusting raw task chunk completion.
+- **Robust Execution:** `ExecutorAgent` implements adaptive retries mapped explicitly to failure signatures (e.g. refocusing on `window_not_active`, waiting longer on `element_not_found`).
+- **Deductive Adaptation:** `CriticAgent` categorizes interactive errors (`TIMING_ISSUE`, `ENVIRONMENT_CHANGED`, `NO_EFFECT`) to directly instruct the Planner how to regenerate its visual approach.
 
 ---
 
@@ -559,7 +591,7 @@ self.services.has_capability(capability_name)
 ## Project structure
 
 ```
-CUA/
+Forge/
 ├── api/                              # FastAPI routers (30+ files)
 │   ├── server.py                     # Main server + /chat endpoint
 │   ├── bootstrap.py                  # Runtime init + router wiring
@@ -646,7 +678,9 @@ CUA/
 ├── docs/
 │   ├── ARCHITECTURE.md               # Architecture deep-dive
 │   ├── OBSERVABILITY.md              # Observability guide
-│   └── AUTO_EVOLUTION_IMPLEMENTATION.md
+│   ├── SYSTEM_ARCHITECTURE.md        # Runtime and orchestration overview
+│   ├── COMPUTER_USE_TOOLS.md         # Desktop automation subsystem
+│   └── TOOL_CREATION_FLOW_EXPLAINED.md
 │
 ├── ui/src/components/                # React UI (50+ components)
 │
@@ -687,10 +721,13 @@ All variables are validated on startup — missing required config fails fast wi
 
 **Model-aware thresholds:**
 
-| Model type | Confidence threshold | Code generation strategy |
-|-----------|---------------------|--------------------------|
-| Local (Qwen, Mistral) | 0.35 | Qwen multi-stage pipeline |
-| Cloud (GPT, Claude, Gemini) | 0.50 | Single-shot generation |
+| Model type | Confidence threshold | Code generation strategy | Special features |
+|-----------|---------------------|--------------------------|------------------|
+| Local (Qwen, Mistral) | 0.35 | Qwen multi-stage pipeline | — |
+| Reasoning (Qwen3.5) | 0.35 | Qwen multi-stage pipeline | Thinking traces, vision support |
+| Cloud (GPT, Claude, Gemini) | 0.50 | Single-shot generation | — |
+
+**Reasoning Models:** Qwen3.5 and similar reasoning models output to a "thinking" field instead of "response" field. The system automatically detects and extracts from the correct field.
 
 ---
 

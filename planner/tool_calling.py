@@ -4,6 +4,8 @@ import re
 import requests
 from typing import Dict, List, Optional, Any, Tuple
 
+from shared.config.branding import get_assistant_name, get_platform_name
+
 class ToolCallingClient:
     """LLM client with native function calling support"""
 
@@ -14,7 +16,7 @@ class ToolCallingClient:
 
         # Resolve provider from config so tool calling also routes correctly
         try:
-            from core.config_manager import get_config
+            from shared.config.config_manager import get_config
             cfg = get_config()
             self.provider = cfg.llm.provider
             self._api_key = cfg.llm.api_key
@@ -58,7 +60,10 @@ class ToolCallingClient:
             print(f"[DEBUG] Web research skill detected, ensuring summarization tools are available")
         
         # Build messages with system prompt
-        system_content = """You are CUA, an autonomous agent with access to tools. CRITICAL RULES:
+        platform_name = get_platform_name()
+        assistant_name = get_assistant_name()
+        system_content = f"""{assistant_name} is the assistant for {platform_name}, a local autonomous agent platform with access to tools.
+Desktop automation is one subsystem of the platform, not the platform's main identity. CRITICAL RULES:
 1. When user asks you to DO something (open, search, create, list, analyze, summarize, take screenshot), USE TOOLS
 2. ONLY respond conversationally for questions ABOUT what to do (suggestions, recommendations, opinions)
 3. "can you X" or "open X" or "search X" = ACTION = USE TOOLS

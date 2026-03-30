@@ -1,8 +1,8 @@
-# CUA Observability System Documentation
+# Forge Observability Documentation
 
 ## Overview
 
-The CUA observability system provides comprehensive monitoring, tracing, and metrics for the autonomous agent system, with special focus on supporting the upcoming **auto-evolution** feature where the system continuously analyzes and improves its tools.
+The Forge observability system provides comprehensive monitoring, tracing, and metrics for the autonomous agent system, with special focus on supporting the upcoming **auto-evolution** feature where the system continuously analyzes and improves its tools.
 
 ---
 

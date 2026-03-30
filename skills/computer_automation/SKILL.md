@@ -2,45 +2,72 @@
 
 ## Purpose
 
-Use this skill when the user wants local computer actions performed in a controlled way.
+Use this skill for local computer operations and desktop automation with visual feedback.
 
 This skill is for:
 
-- file operations
-- directory inspection
-- local command execution
-- local task automation
-- controlled environment actions that stay within policy
+- **Interactive desktop automation** (open apps, type text, click UI elements)
+- **File operations** (read, write, move, delete)
+- **Directory inspection** (list, search, organize)
+- **Local command execution** (shell commands, scripts)
+- **System control** (window management, process control)
+- **Screen capture and analysis** (screenshots, UI detection)
 
 This skill is not primarily for:
 
-- web research
+- web research or browser-based tasks
 - repository-focused code workflows
-- external integration setup unless clearly local and tool-backed
+- external integration setup unless clearly local
 
 ## Trigger Guidance
 
 Use this skill when the request includes patterns like:
 
-- list files
-- create or edit a file
-- move or organize files
-- run a local command
-- automate a local workflow
-- inspect local system state
+- **Desktop automation**: "open notepad", "launch calculator", "type in application"
+- **File operations**: "list files", "create file", "move files"
+- **System control**: "list windows", "focus window", "kill process"
+- **Screen interaction**: "take screenshot", "click at coordinates", "get mouse position"
+- **Local commands**: "run command", "execute script"
 
 ## Workflow Guidance
 
-1. Identify whether the request is read-only or write-capable.
-2. Prefer least-risk operations first.
-3. Respect current permission and path restrictions.
-4. Break multi-step local actions into explicit steps.
-5. Ask for clarification when the target path or action is ambiguous.
+### For Interactive Desktop Tasks (open apps, type text, click UI)
+
+Default to the smallest tool set that can solve the task:
+
+- `SystemControlTool` for launching/focusing apps and windows
+- `InputAutomationTool` for typing, clicking, and key presses
+- `ScreenPerceptionTool` for screenshots, OCR, and UI inspection
+
+Use `ComputerUseController` only when the task is genuinely multi-step, visually uncertain, or likely to need retries and replanning.
+
+Example: "open notepad and type hello world"
+- Prefer: `SystemControlTool` + `InputAutomationTool`
+- Use `ComputerUseController.automate_task(...)` if the target app/state is uncertain
+- Do not default to `ComputerUseController` for every desktop action
+
+### For Simple File/Command Operations
+
+Use direct tools:
+
+- `FilesystemTool` for file operations
+- `ShellTool` for command execution
+
+### For Complex Desktop Workflows
+
+Use `ComputerUseController` when you need:
+
+- visual feedback loops
+- retry/adaptation on uncertain UI state
+- multi-step interaction across screens/windows
+- verified completion instead of one-shot input actions
 
 ## Preferred Execution Surfaces
 
-- `FilesystemTool`
-- `ShellTool`
+**Priority order:**
+1. `FilesystemTool` / `ShellTool` for direct file and command work
+2. `SystemControlTool`, `InputAutomationTool`, `ScreenPerceptionTool` for focused desktop actions
+3. `ComputerUseController` for complex interactive workflows with feedback/retry needs
 
 ## Verification Guidance
 
@@ -49,34 +76,39 @@ Success is strongest when:
 - expected file or directory changes are observed
 - command execution returns expected output
 - requested artifact exists at the expected path
+- desktop state changed as requested
+- `ComputerUseController` reports verified success with screenshot confirmation when used
 
 ## Failure Interpretation
 
 Common failure modes:
 
-- blocked path or policy restriction
-- ambiguous target location
-- missing local capability
-- command execution error
-- write limit or file size restrictions
+- **Visual mismatch**: App did not open or text was not typed
+- **Blocked path**: Policy restriction or missing permissions
+- **Ambiguous target**: Unclear which window/element to interact with
+- **Missing capability**: Required tool or feature not available
+- **Command error**: Execution failed or returned error code
 
 ## Output Expectations
 
 Prefer outputs such as:
 
+- automation result with verification status
 - file operation summary
 - directory listing
 - command result
-- execution trace
+- execution trace with screenshots
 - change confirmation
 
 ## Fallback Strategy
 
 If automation cannot proceed safely:
 
-- explain the blocking condition
-- fall back to direct tool routing only if still policy-compliant
-- record the missing or blocked capability path
+- try direct desktop primitives before escalating to the controller
+- let `ComputerUseController` adapt and retry only for complex workflows
+- explain the blocking condition when still failing
+- fall back to direct tool routing only if policy-compliant
+- record the missing or blocked capability
 
 ## Managed Tool Updates
 - Added `BenchmarkRunnerTool` for operations: run_benchmark_suite, add_benchmark_case, remove_benchmark_case.

@@ -1,0 +1,279 @@
+{
+  "qwen3-vl:8b": {
+    "1. Vision + JSON Speed (Simple)": {
+      "success": true,
+      "duration_ms": 13144,
+      "response_length": 0,
+      "thinking_length": 135,
+      "is_valid_json": true,
+      "parsed_json": {
+        "active_app": "Library",
+        "visible_elements": [
+          "Library",
+          "Store",
+          "Community",
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ]
+      },
+      "content_preview": "{\n  \"active_app\": \"Library\",\n  \"visible_elements\": [\"Library\", \"Store\", \"Community\", \"Counter-Strike 2\", \"Dota 2\", \"Team Fortress 2\"]\n}"
+    },
+    "2. Screenshot Analysis - UI Element Detection": {
+      "success": true,
+      "duration_ms": 5227,
+      "response_length": 0,
+      "thinking_length": 232,
+      "is_valid_json": true,
+      "parsed_json": {
+        "buttons": [
+          {
+            "text": "Library",
+            "state": "active"
+          },
+          {
+            "text": "Store",
+            "state": "inactive"
+          },
+          {
+            "text": "Community",
+            "state": "inactive"
+          }
+        ],
+        "text_fields": [
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ],
+        "active_element": "Library"
+      },
+      "content_preview": "{\"buttons\": [{\"text\": \"Library\", \"state\": \"active\"}, {\"text\": \"Store\", \"state\": \"inactive\"}, {\"text\": \"Community\", \"state\": \"inactive\"}], \"text_fields\": [\"Counter-Strike 2\", \"Dota 2\", \"Team Fortress 2\"], \"active_element\": \"Library\"}"
+    },
+    "3. Complex Vision JSON - Multi-field Structure": {
+      "success": true,
+      "duration_ms": 13700,
+      "response_length": 0,
+      "thinking_length": 1064,
+      "is_valid_json": true,
+      "parsed_json": {
+        "visual_state": {
+          "active_window": "Steam - Library",
+          "layout_type": "horizontal navigation bar with vertical list of games",
+          "color_scheme": "light"
+        },
+        "elements": [
+          {
+            "type": "button/text/list",
+            "text": "Library",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "button/text/list",
+            "text": "Store",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "button/text/list",
+            "text": "Community",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "button/text/list",
+            "text": "Counter-Strike 2",
+            "position": "middle",
+            "interactive": true
+          },
+          {
+            "type": "button/text/list",
+            "text": "Dota 2",
+            "position": "middle",
+            "interactive": true
+          },
+          {
+            "type": "button/text/list",
+            "text": "Team Fortress 2",
+            "position": "middle",
+            "interactive": true
+          }
+        ],
+        "actions_available": [
+          "open game",
+          "view details",
+          "play",
+          "manage library"
+        ],
+        "current_focus": "Library"
+      },
+      "content_preview": "{\n  \"visual_state\": {\n    \"active_window\": \"Steam - Library\",\n    \"layout_type\": \"horizontal navigation bar with vertical list of games\",\n    \"color_scheme\": \"light\"\n  },\n  \"elements\": [\n    {\n      \"type\": \"button/text/list\",\n      \"text\": \"Library\",\n      \"position\": \"top\",\n      \"interactive\": tr"
+    },
+    "4. Vision Accuracy - JSON Compliance": {
+      "success": true,
+      "duration_ms": 6196,
+      "response_length": 0,
+      "thinking_length": 284,
+      "is_valid_json": true,
+      "parsed_json": {
+        "library_button": {
+          "found": true,
+          "text": "Library",
+          "state": "active"
+        },
+        "store_button": {
+          "found": true,
+          "text": "Store",
+          "state": "inactive"
+        },
+        "game_list": [
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ],
+        "total_games": 3
+      },
+      "content_preview": "{\n  \"library_button\": {\n    \"found\": true,\n    \"text\": \"Library\",\n    \"state\": \"active\"\n  },\n  \"store_button\": {\n    \"found\": true,\n    \"text\": \"Store\",\n    \"state\": \"inactive\"\n  },\n  \"game_list\": [\n    \"Counter-Strike 2\",\n    \"Dota 2\",\n    \"Team Fortress 2\"\n  ],\n  \"total_games\": 3\n}"
+    }
+  },
+  "qwen3.5:9b": {
+    "1. Vision + JSON Speed (Simple)": {
+      "success": true,
+      "duration_ms": 12331,
+      "response_length": 0,
+      "thinking_length": 157,
+      "is_valid_json": true,
+      "parsed_json": {
+        "active_app": "Counter-Strike 2",
+        "visible_elements": [
+          "Steam - Library",
+          "Library",
+          "Store",
+          "Community",
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ]
+      },
+      "content_preview": "{\"active_app\": \"Counter-Strike 2\", \"visible_elements\": [\"Steam - Library\", \"Library\", \"Store\", \"Community\", \"Counter-Strike 2\", \"Dota 2\", \"Team Fortress 2\"]}"
+    },
+    "2. Screenshot Analysis - UI Element Detection": {
+      "success": true,
+      "duration_ms": 4842,
+      "response_length": 0,
+      "thinking_length": 251,
+      "is_valid_json": true,
+      "parsed_json": {
+        "buttons": [
+          {
+            "text": "Library",
+            "state": "active"
+          },
+          {
+            "text": "Store",
+            "state": "inactive"
+          },
+          {
+            "text": "Community",
+            "state": "inactive"
+          }
+        ],
+        "text_fields": [
+          "Steam - Library",
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ],
+        "active_element": "Library"
+      },
+      "content_preview": "{\"buttons\": [{\"text\": \"Library\", \"state\": \"active\"}, {\"text\": \"Store\", \"state\": \"inactive\"}, {\"text\": \"Community\", \"state\": \"inactive\"}], \"text_fields\": [\"Steam - Library\", \"Counter-Strike 2\", \"Dota 2\", \"Team Fortress 2\"], \"active_element\": \"Library\"}"
+    },
+    "3. Complex Vision JSON - Multi-field Structure": {
+      "success": true,
+      "duration_ms": 6923,
+      "response_length": 0,
+      "thinking_length": 747,
+      "is_valid_json": true,
+      "parsed_json": {
+        "visual_state": {
+          "active_window": "Steam - Library",
+          "layout_type": "three-column top navigation with vertical list below",
+          "color_scheme": "light"
+        },
+        "elements": [
+          {
+            "type": "button",
+            "text": "Library",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "button",
+            "text": "Store",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "button",
+            "text": "Community",
+            "position": "top",
+            "interactive": true
+          },
+          {
+            "type": "list_item",
+            "text": "Counter-Strike 2",
+            "position": "middle",
+            "interactive": true
+          },
+          {
+            "type": "list_item",
+            "text": "Dota 2",
+            "position": "middle",
+            "interactive": true
+          },
+          {
+            "type": "list_item",
+            "text": "Team Fortress 2",
+            "position": "middle",
+            "interactive": true
+          }
+        ],
+        "actions_available": [
+          "select game",
+          "launch game",
+          "view game details",
+          "browse store",
+          "browse community"
+        ],
+        "current_focus": "Library"
+      },
+      "content_preview": "{\"visual_state\":{\"active_window\":\"Steam - Library\",\"layout_type\":\"three-column top navigation with vertical list below\",\"color_scheme\":\"light\"},\"elements\":[{\"type\":\"button\",\"text\":\"Library\",\"position\":\"top\",\"interactive\":true},{\"type\":\"button\",\"text\":\"Store\",\"position\":\"top\",\"interactive\":true},{\"ty"
+    },
+    "4. Vision Accuracy - JSON Compliance": {
+      "success": true,
+      "duration_ms": 4793,
+      "response_length": 0,
+      "thinking_length": 226,
+      "is_valid_json": true,
+      "parsed_json": {
+        "library_button": {
+          "found": true,
+          "text": "Library",
+          "state": "active"
+        },
+        "store_button": {
+          "found": true,
+          "text": "Store",
+          "state": "inactive"
+        },
+        "game_list": [
+          "Counter-Strike 2",
+          "Dota 2",
+          "Team Fortress 2"
+        ],
+        "total_games": 3
+      },
+      "content_preview": "{\"library_button\": {\"found\": true, \"text\": \"Library\", \"state\": \"active\"}, \"store_button\": {\"found\": true, \"text\": \"Store\", \"state\": \"inactive\"}, \"game_list\": [\"Counter-Strike 2\", \"Dota 2\", \"Team Fortress 2\"], \"total_games\": 3}"
+    }
+  }
+}

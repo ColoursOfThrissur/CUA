@@ -13,9 +13,22 @@ export const useToast = () => {
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
 
-  const addToast = useCallback((message, type = 'info', duration = 3000) => {
+  const addToast = useCallback((message, type = 'info', duration = 5000) => {
     const id = Date.now();
-    setToasts(prev => [...prev, { id, message, type, duration }]);
+    
+    // Format message if it's an object or too long
+    let formattedMessage = message;
+    if (typeof message === 'object') {
+      // Extract meaningful info from objects
+      if (message.detail) formattedMessage = message.detail;
+      else if (message.message) formattedMessage = message.message;
+      else if (message.error) formattedMessage = message.error;
+      else formattedMessage = JSON.stringify(message).substring(0, 200) + '...';
+    } else if (typeof message === 'string' && message.length > 200) {
+      formattedMessage = message.substring(0, 200) + '...';
+    }
+    
+    setToasts(prev => [...prev, { id, message: formattedMessage, type, duration }]);
     
     if (duration > 0) {
       setTimeout(() => {

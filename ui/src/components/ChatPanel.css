@@ -617,3 +617,30 @@
 [data-theme="light"] .agent-plan-step.status-running   { background: var(--accent-blue-light); }
 [data-theme="light"] .agent-plan-step.status-completed { background: var(--accent-green-light); }
 [data-theme="light"] .agent-plan-step.status-failed    { background: var(--accent-red-light); }
+
+/* Thinking trace */
+.thinking-trace {
+  padding: 0.875rem 1.125rem;
+  background: rgba(167, 139, 250, 0.08);
+  backdrop-filter: blur(5px);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-radius: var(--radius-lg);
+  max-width: 600px;
+}
+
+.thinking-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #c4b5fd;
+  margin-bottom: 6px;
+}
+
+.thinking-content {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  font-style: italic;
+  opacity: 0.9;
+}

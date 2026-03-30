@@ -1,0 +1,370 @@
+{
+  "audit_summary": {
+    "total_files_estimated": "150+",
+    "core_directory_files": "120+",
+    "api_directory_files": "30+",
+    "critical_issues": [
+      "Massive core/ directory with 120+ files - violates single responsibility",
+      "Mixed concerns: planning, execution, evolution, memory, validation all in core/",
+      "Duplicate functionality: multiple planners, validators, analyzers",
+      "No clear domain boundaries",
+      "Infrastructure mixed with domain logic",
+      "Application layer partially exists but underutilized",
+      "Tool creation/evolution split between core/ and application/",
+      "Services scattered across core/services/ and core/tool_services.py"
+    ],
+    "strengths": [
+      "Good separation of skills system",
+      "Clean tool interface design",
+      "Experimental tools properly isolated",
+      "UI properly separated",
+      "Domain/ and infrastructure/ directories started but incomplete"
+    ]
+  },
+  
+  "proposed_architecture": {
+    "description": "Clean Architecture with DDD principles - Hexagonal/Ports & Adapters pattern",
+    "layers": {
+      "domain": {
+        "description": "Pure business logic, no dependencies on infrastructure",
+        "subdirectories": {
+          "entities": ["Task", "Tool", "Skill", "Gap", "Evolution", "Plan", "Execution"],
+          "value_objects": ["ToolCapability", "SkillScore", "HealthStatus", "EvolutionProposal"],
+          "repositories": ["IToolRepository", "ISkillRepository", "IGapRepository", "IExecutionRepository"],
+          "services": ["ToolEvolutionService", "GapAnalysisService", "SkillRoutingService"],
+          "events": ["ToolCreated", "GapDetected", "ExecutionCompleted", "EvolutionProposed"]
+        }
+      },
+      "application": {
+        "description": "Use cases and orchestration - no infrastructure details",
+        "subdirectories": {
+          "use_cases": {
+            "chat": ["HandleUserMessage", "ExecuteToolChain", "GenerateResponse"],
+            "tool_lifecycle": ["CreateTool", "EvolveTool", "ValidateTool", "ActivateTool"],
+            "planning": ["CreateExecutionPlan", "ReplanOnFailure", "OptimizePlan"],
+            "evolution": ["AnalyzeGaps", "ProposeEvolution", "ApplyEvolution"],
+            "autonomy": ["RunAutonomyCycle", "CheckSystemHealth", "ResolveCapabilities"]
+          },
+          "dto": ["ToolCreationRequest", "EvolutionRequest", "ExecutionResult"],
+          "ports": {
+            "inbound": ["IChatHandler", "IToolManager", "IAutonomyController"],
+            "outbound": ["ILLMProvider", "IStorageProvider", "IValidationProvider"]
+          }
+        }
+      },
+      "infrastructure": {
+        "description": "External concerns - databases, LLMs, file system, APIs",
+        "subdirectories": {
+          "persistence": {
+            "sqlite": ["CUADatabase", "ToolRepository", "SkillRepository", "GapRepository"],
+            "file_storage": ["ToolFileStorage", "SkillFileStorage", "MemoryStorage"]
+          },
+          "llm": {
+            "providers": ["OllamaProvider", "OpenAIProvider", "AnthropicProvider"],
+            "adapters": ["LLMGateway", "PromptBuilder", "ResponseParser"]
+          },
+          "validation": {
+            "ast": ["ASTValidator", "ArchitectureValidator", "SecurityValidator"],
+            "sandbox": ["UnifiedSandboxRunner", "IsolationManager"]
+          },
+          "messaging": ["EventBus", "WebSocketBroadcaster"],
+          "external": ["MCPProcessManager", "HTTPClient", "ShellExecutor"]
+        }
+      },
+      "api": {
+        "description": "HTTP/WebSocket interface - thin adapter layer",
+        "subdirectories": {
+          "rest": {
+            "chat": ["chat_router", "message_handler"],
+            "tools": ["tools_router", "tool_management_router"],
+            "evolution": ["evolution_router", "auto_evolution_router"],
+            "autonomy": ["autonomy_router", "health_router"],
+            "observability": ["observability_router", "metrics_router"]
+          },
+          "websocket": ["trace_ws", "autonomy_ws"],
+          "middleware": ["error_handler", "correlation_context", "auth"],
+          "dto": ["request_models", "response_models"]
+        }
+      }
+    }
+  },
+
+  "file_reorganization": {
+    "domain_layer": {
+      "domain/entities/": [
+        "task.py (exists - enhance)",
+        "tool.py (new - from core/tool_registry_manager.py logic)",
+        "skill.py (new - from core/skills/models.py)",
+        "gap.py (new - from core/gap_detector.py CapabilityGap)",
+        "evolution.py (new - from core/evolution_queue.py)",
+        "plan.py (new - from core/plan_schema.py)",
+        "execution.py (new - from core/execution_engine.py ExecutionState)"
+      ],
+      "domain/value_objects/": [
+        "tool_capability.py (move from tools/)",
+        "skill_score.py (new - from core/skills/selector.py)",
+        "health_status.py (new - from core/baseline_health_checker.py)",
+        "evolution_proposal.py (new - from core/proposal_types.py)",
+        "circuit_state.py (new - from core/circuit_breaker.py)"
+      ],
+      "domain/repositories/": [
+        "repositories.py (exists - enhance with interfaces)",
+        "tool_repository.py (new interface)",
+        "skill_repository.py (new interface)",
+        "gap_repository.py (new interface)",
+        "execution_repository.py (new interface)"
+      ],
+      "domain/services/": [
+        "tool_evolution_service.py (pure logic from core/tool_evolution/)",
+        "gap_analysis_service.py (pure logic from core/gap_detector.py)",
+        "skill_routing_service.py (pure logic from core/skills/selector.py)",
+        "capability_resolution_service.py (pure logic from core/capability_resolver.py)"
+      ],
+      "domain/events/": [
+        "tool_events.py (ToolCreated, ToolEvolved, ToolActivated)",
+        "gap_events.py (GapDetected, GapResolved)",
+        "execution_events.py (ExecutionStarted, ExecutionCompleted, ExecutionFailed)"
+      ]
+    },
+
+    "application_layer": {
+      "application/use_cases/chat/": [
+        "handle_user_message.py (from api/chat_handler.py logic)",
+        "execute_tool_chain.py (from core/execution_engine.py)",
+        "generate_response.py (from api/chat/response_formatter.py)"
+      ],
+      "application/use_cases/tool_lifecycle/": [
+        "create_tool.py (orchestrate core/tool_creation/flow.py)",
+        "evolve_tool.py (orchestrate core/tool_evolution/flow.py)",
+        "validate_tool.py (orchestrate validation pipeline)",
+        "activate_tool.py (orchestrate approval + activation)"
+      ],
+      "application/use_cases/planning/": [
+        "create_plan.py (exists - enhance)",
+        "replan_steps.py (exists - enhance)",
+        "optimize_plan.py (new - from core/task_planner.py logic)"
+      ],
+      "application/use_cases/evolution/": [
+        "analyze_gaps.py (refactor from application/evolution/gap_analyzer.py)",
+        "propose_evolution.py (from core/tool_evolution/proposal_generator.py)",
+        "apply_evolution.py (from core/tool_evolution/flow.py)"
+      ],
+      "application/use_cases/autonomy/": [
+        "run_autonomy_cycle.py (from core/coordinated_autonomy_engine.py)",
+        "check_system_health.py (from core/baseline_health_checker.py)",
+        "resolve_capabilities.py (from core/capability_resolver.py)"
+      ],
+      "application/dto/": [
+        "tool_dto.py (ToolCreationRequest, ToolEvolutionRequest, ToolInfo)",
+        "execution_dto.py (ExecutionRequest, ExecutionResult, PlanStep)",
+        "evolution_dto.py (EvolutionProposal, GapInfo, ConstraintProfile)"
+      ],
+      "application/ports/": [
+        "inbound_ports.py (IChatHandler, IToolManager, IAutonomyController)",
+        "outbound_ports.py (ILLMProvider, IStorageProvider, IValidationProvider)"
+      ]
+    },
+
+    "infrastructure_layer": {
+      "infrastructure/persistence/sqlite/": [
+        "cua_database.py (from core/cua_db.py)",
+        "tool_repository_impl.py (implement domain interface)",
+        "skill_repository_impl.py (implement domain interface)",
+        "gap_repository_impl.py (implement domain interface)",
+        "execution_repository_impl.py (implement domain interface)"
+      ],
+      "infrastructure/persistence/file_storage/": [
+        "tool_file_storage.py (from core/tool_services.py storage logic)",
+        "skill_file_storage.py (from core/skills/loader.py)",
+        "memory_storage.py (from core/strategic_memory.py, core/unified_memory.py)"
+      ],
+      "infrastructure/llm/providers/": [
+        "ollama_provider.py (from planner/ollama_client.py)",
+        "openai_provider.py (new - if needed)",
+        "anthropic_provider.py (new - if needed)"
+      ],
+      "infrastructure/llm/adapters/": [
+        "llm_gateway.py (exists - enhance)",
+        "prompt_builder.py (exists - enhance)",
+        "response_parser.py (new - from planner/plan_parser.py logic)"
+      ],
+      "infrastructure/validation/ast/": [
+        "ast_validator.py (from core/ast_validator.py)",
+        "architecture_validator.py (from core/architecture_contract.py)",
+        "security_validator.py (from core/enhanced_code_validator.py)",
+        "behavior_validator.py (from core/behavior_validator.py)"
+      ],
+      "infrastructure/validation/sandbox/": [
+        "unified_sandbox_runner.py (exists)",
+        "isolation_manager.py (new - from core/secure_executor.py)"
+      ],
+      "infrastructure/messaging/": [
+        "event_bus.py (from core/event_bus.py)",
+        "websocket_broadcaster.py (from api/trace_ws.py)"
+      ],
+      "infrastructure/external/": [
+        "mcp_process_manager.py (from core/mcp_process_manager.py)",
+        "http_client.py (from core/services/http_service.py)",
+        "shell_executor.py (from core/services/shell_service.py)"
+      ]
+    },
+
+    "api_layer": {
+      "api/rest/chat/": [
+        "chat_router.py (from api/server.py /chat endpoint)",
+        "message_handler.py (from api/chat_handler.py)"
+      ],
+      "api/rest/tools/": [
+        "tools_router.py (consolidate api/tools_api.py, api/tool_list_api.py)",
+        "tool_management_router.py (from api/tools_management_api.py)",
+        "tool_creation_router.py (from api/pending_tools_api.py)"
+      ],
+      "api/rest/evolution/": [
+        "evolution_router.py (from api/tool_evolution_api.py)",
+        "auto_evolution_router.py (from api/auto_evolution_api.py)"
+      ],
+      "api/rest/autonomy/": [
+        "autonomy_router.py (from api/agent_api.py)",
+        "health_router.py (new - system health endpoints)"
+      ],
+      "api/rest/observability/": [
+        "observability_router.py (from api/observability_api.py)",
+        "metrics_router.py (from api/metrics_api.py)"
+      ],
+      "api/websocket/": [
+        "trace_ws.py (from api/trace_ws.py)",
+        "autonomy_ws.py (new - dedicated autonomy stream)"
+      ],
+      "api/middleware/": [
+        "error_handler.py (new - centralized error handling)",
+        "correlation_context.py (from core/correlation_context.py)",
+        "auth.py (new - if needed)"
+      ],
+      "api/dto/": [
+        "request_models.py (consolidate all API request models)",
+        "response_models.py (consolidate all API response models)"
+      ]
+    },
+
+    "files_to_consolidate_or_remove": {
+      "duplicate_planners": [
+        "core/task_planner.py",
+        "core/task_planner_clean.py",
+        "core/step_planner.py",
+        "application/planning/create_plan.py"
+      ],
+      "duplicate_validators": [
+        "core/ast_validator.py",
+        "core/enhanced_code_validator.py",
+        "core/behavior_validator.py",
+        "core/validation_pipeline.py",
+        "core/validation_service.py"
+      ],
+      "duplicate_analyzers": [
+        "core/system_analyzer.py",
+        "core/task_analyzer.py",
+        "core/output_analyzer.py",
+        "core/cua_code_analyzer.py",
+        "core/dependency_analyzer.py"
+      ],
+      "duplicate_memory": [
+        "core/strategic_memory.py",
+        "core/unified_memory.py",
+        "core/memory_system.py",
+        "core/conversation_memory.py",
+        "core/improvement_memory.py"
+      ],
+      "duplicate_code_generators": [
+        "core/block_code_generator.py",
+        "core/incremental_code_builder.py",
+        "core/orchestrated_code_generator.py",
+        "core/patch_generator.py"
+      ]
+    }
+  },
+
+  "refactored_gap_analyzer_example": {
+    "description": "Refactor application/evolution/gap_analyzer.py following clean architecture",
+    "new_structure": {
+      "domain/services/gap_analysis_service.py": "Pure business logic for gap analysis",
+      "application/use_cases/evolution/analyze_gaps.py": "Use case orchestration",
+      "infrastructure/llm/adapters/gap_analyzer_llm.py": "LLM-specific implementation",
+      "api/rest/evolution/gap_router.py": "HTTP endpoint (if needed)"
+    }
+  },
+
+  "migration_strategy": {
+    "phase_1_foundation": {
+      "description": "Establish clean architecture structure without breaking existing code",
+      "steps": [
+        "Create new directory structure",
+        "Define domain entities and value objects",
+        "Define repository interfaces",
+        "Define application ports (inbound/outbound)"
+      ],
+      "estimated_files": 30
+    },
+    "phase_2_infrastructure": {
+      "description": "Move infrastructure concerns out of core/",
+      "steps": [
+        "Move database logic to infrastructure/persistence/",
+        "Move LLM clients to infrastructure/llm/",
+        "Move validation to infrastructure/validation/",
+        "Move external integrations to infrastructure/external/"
+      ],
+      "estimated_files": 40
+    },
+    "phase_3_application": {
+      "description": "Extract use cases from core/ and api/",
+      "steps": [
+        "Create use case classes for each major operation",
+        "Move orchestration logic from core/ to application/use_cases/",
+        "Implement application ports",
+        "Wire dependencies via dependency injection"
+      ],
+      "estimated_files": 35
+    },
+    "phase_4_api": {
+      "description": "Simplify API layer to thin adapters",
+      "steps": [
+        "Consolidate routers by feature",
+        "Move business logic to application layer",
+        "Standardize request/response DTOs",
+        "Add middleware for cross-cutting concerns"
+      ],
+      "estimated_files": 20
+    },
+    "phase_5_cleanup": {
+      "description": "Remove duplicates and deprecated code",
+      "steps": [
+        "Consolidate duplicate planners into one",
+        "Consolidate duplicate validators",
+        "Consolidate duplicate analyzers",
+        "Remove unused files",
+        "Update all imports"
+      ],
+      "estimated_files": "Remove 40-50 files"
+    }
+  },
+
+  "benefits": {
+    "testability": "Each layer can be tested independently with mocks",
+    "maintainability": "Clear boundaries make changes predictable",
+    "scalability": "Easy to add new use cases without touching infrastructure",
+    "flexibility": "Swap implementations (e.g., different LLM providers) without changing business logic",
+    "clarity": "Developers immediately understand where code belongs",
+    "reduced_coupling": "Domain logic has zero dependencies on infrastructure"
+  },
+
+  "estimated_final_structure": {
+    "domain/": "~40 files (entities, value objects, services, repositories, events)",
+    "application/": "~35 files (use cases, DTOs, ports)",
+    "infrastructure/": "~40 files (persistence, LLM, validation, external)",
+    "api/": "~20 files (routers, middleware, DTOs)",
+    "tools/": "~20 files (unchanged)",
+    "skills/": "~10 directories (unchanged)",
+    "planner/": "~5 files (minimal, mostly moved to infrastructure/llm)",
+    "updater/": "~7 files (unchanged or moved to application/use_cases/improvement)",
+    "total_reduction": "From 150+ files to ~135 files with clear organization"
+  }
+}

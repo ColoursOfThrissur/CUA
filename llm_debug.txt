@@ -1,0 +1,115 @@
+
+================================================================================
+Interaction 1 at 2026-03-28T22:06:34.499442
+Model: qwen3.5:9b
+
+PROMPT:
+Pick the best skill for this request. Return JSON only: {"skill_name": string, "confidence": 0.0-1.0}
+
+CRITICAL DISTINCTIONS:
+- computer_automation: Desktop apps (Steam, Notepad, Calculator), file operations, system control
+- browser_automation: Web pages, URLs, browser interactions
+- web_research: Search, fetch info from web
+
+SKILLS:
+- browser_automation (automation): Advanced browser automation, web scraping, form interaction, multi-tab control, and interactive web tasks. | examples: "automate this website", "fill out this form", "click on this button" | tools: BrowserAutomationTool, WebAccessTool
+- code_analysis (development): Analyse Python code for complexity, issues, dependencies, and change impact. Review files before evolution, find refactor candidates, detect dead code and bare excepts. | examples: "analyse this file", "review the code in", "what's wrong with" | tools: CodeAnalysisTool
+- code_workspace (development): Code development, repository analysis, testing, script execu
+
+RESPONSE:
+{"skill_name": "computer_automation", "confidence": 1.0}
+
+
+================================================================================
+Interaction 2 at 2026-03-28T22:08:12.143825
+Model: qwen3.5:9b
+
+PROMPT:
+Analyze this user request for ambiguity.
+
+REQUEST: open steam and get the lsit of games i p-lay from library
+
+Does this request reference data that needs to be fetched BEFORE execution?
+
+Examples that NEED enrichment:
+- "save all tools we use" → needs tool list from registry
+- "create report with system metrics" → needs metrics data
+- "list my portfolio stocks" → needs portfolio data
+- "show recent errors" → needs error logs
+- "save config to file" → needs current config data
+
+Examples that DON'T need enrichment:
+- "open notepad" → direct action
+- "list games in Steam" → CUA extracts visually from screen
+- "click the Start button" → direct GUI action
+- "take screenshot" → direct action
+- "open Steam and show library" → visual extraction task
+
+/no_think
+
+Return ONLY JSON:
+{
+  "needs_enrichment": true/false,
+  "reason": "brief explanation",
+  "data_requirements": [
+    {"type": "tool_registry", "query": "list all tools"},
+    {"type": "database", "query": "recent errors"},
+    {"type": "
+
+RESPONSE:
+{
+  "needs_enrichment": true,
+  "reason": "The request asks to list games from the Steam library. While 'open steam' is a direct action, retrieving the specific list of games requires accessing the Steam client's data, which is not directly extractable via simple visual extraction like 'list games in Steam' (which the examples suggest is a CUA task). The request implies fetching the library data from the application itself or an associated database, similar to 'list my portfolio stocks' needing portfolio data. However, the examples show 'list games in Steam' as NOT needing enrichment because it's visual extraction. This request says 'get the lsit of games i p-lay from library' after opening Steam. This is effectively asking for the library content. If the system can visually read the library list after opening Steam, it doesn't need external data enrichment. But if it needs to fetch from a database or registry, it does. Given the example 'list games in Steam' -> CUA extracts visually, this is likely the same. However, 'i p-lay' implies a personal library list which might need fetching from the app's data structure. The examples distinguish between visual extraction ('list games in Steam') and data fetching ('list my portfolio stocks'). 'list games i play from library' is functionally 'list games in Steam' once opened. So it might not need enrichment. But the instruction says 'get the lsit of games i p-lay from library' after 'open steam'. This is an action that requires the Steam client to be open and then extracting data. If CUA can extract from screen, it doesn't need enrichment. If it needs to query an API or registry, it does. The example 'list games in Steam' is explicitly 'DON'T need enrichment'. This request is very similar. Therefore, it likely does NOT need enrichment because it can be done via visual extraction or direct GUI interaction after opening the app. But wait, the examples say 'list games in Steam' -> CUA extracts visually. This request is 'open s
+
+
+================================================================================
+Interaction 3 at 2026-03-28T22:08:22.896301
+Model: qwen3.5:9b
+
+PROMPT:
+Plan executable steps for this goal.
+
+GOAL: open steam and get the lsit of games i p-lay from library
+
+SKILL CONTEXT:
+Skill: computer_automation (computer)
+ONLY USE THESE TOOLS: BenchmarkRunnerTool, ComputerUseController, ContextSummarizerTool, FilesystemTool, InputAutomationTool, ScreenPerceptionTool, ShellTool, SystemControlTool — do NOT use any other tool
+Instructions: Use this skill for local computer operations and desktop automation with visual feedback. This skill is for: - **Interactive desktop automation** (open apps, type text, click UI elements)
+Verification: side_effect_observed
+Expected outputs: file_operation_result, directory_listing, command_output, script_output, execution_trace, file_info, summary_report, screenshot, window_list, process_list, automation_result
+
+AVAILABLE TOOLS:
+FilesystemTool:
+  read_file(path)  # Read the full content of a file.
+  write_file(path, content)  # Write content to a file, creating parent directories if needed.
+  append_file(path, content
+
+RESPONSE:
+{"goal": "open steam and get the lsit of games i p-lay from library", "complexity": "simple", "estimated_duration": 45, "requires_approval": false, "steps": [{"step_id": "step_1", "tool_name": "ComputerUseController", "operation": "automate_task", "parameters": {"intent": "open steam and get the list of games i play from library", "max_adapt_cycles": 3, "context": ""}, "dependencies": [], "expected_output": "window_list, command_output, automation_result", "description": "Open Steam application and navigate to the library view to display the list of installed games", "domain": "computer", "retry_on_failure": true}]}
+
+
+================================================================================
+Interaction 4 at 2026-03-28T22:14:00.477037
+Model: qwen3.5:9b
+
+PROMPT:
+Plan executable steps for this goal.
+
+GOAL: open steam and get the lsit of games i p-lay from library
+
+SKILL CONTEXT:
+Skill: computer_automation (computer)
+ONLY USE THESE TOOLS: BenchmarkRunnerTool, ComputerUseController, ContextSummarizerTool, FilesystemTool, InputAutomationTool, ScreenPerceptionTool, ShellTool, SystemControlTool — do NOT use any other tool
+Instructions: Use this skill for local computer operations and desktop automation with visual feedback. This skill is for: - **Interactive desktop automation** (open apps, type text, click UI elements)
+Verification: side_effect_observed
+Expected outputs: file_operation_result, directory_listing, command_output, script_output, execution_trace, file_info, summary_report, screenshot, window_list, process_list, automation_result
+
+AVAILABLE TOOLS:
+FilesystemTool:
+  read_file(path)  # Read the full content of a file.
+  write_file(path, content)  # Write content to a file, creating parent directories if needed.
+  append_file(path, content
+
+RESPONSE:
+{"goal": "open steam and get the lsit of games i p-lay from library", "complexity": "simple", "estimated_duration": 30, "requires_approval": false, "steps": [{"step_id": "step_1", "tool_name": "ComputerUseController", "operation": "automate_task", "parameters": {"intent": "open Steam and display the library list of games"}, "dependencies": [], "expected_output": "screen_analysis", "description": "Automatically open the Steam application and navigate to the library view to display the list of installed games.", "domain": "computer", "retry_on_failure": true}]}
+

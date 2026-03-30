@@ -1,0 +1,706 @@
+================================================================================
+PHASE 8: Import Update Script
+================================================================================
+
+Project root: c:\Users\derik\Desktop\Derik\Projects\CUA
+Finding Python files...
+Found 374 Python files to process
+
+[OK] start.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] api\agent_api.py: 2 imports updated
+  - from core\.strategic_memory import -> from infrastructure.persistence.file_storage.strategic_memory import
+  - from core\.autonomous_agent import -> from application.use_cases.autonomy.autonomous_agent import
+
+[OK] api\auto_evolution_api.py: 2 imports updated
+  - from core\.auto_evolution_orchestrator import -> from application.use_cases.autonomy.auto_evolution_orchestrator import
+  - from core\.auto_evolution_trigger import -> from application.use_cases.autonomy.auto_evolution_trigger import
+
+[OK] api\bootstrap.py: 31 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.session_permissions import -> from domain.policies.session_permissions import
+  - from core\.decision_engine import -> from domain.services.decision_engine import
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.state_machine import -> from domain.value_objects.state_machine import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.unified_memory import -> from infrastructure.persistence.file_storage.unified_memory import
+  - from core\.conversation_memory import -> from infrastructure.persistence.file_storage.conversation_memory import
+  - from core\.memory_system import -> from infrastructure.persistence.file_storage.memory_system import
+  - from core\.improvement_memory import -> from infrastructure.persistence.file_storage.improvement_memory import
+  - from core\.metrics_scheduler import -> from infrastructure.metrics.scheduler import
+  - from core\.error_recovery import -> from infrastructure.failure_handling.error_recovery import
+  - from core\.circuit_breaker import -> from infrastructure.failure_handling.circuit_breaker import
+  - from core\.plan_validator import -> from infrastructure.validation.plan_validator_core import
+  - from core\.secure_executor import -> from infrastructure.sandbox.secure_executor import
+  - from core\.service_injector import -> from infrastructure.external.service_injector import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+  - from core\.pending_skills_manager import -> from application.managers.pending_skills_manager import
+  - from core\.pending_services_manager import -> from application.managers.pending_services_manager import
+  - from core\.pending_libraries_manager import -> from application.managers.pending_libraries_manager import
+  - from core\.expansion_mode import -> from application.services.expansion_mode import
+  - from core\.execution_engine import -> from application.use_cases.execution.execution_engine import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+  - from core\.tool_registrar import -> from application.use_cases.tool_lifecycle.tool_registrar import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.tool_evolution\.flow import -> from application.use_cases.tool_lifecycle.tool_evolution_flow import
+  - from core\.autonomous_agent import -> from application.use_cases.autonomy.autonomous_agent import
+  - from core\.coordinated_autonomy_engine import -> from application.use_cases.autonomy.coordinated_autonomy_engine import
+  - from core\.task_planner import -> from application.use_cases.planning.task_planner import
+  - from core\.improvement_loop import -> from application.use_cases.improvement.improvement_loop import
+  - from core\.improvement_scheduler import -> from application.use_cases.improvement.improvement_scheduler import
+
+[OK] api\chat_helpers.py: 9 imports updated
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.decision_engine import -> from domain.services.decision_engine import
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+  - from core\.output_analyzer import -> from infrastructure.analysis.output_analyzer import
+  - from core\.input_validation import -> from infrastructure.validation.input_validator import
+  - from core\.skills\.tool_selector import -> from application.services.tool_selector import
+  - from core\.capability_mapper import -> from application.services.capability_mapper import
+  - from core\.autonomous_agent import -> from application.use_cases.autonomy.autonomous_agent import
+
+[OK] api\circuit_breaker_api.py: 1 imports updated
+  - from core\.circuit_breaker import -> from infrastructure.failure_handling.circuit_breaker import
+
+[OK] api\cleanup_api.py: 2 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+
+[OK] api\credentials_api.py: 1 imports updated
+  - from core\.credential_store import -> from infrastructure.persistence.credential_store import
+
+[OK] api\evolution_chat_api.py: 2 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.agentic_evolution_chat import -> from application.use_cases.evolution.agentic_evolution_chat import
+
+[OK] api\hybrid_api.py: 3 imports updated
+  - from core\.improvement_memory import -> from infrastructure.persistence.file_storage.improvement_memory import
+  - from core\.error_prioritizer import -> from infrastructure.failure_handling.error_prioritizer import
+  - from core\.hybrid_improvement_engine import -> from application.use_cases.improvement.hybrid_improvement_engine import
+
+[OK] api\improvement_api.py: 9 imports updated
+  - from core\.immutable_brain_stem import -> from domain.policies.immutable_brain_stem import
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.capability_graph import -> from domain.services.capability_graph import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.capability_mapper import -> from application.services.capability_mapper import
+  - from core\.expansion_mode import -> from application.services.expansion_mode import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.tool_creation\.flow import -> from application.use_cases.tool_lifecycle.tool_creation_flow import
+
+[OK] api\mcp_api.py: 2 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.credential_store import -> from infrastructure.persistence.credential_store import
+
+[OK] api\metrics_api.py: 2 imports updated
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.metrics_aggregator import -> from infrastructure.metrics.aggregator import
+
+[OK] api\pending_skills_api.py: 1 imports updated
+  - from core\.skills\.loader import -> from application.services.skill_loader import
+
+[OK] api\pending_tools_api.py: 2 imports updated
+  - from core\.llm_test_orchestrator import -> from infrastructure.testing.llm_test_orchestrator import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] api\quality_api.py: 3 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.llm_tool_health_analyzer import -> from infrastructure.analysis.llm_tool_health_analyzer import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+
+[OK] api\server.py: 2 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+  - from core\.input_validation import -> from infrastructure.validation.input_validator import
+
+[OK] api\session_api.py: 2 imports updated
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.memory_system import -> from infrastructure.persistence.file_storage.memory_system import
+
+[OK] api\settings_api.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] api\tools_api.py: 2 imports updated
+  - from core\.tool_execution_logger import -> from infrastructure.logging.tool_execution_logger import
+  - from core\.llm_test_orchestrator import -> from infrastructure.testing.llm_test_orchestrator import
+
+[OK] api\tools_management_api.py: 3 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.tool_execution_logger import -> from infrastructure.logging.tool_execution_logger import
+  - from core\.llm_tool_health_analyzer import -> from infrastructure.analysis.llm_tool_health_analyzer import
+
+[OK] api\tool_evolution_api.py: 5 imports updated
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+  - from core\.dependency_resolver import -> from infrastructure.analysis.dependency_resolver import
+  - from core\.llm_test_orchestrator import -> from infrastructure.testing.llm_test_orchestrator import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+
+[OK] planner\llm_client.py: 9 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.memory_system import -> from infrastructure.persistence.file_storage.memory_system import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.llm_logger import -> from infrastructure.llm.llm_logger import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.tool_creation\.flow import -> from application.use_cases.tool_lifecycle.tool_creation_flow import
+  - from core\.tool_evolution\.flow import -> from application.use_cases.tool_lifecycle.tool_evolution_flow import
+  - from core\.autonomous_agent import -> from application.use_cases.autonomy.autonomous_agent import
+  - from core\.plan_schema import -> from application.dto.plan_schema import
+
+[OK] planner\tool_calling.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] tests\conftest.py: 1 imports updated
+  - from core\.plan_schema import -> from application.dto.plan_schema import
+
+[OK] tools\capability_registry.py: 1 imports updated
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] tools\enhanced_filesystem_tool.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] updater\atomic_applier.py: 5 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.import_resolver import -> from shared.utils.import_resolver import
+  - from core\.staleness_guard import -> from shared.utils.staleness_guard import
+  - from core\.noop_detector import -> from infrastructure.analysis.noop_detector import
+  - from core\.failure_learner import -> from infrastructure.failure_handling.failure_learner import
+
+[OK] updater\orchestrator.py: 1 imports updated
+  - from core\.idempotency_checker import -> from shared.utils.idempotency_checker import
+
+[OK] updater\risk_scorer.py: 2 imports updated
+  - from core\.dependency_analyzer import -> from infrastructure.analysis.dependency_analyzer import
+  - from core\.failure_learner import -> from infrastructure.failure_handling.failure_learner import
+
+[OK] updater\sandbox_runner.py: 1 imports updated
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+
+[OK] api\chat\response_formatter.py: 1 imports updated
+  - from core\.output_analyzer import -> from infrastructure.analysis.output_analyzer import
+
+[OK] api\chat\tool_executor.py: 1 imports updated
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] application\dto\proposal_generator.py: 10 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.interface_protector import -> from domain.policies.interface_protector import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.output_validator import -> from infrastructure.validation.output_validator import
+  - from core\.incremental_code_builder import -> from infrastructure.code_generation.incremental_builder import
+  - from core\.orchestrated_code_generator import -> from infrastructure.code_generation.orchestrated_generator import
+  - from core\.code_integrator import -> from infrastructure.code_generation.code_integrator import
+  - from core\.code_critic import -> from infrastructure.code_generation.code_critic import
+  - from core\.pending_libraries_manager import -> from application.managers.pending_libraries_manager import
+  - from core\.step_planner import -> from application.use_cases.planning.step_planner import
+
+[OK] application\evolution\context_builder.py: 4 imports updated
+  - from core\.skills\.execution_context import -> from domain.value_objects.execution_context import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.skills\.registry import -> from application.services.skill_registry import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\evolution\evolution_orchestrator.py: 7 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.llm_tool_health_analyzer import -> from infrastructure.analysis.llm_tool_health_analyzer import
+  - from core\.llm_test_orchestrator import -> from infrastructure.testing.llm_test_orchestrator import
+  - from core\.expansion_mode import -> from application.services.expansion_mode import
+  - from core\.tool_evolution\.flow import -> from application.use_cases.tool_lifecycle.tool_evolution_flow import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\evolution\evolution_processor.py: 12 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+  - from core\.capability_graph import -> from domain.services.capability_graph import
+  - from core\.skills\.execution_context import -> from domain.value_objects.execution_context import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.improvement_memory import -> from infrastructure.persistence.file_storage.improvement_memory import
+  - from core\.llm_test_orchestrator import -> from infrastructure.testing.llm_test_orchestrator import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+  - from core\.skills\.registry import -> from application.services.skill_registry import
+  - from core\.expansion_mode import -> from application.services.expansion_mode import
+  - from core\.tool_creation\.flow import -> from application.use_cases.tool_lifecycle.tool_creation_flow import
+  - from core\.tool_evolution\.flow import -> from application.use_cases.tool_lifecycle.tool_evolution_flow import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\evolution\evolution_scanner.py: 9 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.llm_tool_health_analyzer import -> from infrastructure.analysis.llm_tool_health_analyzer import
+  - from core\.capability_mapper import -> from application.services.capability_mapper import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\evolution\gap_analyzer.py: 3 imports updated
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] application\evolution\gap_analyzer_clean.py: 3 imports updated
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] application\evolution\learning_manager.py: 3 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.improvement_memory import -> from infrastructure.persistence.file_storage.improvement_memory import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\managers\pending_evolutions_manager.py: 2 imports updated
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.tool_evolution_logger import -> from infrastructure.logging.tool_evolution_logger import
+
+[OK] application\services\auto_skill_detection.py: 1 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] application\services\expansion_mode.py: 1 imports updated
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] application\services\loop_controller.py: 7 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.idempotency_checker import -> from shared.utils.idempotency_checker import
+  - from core\.failure_classifier import -> from infrastructure.failure_handling.failure_classifier import
+  - from core\.retry_coordinator import -> from infrastructure.failure_handling.retry_coordinator import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+  - from core\.baseline_health_checker import -> from application.use_cases.autonomy.baseline_health_checker import
+  - from core\.evolution_bridge import -> from application.use_cases.evolution.evolution_bridge import
+
+[OK] application\services\semantic_router.py: 1 imports updated
+  - from core\.integration_knowledge import -> from application.services.integration_knowledge import
+
+[OK] application\services\skill_context_hydrator.py: 2 imports updated
+  - from core\.skills\.execution_context import -> from domain.value_objects.execution_context import
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] application\services\skill_gap_reporter.py: 1 imports updated
+  - from core\.pending_skills_manager import -> from application.managers.pending_skills_manager import
+
+[OK] application\services\skill_loader.py: 2 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+
+[OK] application\services\skill_registry.py: 2 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+  - from core\.skills\.loader import -> from application.services.skill_loader import
+
+[OK] application\services\skill_selector.py: 3 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.decision_engine import -> from domain.services.decision_engine import
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] application\services\tool_selector.py: 2 imports updated
+  - from core\.decision_engine import -> from domain.services.decision_engine import
+  - from core\.skills\.execution_context import -> from domain.value_objects.execution_context import
+
+[OK] application\services\vision_manager.py: 2 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] application\use_cases\autonomy\autonomous_agent.py: 5 imports updated
+  - from core\.strategic_memory import -> from infrastructure.persistence.file_storage.strategic_memory import
+  - from core\.memory_system import -> from infrastructure.persistence.file_storage.memory_system import
+  - from core\.execution_engine import -> from application.use_cases.execution.execution_engine import
+  - from core\.task_planner import -> from application.use_cases.planning.task_planner import
+  - from core\.web_research_agent import -> from application.use_cases.chat.web_research_agent import
+
+[OK] application\use_cases\autonomy\auto_evolution_orchestrator.py: 1 imports updated
+  - from core\.auto_evolution_orchestrator_adapter import -> from application.use_cases.autonomy.auto_evolution_adapter import
+
+[OK] application\use_cases\autonomy\auto_evolution_trigger.py: 2 imports updated
+  - from core\.circuit_breaker import -> from infrastructure.failure_handling.circuit_breaker import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\use_cases\autonomy\coordinated_autonomy_engine.py: 10 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.capability_resolver import -> from domain.services.capability_resolver import
+  - from core\.tool_quality_analyzer import -> from domain.services.tool_quality_analyzer import
+  - from core\.pending_tools_manager import -> from application.managers.pending_tools_manager import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+  - from core\.auto_evolution_orchestrator import -> from application.use_cases.autonomy.auto_evolution_orchestrator import
+  - from core\.baseline_health_checker import -> from application.use_cases.autonomy.baseline_health_checker import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\use_cases\autonomy\execution_supervisor.py: 2 imports updated
+  - from core\.execution_engine import -> from application.use_cases.execution.execution_engine import
+  - from core\.task_planner import -> from application.use_cases.planning.task_planner import
+
+[OK] application\use_cases\chat\web_research_agent.py: 2 imports updated
+  - from core\.strategic_memory import -> from infrastructure.persistence.file_storage.strategic_memory import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] application\use_cases\evolution\agentic_evolution_chat.py: 1 imports updated
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+
+[OK] application\use_cases\evolution\evolution_bridge.py: 2 imports updated
+  - from core\.proposal_types import -> from domain.value_objects.proposal_types import
+  - from core\.evolution_controller import -> from application.use_cases.evolution.evolution_controller import
+
+[OK] application\use_cases\evolution\evolution_controller.py: 16 imports updated
+  - from core\.idempotency_checker import -> from shared.utils.idempotency_checker import
+  - from core\.staleness_guard import -> from shared.utils.staleness_guard import
+  - from core\.refactoring_permissions import -> from domain.policies.refactoring_permissions import
+  - from core\.interface_protector import -> from domain.policies.interface_protector import
+  - from core\.growth_budget import -> from domain.policies.growth_budget import
+  - from core\.capability_graph import -> from domain.services.capability_graph import
+  - from core\.risk_weighted_decision import -> from domain.services.risk_weighted_decision import
+  - from core\.proposal_types import -> from domain.value_objects.proposal_types import
+  - from core\.system_analyzer import -> from infrastructure.analysis.system_analyzer import
+  - from core\.failure_classifier import -> from infrastructure.failure_handling.failure_classifier import
+  - from core\.patch_generator import -> from infrastructure.code_generation.patch_generator import
+  - from core\.expansion_mode import -> from application.services.expansion_mode import
+  - from core\.tool_creation\.flow import -> from application.use_cases.tool_lifecycle.tool_creation_flow import
+  - from core\.baseline_health_checker import -> from application.use_cases.autonomy.baseline_health_checker import
+  - from core\.self_reflector import -> from application.use_cases.improvement.self_reflector import
+  - from core\.proposal_generator import -> from application.dto.proposal_generator import
+
+[OK] application\use_cases\evolution\tool_analyzer.py: 5 imports updated
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.tool_evolution_logger import -> from infrastructure.logging.tool_evolution_logger import
+  - from core\.llm_tool_health_analyzer import -> from infrastructure.analysis.llm_tool_health_analyzer import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+
+[OK] application\use_cases\evolution\tool_proposal_generator.py: 2 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+
+[OK] application\use_cases\execution\execution_engine.py: 4 imports updated
+  - from core\.error_recovery import -> from infrastructure.failure_handling.error_recovery import
+  - from core\.verification_engine import -> from infrastructure.validation.verification_engine import
+  - from core\.execution_supervisor import -> from application.use_cases.autonomy.execution_supervisor import
+  - from core\.task_planner import -> from application.use_cases.planning.task_planner import
+
+[OK] application\use_cases\improvement\hybrid_improvement_engine.py: 7 imports updated
+  - from core\.improvement_memory import -> from infrastructure.persistence.file_storage.improvement_memory import
+  - from core\.system_analyzer import -> from infrastructure.analysis.system_analyzer import
+  - from core\.error_prioritizer import -> from infrastructure.failure_handling.error_prioritizer import
+  - from core\.test_validator import -> from infrastructure.validation.test_validator import
+  - from core\.patch_generator import -> from infrastructure.code_generation.patch_generator import
+  - from core\.context_optimizer import -> from application.services.context_optimizer import
+  - from core\.proposal_generator import -> from application.dto.proposal_generator import
+
+[OK] application\use_cases\improvement\improvement_analytics.py: 3 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] application\use_cases\improvement\improvement_loop.py: 11 imports updated
+  - from core\.llm_logger import -> from infrastructure.llm.llm_logger import
+  - from core\.system_analyzer import -> from infrastructure.analysis.system_analyzer import
+  - from core\.task_analyzer import -> from infrastructure.analysis.task_analyzer import
+  - from core\.sandbox_tester import -> from infrastructure.sandbox.sandbox_tester import
+  - from core\.patch_generator import -> from infrastructure.code_generation.patch_generator import
+  - from core\.pending_tools_manager import -> from application.managers.pending_tools_manager import
+  - from core\.loop_controller import -> from application.services.loop_controller import
+  - from core\.plan_history import -> from application.use_cases.planning.plan_history import
+  - from core\.improvement_analytics import -> from application.use_cases.improvement.improvement_analytics import
+  - from core\.hybrid_improvement_engine import -> from application.use_cases.improvement.hybrid_improvement_engine import
+  - from core\.proposal_generator import -> from application.dto.proposal_generator import
+
+[OK] application\use_cases\improvement\self_reflector.py: 4 imports updated
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.gap_tracker import -> from domain.services.gap_tracker import
+  - from core\.capability_mapper import -> from application.services.capability_mapper import
+  - from core\.insight_enricher import -> from application.services.insight_enricher import
+
+[OK] application\use_cases\planning\plan_history.py: 3 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] application\use_cases\planning\task_planner.py: 3 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.unified_memory import -> from infrastructure.persistence.file_storage.unified_memory import
+  - from core\.task_planner_clean import -> from application.use_cases.planning.task_planner_clean import
+
+[OK] application\use_cases\planning\task_planner_clean.py: 3 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.strategic_memory import -> from infrastructure.persistence.file_storage.strategic_memory import
+  - from core\.unified_memory import -> from infrastructure.persistence.file_storage.unified_memory import
+
+[OK] application\use_cases\tool_lifecycle\skill_aware_creation.py: 1 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] application\use_cases\tool_lifecycle\tool_creation_flow.py: 12 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.tool_creation_logger import -> from infrastructure.logging.tool_creation_logger import
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+  - from core\.dependency_resolver import -> from infrastructure.analysis.dependency_resolver import
+  - from core\.tool_creation\.failure_classifier import -> from infrastructure.failure_handling.creation_failure_classifier import
+  - from core\.tool_creation\.validator import -> from infrastructure.validation.ast.tool_creation_validator import
+  - from core\.tool_creation\.sandbox_runner import -> from infrastructure.sandbox.creation_sandbox_runner import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+  - from core\.service_generation_integration import -> from infrastructure.external.service_generation_integration import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.tool_creation\.skill_aware_creation import -> from application.use_cases.tool_lifecycle.tool_creation_skill_aware import
+  - from core\.evolution_queue import -> from application.use_cases.evolution.evolution_queue import
+
+[OK] application\use_cases\tool_lifecycle\tool_evolution_flow.py: 15 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.model_manager import -> from shared.config.model_manager import
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+  - from core\.evolution_constraint_memory import -> from infrastructure.persistence.file_storage.evolution_constraint_memory import
+  - from core\.tool_evolution_logger import -> from infrastructure.logging.tool_evolution_logger import
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+  - from core\.tool_evolution\.failure_classifier import -> from infrastructure.failure_handling.evolution_failure_classifier import
+  - from core\.tool_evolution\.validator import -> from infrastructure.validation.ast.tool_evolution_validator import
+  - from core\.tool_evolution\.sandbox_runner import -> from infrastructure.sandbox.evolution_sandbox_runner import
+  - from core\.tool_evolution\.code_generator import -> from infrastructure.code_generation.tool_evolution_generator import
+  - from core\.service_generation_integration import -> from infrastructure.external.service_generation_integration import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.tool_evolution\.analyzer import -> from application.use_cases.evolution.tool_analyzer import
+  - from core\.tool_evolution\.proposal_generator import -> from application.use_cases.evolution.tool_proposal_generator import
+
+[OK] application\use_cases\tool_lifecycle\tool_orchestrator.py: 7 imports updated
+  - from core\.tool_services import -> from infrastructure.services.tool_services import
+  - from core\.storage_broker import -> from infrastructure.persistence.storage_broker import
+  - from core\.tool_execution_logger import -> from infrastructure.logging.tool_execution_logger import
+  - from core\.circuit_breaker import -> from infrastructure.failure_handling.circuit_breaker import
+  - from core\.validation_service import -> from infrastructure.validation.validation_service import
+  - from core\.verification_engine import -> from infrastructure.validation.verification_engine import
+  - from core\.parameter_resolution import -> from application.services.parameter_resolution import
+
+[OK] domain\policies\immutable_brain_stem.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] domain\policies\session_permissions.py: 2 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.immutable_brain_stem import -> from domain.policies.immutable_brain_stem import
+
+[OK] domain\services\capability_resolver.py: 4 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.gap_detector import -> from domain.services.gap_detector import
+  - from core\.decision_engine import -> from domain.services.decision_engine import
+  - from core\.integration_knowledge import -> from application.services.integration_knowledge import
+
+[OK] domain\services\tool_quality_analyzer.py: 2 imports updated
+  - from core\.tool_execution_logger import -> from infrastructure.logging.tool_execution_logger import
+  - from core\.pending_evolutions_manager import -> from application.managers.pending_evolutions_manager import
+
+[OK] domain\value_objects\execution_context.py: 1 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] domain\value_objects\skill_context.py: 1 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] domain\value_objects\state_machine.py: 1 imports updated
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] infrastructure\analysis\cua_code_analyzer.py: 1 imports updated
+  - from core\.service_registry import -> from infrastructure.external.service_registry import
+
+[OK] infrastructure\analysis\llm_tool_health_analyzer.py: 1 imports updated
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+
+[OK] infrastructure\analysis\system_analyzer.py: 2 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+
+[OK] infrastructure\analysis\task_analyzer.py: 10 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.feature_deduplicator import -> from shared.utils.feature_deduplicator import
+  - from core\.feature_tracker import -> from shared.utils.feature_tracker import
+  - from core\.feature_gap_analyzer import -> from domain.services.feature_gap_analyzer import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.dependency_analyzer import -> from infrastructure.analysis.dependency_analyzer import
+  - from core\.abstract_method_checker import -> from infrastructure.analysis.abstract_method_checker import
+  - from core\.failure_learner import -> from infrastructure.failure_handling.failure_learner import
+  - from core\.output_validator import -> from infrastructure.validation.output_validator import
+  - from core\.method_extractor import -> from infrastructure.code_generation.method_extractor import
+
+[OK] infrastructure\code_generation\block_generator.py: 3 imports updated
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.code_integrator import -> from infrastructure.code_generation.code_integrator import
+  - from core\.method_extractor import -> from infrastructure.code_generation.method_extractor import
+
+[OK] infrastructure\code_generation\code_integrator.py: 2 imports updated
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.method_extractor import -> from infrastructure.code_generation.method_extractor import
+
+[OK] infrastructure\code_generation\incremental_builder.py: 2 imports updated
+  - from core\.code_integrator import -> from infrastructure.code_generation.code_integrator import
+  - from core\.method_extractor import -> from infrastructure.code_generation.method_extractor import
+
+[OK] infrastructure\code_generation\method_extractor.py: 1 imports updated
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+
+[OK] infrastructure\code_generation\orchestrated_generator.py: 5 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.block_code_generator import -> from infrastructure.code_generation.block_generator import
+  - from core\.code_integrator import -> from infrastructure.code_generation.code_integrator import
+  - from core\.method_extractor import -> from infrastructure.code_generation.method_extractor import
+
+[OK] infrastructure\code_generation\patch_generator.py: 1 imports updated
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+
+[OK] infrastructure\code_generation\spec_generator.py: 5 imports updated
+  - from core\.capability_graph import -> from domain.services.capability_graph import
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+  - from core\.skills\.registry import -> from application.services.skill_registry import
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+  - from core\.skill_aware_creation import -> from application.use_cases.tool_lifecycle.skill_aware_creation import
+
+[OK] infrastructure\code_generation\tool_evolution_generator.py: 3 imports updated
+  - from core\.tool_services import -> from infrastructure.services.tool_services import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+
+[OK] infrastructure\external\service_generation_integration.py: 2 imports updated
+  - from core\.service_generator import -> from infrastructure.external.service_generator import
+  - from core\.pending_services_manager import -> from application.managers.pending_services_manager import
+
+[OK] infrastructure\external\service_validation.py: 1 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+
+[OK] infrastructure\failure_handling\evolution_failure_classifier.py: 1 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\llm\llm_gateway.py: 1 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+
+[OK] infrastructure\llm\llm_test_logger.py: 3 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\logging\chat_history_logger.py: 2 imports updated
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\logging\tool_creation_logger.py: 1 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+
+[OK] infrastructure\logging\tool_evolution_logger.py: 1 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+
+[OK] infrastructure\logging\tool_execution_logger.py: 1 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+
+[OK] infrastructure\metrics\aggregator.py: 2 imports updated
+  - from core\.sqlite_utils import -> from infrastructure.persistence.sqlite.utils import
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\metrics\scheduler.py: 1 imports updated
+  - from core\.metrics_aggregator import -> from infrastructure.metrics.aggregator import
+
+[OK] infrastructure\persistence\storage_broker.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] infrastructure\sandbox\creation_sandbox_runner.py: 3 imports updated
+  - from core\.tool_creation_logger import -> from infrastructure.logging.tool_creation_logger import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] infrastructure\sandbox\evolution_sandbox_runner.py: 3 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+  - from core\.dependency_checker import -> from infrastructure.analysis.dependency_checker import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] infrastructure\sandbox\sandbox_tester.py: 3 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.logging_system import -> from infrastructure.logging.logging_system import
+  - from core\.patch_generator import -> from infrastructure.code_generation.patch_generator import
+
+[OK] infrastructure\sandbox\secure_executor.py: 3 imports updated
+  - from core\.session_permissions import -> from domain.policies.session_permissions import
+  - from core\.plan_validator import -> from infrastructure.validation.plan_validator_core import
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] infrastructure\sandbox\unified_sandbox_runner.py: 2 imports updated
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+  - from core\.tool_orchestrator import -> from application.use_cases.tool_lifecycle.tool_orchestrator import
+
+[OK] infrastructure\services\credential_service.py: 1 imports updated
+  - from core\.credential_store import -> from infrastructure.persistence.credential_store import
+
+[OK] infrastructure\services\tool_services.py: 5 imports updated
+  - from core\.services\.credential_service import -> from infrastructure.services.credential_service import
+  - from core\.services\.filesystem_service import -> from infrastructure.services.filesystem_service import
+  - from core\.services\.json_service import -> from infrastructure.services.json_service import
+  - from core\.services\.llm_service import -> from infrastructure.services.llm_service import
+  - from core\.storage_broker import -> from infrastructure.persistence.storage_broker import
+
+[OK] infrastructure\testing\llm_test_orchestrator.py: 1 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+
+[OK] infrastructure\validation\plan_validator_core.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] infrastructure\code_generation\tool_creation\default_generator.py: 4 imports updated
+  - from core\.tool_creation\.validator import -> from infrastructure.validation.ast.tool_creation_validator import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+  - from core\.skills\.registry import -> from application.services.skill_registry import
+  - from core\.skill_aware_creation import -> from application.use_cases.tool_lifecycle.skill_aware_creation import
+
+[OK] infrastructure\code_generation\tool_creation\qwen_generator.py: 3 imports updated
+  - from core\.tool_creation_logger import -> from infrastructure.logging.tool_creation_logger import
+  - from core\.tool_creation\.validator import -> from infrastructure.validation.ast.tool_creation_validator import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+
+[OK] infrastructure\persistence\file_storage\evolution_constraint_memory.py: 1 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\persistence\file_storage\strategic_memory.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] infrastructure\persistence\file_storage\unified_memory.py: 2 imports updated
+  - from core\.strategic_memory import -> from infrastructure.persistence.file_storage.strategic_memory import
+  - from core\.unified_memory import -> from infrastructure.persistence.file_storage.unified_memory import
+
+[OK] infrastructure\persistence\sqlite\logging.py: 1 imports updated
+  - from core\.correlation_context import -> from shared.utils.correlation_context import
+
+[OK] infrastructure\persistence\sqlite\utils.py: 1 imports updated
+  - from core\.sqlite_logging import -> from infrastructure.persistence.sqlite.logging import
+
+[OK] infrastructure\validation\ast\tool_creation_validator.py: 4 imports updated
+  - from core\.skills\.models import -> from domain.entities.skill_models import
+  - from core\.cua_code_analyzer import -> from infrastructure.analysis.cua_code_analyzer import
+  - from core\.tool_creation\.code_generator -> from infrastructure.code_generation.tool_creation
+  - from core\.service_validation import -> from infrastructure.external.service_validation import
+
+[OK] infrastructure\validation\ast\tool_evolution_validator.py: 2 imports updated
+  - from core\.cua_code_analyzer import -> from infrastructure.analysis.cua_code_analyzer import
+  - from core\.service_validation import -> from infrastructure.external.service_validation import
+
+[OK] shared\config\model_manager.py: 1 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+
+[OK] tools\computer_use\computer_use_controller.py: 1 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+
+[OK] tools\computer_use\planner_agent.py: 1 imports updated
+  - from core\.model_manager import -> from shared.config.model_manager import
+
+[OK] tools\experimental\CodeAnalysisTool.py: 1 imports updated
+  - from core\.tool_registry_manager import -> from application.use_cases.tool_lifecycle.tool_registry_manager import
+
+[OK] tools\experimental\MCPAdapterTool.py: 2 imports updated
+  - from core\.config_manager import -> from shared.config.config_manager import
+  - from core\.credential_store import -> from infrastructure.persistence.credential_store import
+
+[OK] tools\experimental\SystemHealthTool.py: 1 imports updated
+  - from core\.circuit_breaker import -> from infrastructure.failure_handling.circuit_breaker import
+
+================================================================================
+SUMMARY:
+  Files processed: 374
+  Files modified: 131
+  Total imports updated: 423
+================================================================================
+
+[SUCCESS] Import update complete!
+
+Next steps:
+1. Run tests: pytest -q
+2. Check for any remaining 'from core.' imports
+3. Fix any import errors manually

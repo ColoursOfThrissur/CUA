@@ -104,7 +104,7 @@ function ToolModeChat({ onModeChange }) {
           className="tool-suggest-btn"
           onClick={fetchSuggestion}
           disabled={loading || suggesting}
-          title="Let CUA propose the next most important tool based on observed capability gaps"
+          title="Let Forge propose the next most important tool based on observed capability gaps"
         >
           {suggesting ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
           {suggesting ? 'Thinking…' : suggestionIndex === 0 ? 'Suggest tool for me' : 'Next suggestion'}

@@ -5,6 +5,8 @@ import json
 import asyncio
 import logging
 
+from shared.utils.trace_bridge import set_broadcast_trace_sync
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -42,11 +44,12 @@ async def broadcast_trace(trace_type: str, message: str, status: str = "in_progr
         return
     
     try:
+        import time
         event = {
             "type": trace_type,
             "message": message,
             "status": status,
-            "timestamp": asyncio.get_running_loop().time(),
+            "timestamp": time.time(),
             "details": details or {},
         }
     except Exception as e:
@@ -100,3 +103,6 @@ def broadcast_trace_sync(trace_type: str, message: str, status: str = "in_progre
             finally:
                 new_loop.close()
         threading.Thread(target=_run, daemon=True).start()
+
+
+set_broadcast_trace_sync(broadcast_trace_sync)

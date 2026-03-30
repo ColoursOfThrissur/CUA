@@ -1,8 +1,8 @@
-# CUA System Architecture
+# Forge System Architecture
 
 ## Overview
 
-CUA is a self-improving autonomous agent system with native tool calling, automatic dependency management, and real-time observability.
+Forge is a self-improving autonomous agent system with native tool calling, automatic dependency management, and real-time observability.
 
 ## System Layers
 
@@ -333,7 +333,7 @@ App.js
 Header (mode switcher, tools management, observability, theme toggle)
     ↓
 MainCanvas (renders mode-specific content)
-    ├── CUA Chat (ChatPanel)
+    ├── Forge Chat (ChatPanel)
     ├── Tools Mode (ToolModeChat)
     ├── Evolution Mode (EvolutionMode)
     ├── Tools Management (ToolsManagementPage)

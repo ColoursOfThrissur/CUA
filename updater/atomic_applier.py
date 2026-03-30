@@ -18,13 +18,13 @@ class AtomicApplier:
         self.backup_dir.mkdir(exist_ok=True)
         
         # PHASE 3C: Initialize failure learner
-        from core.failure_learner import FailureLearner
+        from infrastructure.failure_handling.failure_learner import FailureLearner
         self.failure_learner = FailureLearner()
         
         # REFINEMENT: Initialize guards
-        from core.staleness_guard import StalenessGuard
-        from core.import_resolver import ImportResolver
-        from core.noop_detector import NoOpDetector
+        from shared.utils.staleness_guard import StalenessGuard
+        from shared.utils.import_resolver import ImportResolver
+        from infrastructure.analysis.noop_detector import NoOpDetector
         self.staleness_guard = StalenessGuard()
         self.import_resolver = ImportResolver()
         self.noop_detector = NoOpDetector()
@@ -227,7 +227,7 @@ class AtomicApplier:
     
     def _get_protected_checksums(self) -> Dict[str, str]:
         """Get checksums of all protected files"""
-        from core.config_manager import get_config
+        from shared.config.config_manager import get_config
         config = get_config()
         
         checksums = {}

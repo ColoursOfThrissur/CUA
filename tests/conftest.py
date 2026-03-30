@@ -44,7 +44,7 @@ def temp_workspace(tmp_path):
 @pytest.fixture
 def sample_plan():
     """Sample execution plan for testing"""
-    from core.plan_schema import ExecutionPlanSchema, PlanStepSchema
+    from application.dto.plan_schema import ExecutionPlanSchema, PlanStepSchema
     return ExecutionPlanSchema(
         plan_id="test_plan_001",
         analysis="Test plan for unit testing",

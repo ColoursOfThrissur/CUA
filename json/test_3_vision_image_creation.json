@@ -1,0 +1,16 @@
+{
+  "test_name": "Vision/Image Creation",
+  "test_description": "This test evaluates the model's ability to generate image data. Since the model cannot create raster images (PNG, JPG), this test focuses on generating a vector image using SVG.",
+  "input": {
+    "task": "Create a simple SVG image of a smiley face."
+  },
+  "output": {
+    "image_data_type": "SVG",
+    "image_code": "<svg width=\"200\" height=\"200\" xmlns=\"http://www.w3.org/2000/svg\">\n  <!-- Yellow circle for the face -->\n  <circle cx=\"100\" cy=\"100\" r=\"90\" fill=\"yellow\" stroke=\"black\" stroke-width=\"2\" />\n\n  <!-- Left eye -->\n  <circle cx=\"70\" cy=\"80\" r=\"10\" fill=\"black\" />\n\n  <!-- Right eye -->\n  <circle cx=\"130\" cy=\"80\" r=\"10\" fill=\"black\" />\n\n  <!-- Smile -->\n  <path d=\"M 70 130 A 60 60, 0, 0, 0, 130 130\" fill=\"none\" stroke=\"black\" stroke-width=\"5\" />\n</svg>",
+    "explanation": "The model generated SVG code that draws a smiley face. The code includes a yellow circle for the face, two black circles for the eyes, and a curved path for the smile."
+  },
+  "evaluation": {
+    "accuracy": "100% - The generated SVG code is valid and correctly renders a smiley face.",
+    "estimated_time_taken": "4 seconds"
+  }
+}

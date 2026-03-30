@@ -6,7 +6,7 @@ import os
 import uvicorn
 
 from api.server import app
-from core.config_manager import get_config
+from shared.config.config_manager import get_config
 
 
 def main():

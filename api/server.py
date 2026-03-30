@@ -25,12 +25,13 @@ import time
 
 from api.bootstrap import build_runtime, include_router_bundle, load_router_bundle
 from api.chat_handler import ChatRequest, ChatResponse, create_chat_handler
+from shared.config.branding import get_platform_name
 
 
 router_bundle = load_router_bundle()
 ROUTERS_AVAILABLE = router_bundle.routers_available
 
-app = FastAPI(title="CUA Autonomous Agent API")
+app = FastAPI(title=f"{get_platform_name()} API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,10 +43,10 @@ app.add_middleware(
 
 include_router_bundle(app, router_bundle)
 
-from core.input_validation import InputSizeLimitMiddleware
+from infrastructure.validation.input_validator import InputSizeLimitMiddleware
 app.add_middleware(InputSizeLimitMiddleware, max_body_size=10 * 1024 * 1024)
 
-from core.correlation_context import CorrelationContextManager
+from shared.utils.correlation_context import CorrelationContextManager
 
 @app.middleware("http")
 async def correlation_middleware(request: Request, call_next):
@@ -125,7 +126,7 @@ async def clear_cache():
 
 @app.get("/events")
 async def event_stream(request: Request):
-    from core.event_bus import get_event_bus
+    from infrastructure.messaging.event_bus import get_event_bus
     event_bus = get_event_bus()
 
     async def event_generator():
@@ -164,7 +165,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connections.append(websocket)
 
-    from core.event_bus import get_event_bus
+    from infrastructure.messaging.event_bus import get_event_bus
     event_bus = get_event_bus()
 
     async def send_event(event):
@@ -239,7 +240,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    print("Starting CUA Autonomous Agent API Server...")
+    print(f"Starting {get_platform_name()} API server...")
     if llm_client:
         print("Warming up LLM model...")
         llm_client.warmup_model()

@@ -1,0 +1,15 @@
+{
+  "test_name": "Coding and Structured Output",
+  "test_description": "This test evaluates the model's ability to write a Python script for a given task and to structure the output in a JSON format.",
+  "input": {
+    "task": "Write a Python function that takes a list of numbers and returns a dictionary with the sum, mean, and median of the list."
+  },
+  "output": {
+    "code": "import statistics\n\ndef calculate_stats(numbers):\n    if not numbers:\n        return {'sum': 0, 'mean': 0, 'median': 0}\n\n    total = sum(numbers)\n    mean = statistics.mean(numbers)\n    median = statistics.median(numbers)\n\n    return {'sum': total, 'mean': mean, 'median': median}",
+    "explanation": "The Python script defines a function `calculate_stats` that uses the `statistics` module to correctly calculate the sum, mean, and median. It also includes a check for an empty list."
+  },
+  "evaluation": {
+    "accuracy": "100% - The generated Python code is correct and follows best practices. The function works as requested.",
+    "estimated_time_taken": "5 seconds"
+  }
+}

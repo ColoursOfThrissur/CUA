@@ -545,7 +545,7 @@ class CodeAnalysisTool(BaseTool):
 
         # Try registry
         try:
-            from core.tool_registry_manager import ToolRegistryManager
+            from application.use_cases.tool_lifecycle.tool_registry_manager import ToolRegistryManager
             resolved = ToolRegistryManager().resolve_source_file(file_path)
             if resolved and resolved.exists():
                 return resolved

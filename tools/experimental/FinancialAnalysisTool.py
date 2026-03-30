@@ -371,7 +371,7 @@ class FinancialAnalysisTool(BaseTool):
 
             # Portfolio value and weights
             latest = {t: float(price_df[t].iloc[-1]) for t in price_df.columns}
-            values = {t: latest[t] * holdings.get(t, 0) for t in price_df.columns}
+            values = {t: latest[t] * float(holdings.get(t, 0)) for t in price_df.columns}
             total_value = sum(values.values())
             weights = {t: round(v / total_value * 100, 1) for t, v in values.items()} if total_value > 0 else {}
 
@@ -600,11 +600,12 @@ class FinancialAnalysisTool(BaseTool):
             pd_ = (price_data.get("data") or {}).get(t, {})
             tech = technicals.get(t, {})
             sent = (sentiment.get("data") or {}).get(t, {})
-            shares = holdings.get(t, 0)
-            value = round(pd_.get("current_price", 0) * shares, 2) if shares else None
-            line = f"{t}: price={pd_.get('current_price')} change={pd_.get('price_change_pct')}%"
+            shares = float(holdings.get(t, 0))
+            current_price = pd_.get("current_price", 0)
+            value = round(current_price * shares, 2) if shares and current_price else None
+            line = f"{t}: price={current_price} change={pd_.get('price_change_pct')}%"
             if value:
-                line += f" value=${value:,.0f}"
+                line += f" value=₹{value:,.0f}"
             line += f" | RSI={tech.get('rsi')} trend={tech.get('trend')} macd={tech.get('macd_crossover')}"
             line += f" | sentiment={sent.get('sentiment')} score={sent.get('score')}"
             if t in earnings_flags:

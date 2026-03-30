@@ -34,6 +34,10 @@ class CapabilityRegistry:
             self._qualified_capabilities[f"{tool_name}.{cap_name}"] = capability
             self._performance_history[cap_name] = []
 
+    def set_orchestrator(self, orchestrator) -> None:
+        """Inject the shared runtime orchestrator so callers reuse one execution channel."""
+        self._orchestrator = orchestrator
+
     def unregister_tool(self, tool_name: str) -> bool:
         """Unregister a tool and all of its capabilities."""
         if tool_name not in self._tools:
@@ -102,7 +106,7 @@ class CapabilityRegistry:
         # Use the orchestrator for compatibility across mixed tool execute signatures
         # (some tools expect params dict; some expect kwargs; some use BaseTool.execute_capability).
         if self._orchestrator is None:
-            from core.tool_orchestrator import ToolOrchestrator
+            from application.use_cases.tool_lifecycle.tool_orchestrator import ToolOrchestrator
             self._orchestrator = ToolOrchestrator(registry=self)
 
         orchestration = self._orchestrator.execute_tool_step(
@@ -150,7 +154,7 @@ class CapabilityRegistry:
 
         start_time = time.time()
         if self._orchestrator is None:
-            from core.tool_orchestrator import ToolOrchestrator
+            from application.use_cases.tool_lifecycle.tool_orchestrator import ToolOrchestrator
             self._orchestrator = ToolOrchestrator(registry=self)
 
         orchestration = self._orchestrator.execute_tool_step(
@@ -230,6 +234,10 @@ class CapabilityRegistry:
                 return tool
         
         return None
+
+    def get_tool(self, tool_name: str):
+        """Compatibility alias for older callers still using get_tool()."""
+        return self.get_tool_by_name(tool_name)
 
 # Global registry instance
 registry = CapabilityRegistry()

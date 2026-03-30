@@ -642,6 +642,20 @@ class WebAccessTool(BaseTool):
         links = []
         for href, label_html in matches:
             absolute = urljoin(base_url, href)
+            
+            parsed_url = urlparse(absolute)
+            host = (parsed_url.netloc or "").lower()
+            if host in {"www.google.com", "google.com"} and parsed_url.path == "/url":
+                from urllib.parse import parse_qs
+                qs = parse_qs(parsed_url.query)
+                if "q" in qs and qs["q"]:
+                    absolute = qs["q"][0]
+            elif host in {"duckduckgo.com"} and parsed_url.path == "/l/":
+                from urllib.parse import parse_qs
+                qs = parse_qs(parsed_url.query)
+                if "uddg" in qs and qs["uddg"]:
+                    absolute = qs["uddg"][0]
+                    
             if not (absolute.startswith("http://") or absolute.startswith("https://")):
                 continue
             label = re.sub(r"<[^>]+>", " ", label_html)

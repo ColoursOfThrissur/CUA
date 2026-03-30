@@ -31,7 +31,7 @@ class UpdateOrchestrator:
         self.atomic_applier = AtomicApplier(repo_path)
         
         # Idempotency checker
-        from core.idempotency_checker import IdempotencyChecker
+        from shared.utils.idempotency_checker import IdempotencyChecker
         self.idempotency_checker = IdempotencyChecker()
     
     def propose_update(self, patch_content: str, changed_files: list, diff_lines: int, description: str = "") -> UpdateResult:

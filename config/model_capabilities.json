@@ -1,4 +1,18 @@
 {
+  "qwen3.5": {
+    "strategy": "multistage",
+    "max_lines": 300,
+    "min_confidence": 0.35,
+    "is_reasoning_model": true,
+    "uses_thinking_field": true,
+    "description": "Qwen3.5 series - vision + code reasoning model with extended context"
+  },
+  "qwen2-vl": {
+    "strategy": "multistage",
+    "max_lines": 200,
+    "min_confidence": 0.35,
+    "description": "Qwen2-VL series - vision + code"
+  },
   "qwen": {
     "strategy": "multistage",
     "max_lines": 200,

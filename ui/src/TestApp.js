@@ -3,7 +3,7 @@ import React from 'react';
 function TestApp() {
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial' }}>
-      <h1>CUA Test UI</h1>
+      <h1>Forge Test UI</h1>
       <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
         <button style={{ padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}>
           Chat
@@ -18,7 +18,7 @@ function TestApp() {
       <div style={{ border: '1px solid #ccc', padding: '20px', borderRadius: '4px' }}>
         <h2>Test Chat Interface</h2>
         <div style={{ marginBottom: '10px', padding: '10px', background: '#f8f9fa', borderRadius: '4px' }}>
-          <strong>System:</strong> CUA Test UI is working!
+          <strong>System:</strong> Forge Test UI is working!
         </div>
         <div style={{ display: 'flex', gap: '10px' }}>
           <input 

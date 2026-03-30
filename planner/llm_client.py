@@ -8,7 +8,8 @@ import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
-from core.plan_schema import (
+from shared.config.branding import get_assistant_name, get_platform_name
+from application.dto.plan_schema import (
     ExecutionPlanSchema, 
     validate_plan_json, 
     LLM_PROMPT_TEMPLATE,
@@ -69,6 +70,22 @@ _MODEL_PROFILES: List[tuple] = [
         tokens_json=4096, tokens_code=4096, tokens_conv=2048, tokens_min=512,
         prompt_template="{content}", json_suffix="", system_role="separate",
     )),
+    # Qwen3.5 reasoning models — 32k context, extended output room
+    ("qwen3.5", ModelProfile(
+        tokens_json=4096, tokens_code=4096, tokens_conv=1024, tokens_min=512,
+        prompt_template="qwen_chat",
+        json_suffix="\n\nRespond with valid JSON only:",
+        system_role="inline",
+        special_instructions="You are a reasoning model. Use the thinking field for analysis, then provide the final answer.",
+    )),
+    # Qwen3-VL reasoning models — 16k context (legacy, use qwen3.5 instead)
+    ("qwen3-vl", ModelProfile(
+        tokens_json=4096, tokens_code=4096, tokens_conv=1024, tokens_min=512,
+        prompt_template="qwen_chat",
+        json_suffix="\n\nRespond with valid JSON only:",
+        system_role="inline",
+        special_instructions="You are a reasoning model. Use the thinking field for analysis, then provide the final answer.",
+    )),
     # Qwen (Ollama) — chat template, JSON suffix
     ("qwen", ModelProfile(
         tokens_json=1500, tokens_code=3000, tokens_conv=600, tokens_min=256,
@@ -119,8 +136,8 @@ class LLMClient:
     """LLM client with strict schema validation"""
 
     def __init__(self, max_retries: int = None, model: str = None, ollama_url: str = None, config_path: str = "config.yaml", registry=None):
-        from core.config_manager import get_config
-        from core.llm_logger import LLMLogger
+        from shared.config.config_manager import get_config
+        from infrastructure.llm.llm_logger import LLMLogger
         config = get_config()
 
         self.max_retries = max_retries or config.llm.max_retries
@@ -129,6 +146,7 @@ class LLMClient:
         self.validation_errors = []
         self.registry = registry
         self.llm_logger = LLMLogger()
+        self._thinking_callback = None  # Set by API layer for WebSocket emission
 
         # Response cache for repeated prompts
         self._response_cache = {}
@@ -166,6 +184,28 @@ class LLMClient:
             return GeminiProvider(api_key=api_key, model=self.model, timeout=self.timeout)
         return None  # ollama — handled inline
 
+    def _should_emit_thinking(self) -> bool:
+        """Check if thinking should be emitted (only during agent execution, not internal calls)."""
+        return self._thinking_callback is not None
+    
+    def _emit_thinking_trace(self, thinking: str):
+        """Emit thinking as agent trace via callback."""
+        if self._thinking_callback:
+            try:
+                # Truncate long thinking to first 500 chars for UI display
+                display_thinking = thinking[:500] + "..." if len(thinking) > 500 else thinking
+                self._thinking_callback(display_thinking)
+            except Exception:
+                pass  # Don't break LLM call if emission fails
+    
+    def set_thinking_callback(self, callback):
+        """Set callback for thinking emission. Called by API layer."""
+        self._thinking_callback = callback
+    
+    def clear_thinking_callback(self):
+        """Clear thinking callback after request completes."""
+        self._thinking_callback = None
+    
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from YAML file"""
         try:
@@ -189,7 +229,11 @@ class LLMClient:
     
     def set_model(self, model_key: str) -> bool:
         """Switch to different model"""
+        old_model = self.model
         self.model = self._get_model_name(model_key)
+        from infrastructure.logging.logging_system import get_logger
+        logger = get_logger("llm_client")
+        logger.info(f"[LLM_CLIENT] set_model called: '{model_key}' -> '{self.model}' (was: '{old_model}')")
         return True
     
     def get_available_models(self) -> Dict:
@@ -297,7 +341,7 @@ class LLMClient:
 
         # Merge in synced registry snapshot (prefer richer op definitions).
         try:
-            from core.tool_registry_manager import ToolRegistryManager
+            from application.use_cases.tool_lifecycle.tool_registry_manager import ToolRegistryManager
             registry_mgr = ToolRegistryManager()
             snapshot = registry_mgr.get_registry().get("tools", {})
             for tool_name, tool_data in snapshot.items():
@@ -484,7 +528,7 @@ class LLMClient:
             
             # Discover skills system status
             try:
-                from core.skills import get_skill_registry
+                from application.services.skill_registry import get_skill_registry
                 skill_registry = get_skill_registry()
                 if skill_registry:
                     skills = skill_registry.list_all()
@@ -496,13 +540,13 @@ class LLMClient:
             
             # Discover improvement systems
             try:
-                from core.tool_evolution.flow import ToolEvolutionFlow
+                from application.use_cases.tool_lifecycle.tool_evolution_flow import ToolEvolutionFlow
                 status_lines.append("Tool Evolution: Available")
             except:
                 status_lines.append("Tool Evolution: Not available")
             
             try:
-                from core.tool_creation.flow import ToolCreationFlow
+                from application.use_cases.tool_lifecycle.tool_creation_flow import ToolCreationFlow
                 status_lines.append("Tool Creation: Available")
             except:
                 status_lines.append("Tool Creation: Not available")
@@ -518,14 +562,14 @@ class LLMClient:
             
             # Discover autonomous agent
             try:
-                from core.autonomous_agent import AutonomousAgent
+                from application.use_cases.autonomy.autonomous_agent import AutonomousAgent
                 status_lines.append("Autonomous Agent: Available")
             except:
                 status_lines.append("Autonomous Agent: Not available")
             
             # Discover memory system
             try:
-                from core.memory_system import MemorySystem
+                from infrastructure.persistence.file_storage.memory_system import MemorySystem
                 status_lines.append("Memory System: Available")
             except:
                 status_lines.append("Memory System: Not available")
@@ -535,10 +579,14 @@ class LLMClient:
         
         return "\n".join(status_lines) if status_lines else "System status unknown"
     
-    def generate_response(self, user_message: str, conversation_history: List[Dict[str, str]] = None) -> str:
+    def generate_response(self, user_message: str, conversation_history: List[Dict[str, str]] = None, max_tokens: int = None, stream: bool = False, stream_callback = None) -> str:
         """
         Generate conversational response (no structured output).
         For summary/result messages (no history), uses a lean prompt.
+        
+        Args:
+            stream: If True, enable streaming mode
+            stream_callback: Function called with each chunk: callback(chunk_text)
         """
         messages = []
         if conversation_history:
@@ -549,13 +597,13 @@ class LLMClient:
         # Lean path: summary calls pass empty history — skip heavy system prompt
         if not conversation_history:
             context = self._format_chat_prompt("You are a helpful assistant. Answer concisely.", messages)
-            conv_tokens = self._get_profile().tokens_conv
-            response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False)
+            conv_tokens = max_tokens or self._get_profile().tokens_conv
+            response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False, stream=stream, stream_callback=stream_callback)
             return response or "Task completed."
 
-        # Full path: conversational turns need CUA context
+        # Full path: conversational turns need platform context
         try:
-            from core.skills import get_skill_registry
+            from application.services.skill_registry import get_skill_registry
             sk_reg = get_skill_registry()
             skills_info = "\n".join(
                 f"- {s.name} ({s.category}): {s.description}"
@@ -565,19 +613,22 @@ class LLMClient:
             skills_info = "Skills unavailable"
 
         tool_names = ", ".join(t.__class__.__name__ for t in getattr(self.registry, 'tools', [])) if self.registry else "none"
+        platform_name = get_platform_name()
+        assistant_name = get_assistant_name()
         profile = self._get_profile()
         system_msg = (
-            "You are CUA, a local autonomous agent built on a local LLM. "
+            f"You are {assistant_name}, the assistant for {platform_name}, a local autonomous agent platform built on a local LLM. "
+            "Desktop automation is one subsystem of the platform, not the whole product identity. "
             "Never refer to yourself as Qwen, Mistral, or any underlying model. "
-            "You are CUA. When asked about your architecture or engine, describe CUA's systems.\n"
+            "When asked about your architecture or engine, describe the platform's systems and capabilities.\n"
             f"Active tools: {tool_names}\n"
             f"Skills:\n{skills_info}\n"
             "Answer based only on your actual capabilities."
             + (f"\n{profile.special_instructions}" if profile.special_instructions else "")
         )
         context = self._format_chat_prompt(system_msg, messages)
-        conv_tokens = profile.tokens_conv
-        response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False)
+        conv_tokens = max_tokens or profile.tokens_conv
+        response = self._call_llm(context, temperature=0.7, max_tokens=conv_tokens, expect_json=False, stream=stream, stream_callback=stream_callback)
         return response or "I'm here to help! Ask me anything or give me a task to execute."
     
     def _get_profile(self) -> ModelProfile:
@@ -589,6 +640,18 @@ class LLMClient:
         if self.provider != "ollama":
             return content  # API providers handle formatting natively
         profile = self._get_profile()
+        
+        # For qwen3.5 with JSON: inject explicit JSON instruction
+        # Article recommendation: put JSON schema in system prompt, not response_format
+        if expect_json and ("qwen3.5" in self.model.lower() or "qwen3-vl" in self.model.lower()):
+            json_instruction = (
+                "\n\n=== OUTPUT FORMAT ===\n"
+                "You MUST respond with ONLY valid JSON. No explanation, no markdown fences.\n"
+                "Return a single JSON object or array. Do not wrap in code blocks.\n"
+                "Example: {\"key\": \"value\"}\n"
+            )
+            return content + json_instruction
+        
         if profile.prompt_template == "qwen_chat":
             # Qwen uses chat format even for single-turn
             result = f"<|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n"
@@ -623,22 +686,38 @@ class LLMClient:
             prompt += f"{msg.get('role','user').title()}: {msg.get('content','')}\n"
         return prompt
     
-    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None) -> Optional[str]:
-        """Call LLM — routes to API provider (OpenAI/Gemini) or Ollama based on config."""
+    def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None, image_path: str = None, stream: bool = False, stream_callback = None) -> Optional[str]:
+        """Call LLM — routes to API provider (OpenAI/Gemini) or Ollama based on config. Supports vision via image_path and streaming via stream_callback.
+        
+        CRITICAL: All calls go through LLMRequestCoordinator to prevent Ollama backlog.
+        
+        Args:
+            stream: If True, enable streaming mode
+            stream_callback: Function called with each chunk: callback(chunk_text)
+        """
+        # Import coordinator
+        from planner.llm_coordinator import get_coordinator
+        coordinator = get_coordinator()
+        
+        # Execute through coordinator for sequential processing
+        return coordinator.execute(self._call_llm_internal, prompt, temperature, max_tokens, expect_json, timeout_override, image_path, stream, stream_callback)
+    
+    def _call_llm_internal(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None, image_path: str = None, stream: bool = False, stream_callback = None) -> Optional[str]:
+        """Internal LLM call implementation (called by coordinator)."""
 
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         import hashlib
         logger = get_logger("llm_client")
 
-        # Cache (deterministic calls only)
+        # Cache (deterministic calls only, no images)
         cache_key = None
-        if self._cache_enabled and temperature < 0.3:
+        if self._cache_enabled and temperature < 0.3 and not image_path:
             cache_key = hashlib.md5(f"{prompt}|{temperature}|{max_tokens}|{expect_json}".encode()).hexdigest()
             if cache_key in self._response_cache:
                 logger.debug(f"Cache hit for prompt (key={cache_key[:8]}...)")
                 return self._response_cache[cache_key]
 
-        logger.info(f"LLM call: provider={self.provider}, model={self.model}, temp={temperature}, expect_json={expect_json}, api_provider={'set' if self._api_provider else 'None'}")
+        logger.debug(f"LLM call: provider={self.provider}, model={self.model}, temp={temperature}, expect_json={expect_json}, image={'yes' if image_path else 'no'}")
 
         # --- API provider path ---
         if self._api_provider is not None:
@@ -676,38 +755,229 @@ class LLMClient:
         try:
             profile = self._get_profile()
             num_predict = profile.resolve_tokens(max_tokens, expect_json)
-            options = {
-                "temperature": temperature,
-                "top_p": 0.9,
-                "top_k": 40,
-                "repeat_penalty": 1.1,
-                "num_predict": num_predict,
-                "num_ctx": 12288,
-                "num_gpu": 99,
-                "num_thread": 8,
-            }
+            
+            # Use official Qwen3.5 sampling parameters
+            # Source: https://qwenlm.github.io/blog/qwen3.5/
+            # Additional source: Ollama community recommendations
+            is_qwen35 = "qwen3.5" in self.model.lower()
+            is_qwen3vl = "qwen3-vl" in self.model.lower()
+            
+            if is_qwen35 or is_qwen3vl:
+                # Qwen3.5 official parameters
+                # Note: Thinking mode is enabled by default for 9B+ models
+                # Cannot disable via Ollama (requires --chat-template-kwargs in vLLM/SGLang)
+                
+                if expect_json or "code" in prompt.lower():
+                    # Thinking mode for precise coding tasks
+                    options = {
+                        "temperature": 0.6,
+                        "top_p": 0.95,
+                        "top_k": 20,
+                        "presence_penalty": 0.0,  # No penalty for code generation
+                        "repeat_penalty": 1.0,  # Ollama uses repeat_penalty, not repetition_penalty
+                        "num_predict": num_predict,
+                        "num_ctx": 32768,  # Increased from 12288 for better context
+                        "num_gpu": 99,
+                        "num_thread": 8,
+                    }
+                else:
+                    # Thinking mode for general tasks
+                    options = {
+                        "temperature": 1.0,
+                        "top_p": 0.95,
+                        "top_k": 20,
+                        "presence_penalty": 1.5,  # Reduce repetitions
+                        "repeat_penalty": 1.0,  # Ollama uses repeat_penalty, not repetition_penalty
+                        "num_predict": num_predict,
+                        "num_ctx": 32768,  # Increased from 12288
+                        "num_gpu": 99,
+                        "num_thread": 8,
+                    }
+            else:
+                # Default parameters for other models
+                options = {
+                    "temperature": temperature,
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                    "num_predict": num_predict,
+                    "num_ctx": 12288,
+                    "num_gpu": 99,
+                    "num_thread": 8,
+                }
 
-            payload = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": options,
-                "keep_alive": "10m"
-            }
-
-            if expect_json:
-                payload["format"] = "json"
-
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json=payload,
-                timeout=timeout_override or self.timeout
-            )
+            # CRITICAL: Never use /api/chat for JSON requests with qwen3.5/qwen3-vl
+            # Reasoning mode puts JSON in "thinking" field, causing extraction failures
+            # Always use /api/generate with format="json" for structured output
+            is_reasoning_model = "qwen3.5" in self.model.lower() or "qwen3-vl" in self.model.lower()
+            use_chat_api = False  # Disable chat API entirely - use generate for all requests
+            
+            if use_chat_api:
+                # Chat API format
+                payload = {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": stream,
+                    "options": options,
+                    "keep_alive": "10m"
+                }
+                
+                # Add image for vision models
+                if image_path:
+                    import base64
+                    from pathlib import Path
+                    try:
+                        img_path = Path(image_path)
+                        if img_path.exists():
+                            with open(img_path, "rb") as f:
+                                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+                            payload["messages"][0]["images"] = [img_b64]
+                            logger.info(f"Added image to chat payload: {image_path}")
+                        else:
+                            logger.warning(f"Image path does not exist: {image_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to load image {image_path}: {e}")
+                
+                response = requests.post(
+                    f"{self.ollama_url}/api/chat",
+                    json=payload,
+                    timeout=timeout_override or self.timeout,
+                    stream=stream
+                )
+            else:
+                # Generate API format (original behavior)
+                # Check for /no_think suffix to disable thinking mode
+                actual_prompt = prompt
+                if prompt.strip().endswith("/no_think"):
+                    actual_prompt = prompt.replace("/no_think", "").strip()
+                    # Disable thinking mode via suffix parameter
+                    # Note: This is Ollama-specific and may not work on all models
+                    options["num_ctx"] = min(options.get("num_ctx", 12288), 8192)  # Reduce context for faster response
+                
+                payload = {
+                    "model": self.model,
+                    "prompt": actual_prompt,
+                    "stream": stream,
+                    "options": options,
+                    "keep_alive": "10m"
+                }
+                
+                # Add image for vision models
+                if image_path:
+                    import base64
+                    from pathlib import Path
+                    try:
+                        img_path = Path(image_path)
+                        if img_path.exists():
+                            with open(img_path, "rb") as f:
+                                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+                            payload["images"] = [img_b64]
+                            logger.debug(f"Added image to payload: {image_path}")
+                        else:
+                            logger.warning(f"Image path does not exist: {image_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to load image {image_path}: {e}")
+                
+                if expect_json:
+                    payload["format"] = "json"
+                
+                response = requests.post(
+                    f"{self.ollama_url}/api/generate",
+                    json=payload,
+                    timeout=timeout_override or self.timeout,
+                    stream=stream
+                )
 
             if response.status_code == 200:
+                # Handle streaming response
+                if stream and stream_callback:
+                    full_response = ""
+                    try:
+                        for line in response.iter_lines():
+                            if line:
+                                chunk = json.loads(line)
+                                if use_chat_api:
+                                    delta = chunk.get("message", {}).get("content", "")
+                                else:
+                                    delta = chunk.get("response", "")
+                                
+                                if delta:
+                                    full_response += delta
+                                    stream_callback(delta)
+                                
+                                # Check if done
+                                if chunk.get("done", False):
+                                    break
+                        
+                        return full_response
+                    except Exception as e:
+                        logger.error(f"Streaming error: {e}")
+                        return full_response if full_response else None
+                
+                # Non-streaming response (original behavior)
                 result = response.json()
-                llm_response = result.get("response", "")
-
+                
+                # Extract response based on API type
+                if use_chat_api:
+                    message = result.get("message", {})
+                    llm_response = message.get("content", "")
+                    thinking = message.get("thinking", "")
+                    
+                    # Thinking models: when content is empty, use thinking field
+                    if not llm_response and thinking:
+                        logger.debug(f"Using 'thinking' field from reasoning model (content was empty)")
+                        logger.debug(f"Thinking field preview: {thinking[:300]}...")
+                        llm_response = thinking
+                        # For JSON requests, extract JSON from thinking
+                        if expect_json:
+                            extracted_json = self._extract_json(thinking)
+                            if extracted_json:
+                                import json as _json
+                                llm_response = _json.dumps(extracted_json)
+                                logger.debug(f"[OK] Successfully extracted JSON from thinking field")
+                                logger.debug(f"Extracted JSON preview: {llm_response[:200]}...")
+                            else:
+                                logger.error(f"[FAIL] Failed to extract JSON from thinking field")
+                                logger.debug(f"Full thinking content: {thinking}")
+                else:
+                    llm_response = result.get("response", "")
+                    thinking = result.get("thinking", "")
+                    
+                    # CRITICAL FIX: Reasoning models with format="json" put JSON in "thinking" field
+                    # Response field is empty string (0 chars) - this is expected behavior
+                    if not llm_response and thinking:
+                        logger.debug(f"Response empty, using 'thinking' field from reasoning model")
+                        logger.debug(f"Thinking field length: {len(thinking)} chars")
+                        
+                        # For JSON requests: aggressively extract JSON from thinking
+                        if expect_json:
+                            # Try multiple extraction strategies
+                            extracted_json = self._extract_json(thinking)
+                            if extracted_json:
+                                import json as _json
+                                llm_response = _json.dumps(extracted_json)
+                                logger.debug(f"[OK] Successfully extracted JSON from thinking field")
+                                logger.debug(f"Extracted JSON preview: {llm_response[:200]}...")
+                            else:
+                                # Fallback: use thinking as-is and let extraction happen later
+                                logger.warning(f"Could not extract JSON from thinking, using raw thinking field")
+                                logger.debug(f"Raw thinking preview: {thinking[:500]}...")
+                                llm_response = thinking
+                        else:
+                            # Non-JSON: use thinking directly
+                            llm_response = thinking
+                    
+                    # ADDITIONAL FALLBACK: If response is still empty after thinking check, log error
+                    if not llm_response:
+                        logger.error(f"Both 'response' and 'thinking' fields are empty!")
+                        logger.debug(f"Full result keys: {list(result.keys())}")
+                        logger.debug(f"Full result: {result}")
+                        return None
+                
+                # Handle reasoning models - emit thinking if available
+                if thinking and self._should_emit_thinking():
+                    self._emit_thinking_trace(thinking)
+                
                 # Truncation detection (Ollama/local models only)
                 if llm_response and len(llm_response) > 100:
                     last_line = llm_response.strip().split('\n')[-1]
@@ -739,7 +1009,8 @@ class LLMClient:
                         "response_length": len(llm_response),
                         "tokens_generated": result.get('eval_count', 0),
                         "tokens_prompt": result.get('prompt_eval_count', 0),
-                        "cached": False
+                        "cached": False,
+                        "has_image": bool(image_path)
                     }
                 )
 
@@ -767,7 +1038,7 @@ class LLMClient:
         """Warm up the model to keep it loaded in memory (Ollama only)."""
         if self.provider != "ollama":
             return True  # No-op for API providers
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         logger = get_logger("llm_client")
         try:
             logger.info(f"Warming up model: {self.model}")
@@ -800,7 +1071,7 @@ class LLMClient:
         """Unload model from memory immediately (Ollama only)."""
         if self.provider != "ollama":
             return  # No-op for API providers
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         logger = get_logger("llm_client")
         try:
             logger.info(f"Unloading model: {self.model}")
@@ -839,10 +1110,14 @@ class LLMClient:
             return json.dumps(mock_response)
         else:
             # Conversational mock
-            return "Hello! I'm CUA, an autonomous agent. I can help you with file operations and task execution. Try asking me to 'list files' or 'plan to create a summary'!"
+            return f"Hello! I'm {get_assistant_name()} for {get_platform_name()}. I can help with file operations, automation, and task execution. Try asking me to 'list files' or 'plan to create a summary'!"
     
     def _extract_json(self, response: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from LLM response with multiple strategies"""
+        """Extract JSON from LLM response with multiple strategies.
+        
+        For Thinking models: JSON may be embedded in reasoning text.
+        We need to find the first COMPLETE valid JSON structure.
+        """
         
         # Strategy 1: Direct parse
         try:
@@ -879,21 +1154,52 @@ class LLMClient:
         # Strategy 4: Find JSON object by braces (most common for plans)
         try:
             start = response.find("{")
-            end = response.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                json_str = response[start:end+1]
-                return json.loads(json_str)
+            if start != -1:
+                # Find matching closing brace by counting
+                depth = 0
+                for i in range(start, len(response)):
+                    if response[i] == '{':
+                        depth += 1
+                    elif response[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            json_str = response[start:i+1]
+                            return json.loads(json_str)
         except:
             pass
         
-        # Strategy 5: Find JSON array by brackets
+        # Strategy 5: Find JSON array by brackets (for Thinking models)
         try:
             start = response.find("[")
-            end = response.rfind("]")
-            if start != -1 and end != -1 and end > start:
-                json_str = response[start:end+1]
-                return json.loads(json_str)
-        except:
+            if start != -1:
+                # Find matching closing bracket by counting
+                depth = 0
+                in_string = False
+                escape_next = False
+                for i in range(start, len(response)):
+                    char = response[i]
+                    
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    
+                    if char == '\\':
+                        escape_next = True
+                        continue
+                    
+                    if char == '"':
+                        in_string = not in_string
+                        continue
+                    
+                    if not in_string:
+                        if char == '[':
+                            depth += 1
+                        elif char == ']':
+                            depth -= 1
+                            if depth == 0:
+                                json_str = response[start:i+1]
+                                return json.loads(json_str)
+        except Exception as e:
             pass
         
         return None

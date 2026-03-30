@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from shared.config.branding import get_platform_name
+
 CURATED_EXPERIMENTAL_RUNTIME_TOOLS = (
     "ContextSummarizerTool",
     "DatabaseQueryTool",
@@ -98,18 +100,18 @@ def _load_tool_with_timeout(tool_module_name: str, orchestrator, timeout: float)
 def load_router_bundle() -> RouterBundle:
     try:
         from updater.api import router as update_router
-        from api.improvement_api import router as improvement_router, set_loop_instance
-        from api.settings_api import router as settings_router, set_llm_client
-        from api.scheduler_api import router as scheduler_router, set_scheduler
-        from api.task_manager_api import router as task_manager_router, set_task_manager
-        from api.pending_tools_api import (
+        from api.rest.system.improvement_router import router as improvement_router, set_loop_instance
+        from api.rest.config.settings_router import router as settings_router, set_llm_client
+        from api.rest.system.scheduler_router import router as scheduler_router, set_scheduler
+        from api.rest.system.task_manager_router import router as task_manager_router, set_task_manager
+        from api.rest.tools.tool_creation_router import (
             router as pending_tools_router,
             set_pending_tools_manager,
             set_tool_registrar,
             set_registry_manager_for_pending,
         )
-        from api.llm_logs_api import router as llm_logs_router
-        from api.tools_api import (
+        from api.rest.monitoring.llm_logs_router import router as llm_logs_router
+        from api.rest.tools.tools_router import (
             router as tools_router,
             set_registry_manager,
             set_llm_client_for_sync,
@@ -118,27 +120,31 @@ def load_router_bundle() -> RouterBundle:
             set_tool_orchestrator_for_sync,
             refresh_runtime_registry_from_files,
         )
-        from api.libraries_api import router as libraries_router, set_libraries_manager
-        from api.hybrid_api import router as hybrid_router
-        from api.quality_api import router as quality_router
-        from api.tool_evolution_api import router as evolution_router, set_evolution_dependencies
-        from api.observability_api import router as observability_router
-        from api.observability_data_api import router as observability_data_router
-        from api.cleanup_api import router as cleanup_router
-        from api.tool_info_api import router as tool_info_router
-        from api.tool_list_api import router as tool_list_router
-        from api.tools_management_api import router as tools_management_router
-        from api.metrics_api import router as metrics_router
-        from api.auto_evolution_api import router as auto_evolution_router, set_coordinated_engine
-        from api.agent_api import router as agent_router, set_agent_dependencies
-        from api.skills_api import router as skills_router, set_skill_registry
+        from api.rest.system.libraries_router import router as libraries_router, set_libraries_manager
+        from api.rest.system.hybrid_router import router as hybrid_router
+        from api.rest.system.quality_router import router as quality_router
+        from api.rest.evolution.evolution_router import router as evolution_router, set_evolution_dependencies
+        from api.rest.evolution.evolution_chat_router import (
+            router as evolution_chat_router,
+            set_evolution_dependencies as set_evolution_chat_dependencies,
+        )
+        from api.rest.observability.observability_router import router as observability_router
+        from api.rest.observability.observability_data_router import router as observability_data_router
+        from api.rest.system.cleanup_router import router as cleanup_router
+        from api.rest.tools.tool_info_router import router as tool_info_router
+        from api.rest.tools.tool_list_router import router as tool_list_router
+        from api.rest.tools.tool_management_router import router as tools_management_router
+        from api.rest.monitoring.metrics_router import router as metrics_router
+        from api.rest.evolution.auto_evolution_router import router as auto_evolution_router, set_coordinated_engine
+        from api.rest.autonomy.autonomy_router import router as agent_router, set_agent_dependencies
+        from api.rest.system.skills_router import router as skills_router, set_skill_registry
         from api.trace_ws import router as trace_router
-        from api.circuit_breaker_api import router as circuit_breaker_router, set_skill_registry_for_cb
-        from api.session_api import router as session_router
-        from api.services_api import router as services_router, set_services_dependencies
-        from api.pending_skills_api import router as pending_skills_router, set_skills_dependencies
-        from api.mcp_api import router as mcp_router, set_registry as set_mcp_registry
-        from api.credentials_api import router as credentials_router
+        from api.rest.system.circuit_breaker_router import router as circuit_breaker_router, set_skill_registry_for_cb
+        from api.rest.config.session_router import router as session_router
+        from api.rest.system.services_router import router as services_router, set_services_dependencies
+        from api.rest.system.pending_skills_router import router as pending_skills_router, set_skills_dependencies
+        from api.rest.config.mcp_router import router as mcp_router, set_registry as set_mcp_registry
+        from api.rest.config.credentials_router import router as credentials_router
 
         return RouterBundle(
             routers_available=True,
@@ -146,6 +152,7 @@ def load_router_bundle() -> RouterBundle:
                 update_router, improvement_router, settings_router, scheduler_router,
                 task_manager_router, pending_tools_router, llm_logs_router, tools_router,
                 libraries_router, hybrid_router, quality_router, evolution_router,
+                evolution_chat_router,
                 observability_router, observability_data_router, cleanup_router,
                 tool_info_router, tool_list_router, tools_management_router, metrics_router,
                 auto_evolution_router, agent_router, skills_router, trace_router,
@@ -168,6 +175,7 @@ def load_router_bundle() -> RouterBundle:
                 "set_tool_orchestrator_for_sync": set_tool_orchestrator_for_sync,
                 "set_libraries_manager": set_libraries_manager,
                 "set_evolution_dependencies": set_evolution_dependencies,
+                "set_evolution_chat_dependencies": set_evolution_chat_dependencies,
                 "set_agent_dependencies": set_agent_dependencies,
                 "set_skill_registry": set_skill_registry,
                 "set_services_dependencies": set_services_dependencies,
@@ -197,46 +205,66 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from tools.json_tool import JSONTool
         from tools.shell_tool import ShellTool
         from tools.web_access_tool import WebAccessTool
-        from core.secure_executor import SecureExecutor
+        from tools.computer_use import (
+            ComputerUseController,
+            ScreenPerceptionTool,
+            InputAutomationTool,
+            SystemControlTool,
+        )
+        from infrastructure.sandbox.secure_executor import SecureExecutor
         from planner.plan_parser import PlanParser
-        from core.session_permissions import PermissionGate
+        from domain.policies.session_permissions import PermissionGate
         from planner.llm_client import LLMClient
-        from core.state_machine import StateManager
-        from core.plan_validator import PlanValidator
-        from core.sqlite_logging import get_logger
-        from core.error_recovery import ErrorRecovery
+        from domain.value_objects.state_machine import StateManager
+        from infrastructure.validation.plan_validator_core import PlanValidator
+        from infrastructure.persistence.sqlite.logging import get_logger
+        from infrastructure.failure_handling.error_recovery import ErrorRecovery
         from updater.orchestrator import UpdateOrchestrator
-        from core.improvement_loop import SelfImprovementLoop
-        from core.conversation_memory import ConversationMemory
-        from core.improvement_scheduler import ImprovementScheduler
-        from core.config_manager import get_config
-        from core.tool_registrar import ToolRegistrar
-        from core.tool_registry_manager import ToolRegistryManager
-        from core.pending_libraries_manager import PendingLibrariesManager
-        from core.tool_orchestrator import ToolOrchestrator
-        from core.task_planner import TaskPlanner
-        from core.execution_engine import ExecutionEngine
-        from core.memory_system import MemorySystem
-        from core.autonomous_agent import AutonomousAgent
-        from core.metrics_scheduler import get_metrics_scheduler
-        from core.skills import SkillRegistry, SkillSelector
-        from core.coordinated_autonomy_engine import CoordinatedAutonomyEngine
-        from core.circuit_breaker import get_circuit_breaker
-        from core.decision_engine import get_decision_engine
-        from core.tool_evolution.flow import ToolEvolutionOrchestrator
-        from core.pending_evolutions_manager import PendingEvolutionsManager
-        from core.tool_quality_analyzer import ToolQualityAnalyzer
-        from core.expansion_mode import ExpansionMode
-        from core.pending_services_manager import PendingServicesManager
-        from core.pending_skills_manager import PendingSkillsManager
+        from application.use_cases.improvement.improvement_loop import SelfImprovementLoop
+        from infrastructure.persistence.file_storage.conversation_memory import ConversationMemory
+        from application.use_cases.improvement.improvement_scheduler import ImprovementScheduler
+        from shared.config.config_manager import get_config
+        from application.use_cases.tool_lifecycle.tool_registrar import ToolRegistrar
+        from application.use_cases.tool_lifecycle.tool_registry_manager import ToolRegistryManager
+        from application.managers.pending_libraries_manager import PendingLibrariesManager
+        from application.use_cases.tool_lifecycle.tool_orchestrator import ToolOrchestrator
+        from application.use_cases.planning.task_planner import TaskPlanner
+        from application.use_cases.execution.execution_engine import ExecutionEngine
+        from infrastructure.persistence.file_storage.memory_system import MemorySystem
+        from application.use_cases.autonomy.autonomous_agent import AutonomousAgent
+        from infrastructure.metrics.scheduler import get_metrics_scheduler
+        from application.services.skill_registry import SkillRegistry
+        from application.services.skill_selector import SkillSelector
+        from application.use_cases.autonomy.coordinated_autonomy_engine import CoordinatedAutonomyEngine
+        from infrastructure.failure_handling.circuit_breaker import get_circuit_breaker
+        from domain.services.decision_engine import get_decision_engine
+        from application.use_cases.tool_lifecycle.tool_evolution_flow import ToolEvolutionOrchestrator
+        from application.managers.pending_evolutions_manager import PendingEvolutionsManager
+        from domain.services.tool_quality_analyzer import ToolQualityAnalyzer
+        from application.services.expansion_mode import ExpansionMode
+        from application.managers.pending_services_manager import PendingServicesManager
+        from application.managers.pending_skills_manager import PendingSkillsManager
 
         config = get_config()
         circuit_breaker = get_circuit_breaker()
 
         registry = CapabilityRegistry()
-        tool_orchestrator = ToolOrchestrator(registry=registry)
+        skill_registry = SkillRegistry()
+        skill_registry.load_all()
+        tool_orchestrator = ToolOrchestrator(registry=registry, skill_registry=skill_registry)
+        registry.set_orchestrator(tool_orchestrator)
 
-        for tool in (FilesystemTool(), HTTPTool(), JSONTool(), ShellTool(), WebAccessTool(orchestrator=tool_orchestrator)):
+        for tool in (
+            FilesystemTool(), 
+            HTTPTool(), 
+            JSONTool(), 
+            ShellTool(), 
+            WebAccessTool(orchestrator=tool_orchestrator),
+            ComputerUseController(orchestrator=tool_orchestrator),
+            ScreenPerceptionTool(orchestrator=tool_orchestrator),
+            InputAutomationTool(orchestrator=tool_orchestrator),
+            SystemControlTool(orchestrator=tool_orchestrator),
+        ):
             registry.register_tool(tool)
 
         # Load experimental tools with per-tool timeout
@@ -246,7 +274,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
                 registry.register_tool(tool)
 
         # Load MCP adapters in parallel threads — each gets _MCP_LOAD_TIMEOUT seconds
-        from core.mcp_process_manager import get_mcp_process_manager
+        from infrastructure.external.mcp_process_manager import get_mcp_process_manager
         mcp_manager = get_mcp_process_manager()
 
         def _load_mcp(mcp_server):
@@ -287,8 +315,32 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         parser = PlanParser()
         permission_gate = PermissionGate()
         llm_client = LLMClient(registry=registry)
-        skill_registry = SkillRegistry()
-        skill_registry.load_all()
+        print(f"[BOOTSTRAP] LLM client created with default model: {llm_client.model}")
+        tool_orchestrator.set_llm_client(llm_client)
+        
+        # Resolve model aliases to actual model names
+        import yaml
+        from pathlib import Path
+        config_file = Path("config.yaml")
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                raw_config = yaml.safe_load(f) or {}
+                models_dict = raw_config.get('llm', {}).get('models', {})
+                chat_model_alias = config.llm.chat_model
+                print(f"[BOOTSTRAP] chat_model_alias from config: {chat_model_alias}")
+                print(f"[BOOTSTRAP] models_dict keys: {list(models_dict.keys())}")
+                if chat_model_alias in models_dict:
+                    resolved_model = models_dict[chat_model_alias].get('name', chat_model_alias)
+                    print(f"[BOOTSTRAP] Resolved '{chat_model_alias}' → '{resolved_model}'")
+                    print(f"[BOOTSTRAP] Calling llm_client.set_model('{resolved_model}')...")
+                    llm_client.set_model(resolved_model)
+                    print(f"[BOOTSTRAP] After set_model, llm_client.model = {llm_client.model}")
+                    print(f"✓ LLM client initialized with model: {resolved_model} (from alias: {chat_model_alias})")
+                else:
+                    print(f"✗ Model alias '{chat_model_alias}' not found in models dict. Available: {list(models_dict.keys())}")
+        else:
+            print(f"✗ config.yaml not found at {config_file.absolute()}")
+        
         skill_selector = SkillSelector()
         get_decision_engine(skill_registry=skill_registry)
         state_manager = StateManager()
@@ -328,7 +380,9 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         logger.info("Metrics scheduler started")
 
         task_planner = TaskPlanner(llm_client, registry, skill_registry=skill_registry)
+        tool_orchestrator.main_planner = task_planner
         execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator, task_planner=task_planner)
+        tool_orchestrator.set_execution_engine(execution_engine)
         memory_system = MemorySystem()
         autonomous_agent = AutonomousAgent(
             task_planner=task_planner,
@@ -345,7 +399,9 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         )
 
         # Build singleton managers once
-        quality_analyzer = ToolQualityAnalyzer()
+        from infrastructure.logging.tool_execution_logger import get_execution_logger
+
+        quality_analyzer = ToolQualityAnalyzer(get_execution_logger())
         expansion_mode = ExpansionMode(enabled=True)
         evolution_orchestrator = ToolEvolutionOrchestrator(
             quality_analyzer=quality_analyzer,
@@ -356,12 +412,12 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         pending_services_manager = PendingServicesManager()
         pending_skills_manager = PendingSkillsManager()
 
-        from core.service_injector import ServiceInjector
+        from infrastructure.external.service_injector import ServiceInjector
         service_injector = ServiceInjector()
 
         # Wire unified memory with live instances
-        from core.improvement_memory import ImprovementMemory
-        from core.unified_memory import get_unified_memory
+        from infrastructure.persistence.file_storage.improvement_memory import ImprovementMemory
+        from infrastructure.persistence.file_storage.unified_memory import get_unified_memory
         get_unified_memory(memory_system=memory_system, improvement_memory=ImprovementMemory())
 
         runtime = RuntimeState(
@@ -402,7 +458,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         if bundle and bundle.routers_available:
             wire_router_dependencies(runtime, bundle)
 
-        print("CUA system initialized successfully")
+        print(f"{get_platform_name()} initialized successfully")
         return runtime
 
     except Exception as e:
@@ -416,26 +472,32 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     if not bundle.routers_available:
         return
 
-    bundle.setters["set_evolution_dependencies"](runtime.evolution_orchestrator, runtime.pending_evolutions_manager)
+    def _call_setter(name: str, *args):
+        setter = bundle.setters.get(name)
+        if setter:
+            setter(*args)
+
+    _call_setter("set_evolution_dependencies", runtime.evolution_orchestrator, runtime.pending_evolutions_manager)
+    _call_setter("set_evolution_chat_dependencies", runtime.llm_client, runtime.quality_analyzer)
     # Inject orchestrator so approve_evolution can invalidate the services cache
     runtime.pending_evolutions_manager._tool_orchestrator = runtime.tool_orchestrator
-    bundle.setters["set_loop_instance"](runtime.improvement_loop)
-    bundle.setters["set_llm_client"](runtime.llm_client)
-    bundle.setters["set_scheduler"](runtime.scheduler)
-    bundle.setters["set_task_manager"](None)
-    bundle.setters["set_pending_tools_manager"](runtime.improvement_loop.pending_tools_manager)
-    bundle.setters["set_tool_registrar"](runtime.tool_registrar)
-    bundle.setters["set_registry_manager_for_pending"](runtime.registry_manager)
-    bundle.setters["set_registry_manager"](runtime.registry_manager)
-    bundle.setters["set_llm_client_for_sync"](runtime.llm_client)
-    bundle.setters["set_runtime_registry"](runtime.registry)
-    bundle.setters["set_tool_registrar_for_sync"](runtime.tool_registrar)
-    bundle.setters["set_tool_orchestrator_for_sync"](runtime.tool_orchestrator)
-    bundle.setters["set_libraries_manager"](runtime.libraries_manager)
-    bundle.setters["set_agent_dependencies"](runtime.autonomous_agent, runtime.memory_system, runtime.execution_engine)
-    bundle.setters["set_skill_registry"](runtime.skill_registry)
-    bundle.setters["set_services_dependencies"](runtime.pending_services_manager, runtime.service_injector)
-    bundle.setters["set_skills_dependencies"](runtime.pending_skills_manager, runtime.skill_registry)
-    bundle.setters["set_coordinated_engine"](runtime.coordinated_autonomy_engine)
-    bundle.setters["set_mcp_registry"](runtime.registry)
-    bundle.setters["set_skill_registry_for_cb"](runtime.skill_registry)
+    _call_setter("set_loop_instance", runtime.improvement_loop)
+    _call_setter("set_llm_client", runtime.llm_client)
+    _call_setter("set_scheduler", runtime.scheduler)
+    _call_setter("set_task_manager", runtime.improvement_loop.task_manager)
+    _call_setter("set_pending_tools_manager", runtime.improvement_loop.pending_tools_manager)
+    _call_setter("set_tool_registrar", runtime.tool_registrar)
+    _call_setter("set_registry_manager_for_pending", runtime.registry_manager)
+    _call_setter("set_registry_manager", runtime.registry_manager)
+    _call_setter("set_llm_client_for_sync", runtime.llm_client)
+    _call_setter("set_runtime_registry", runtime.registry)
+    _call_setter("set_tool_registrar_for_sync", runtime.tool_registrar)
+    _call_setter("set_tool_orchestrator_for_sync", runtime.tool_orchestrator)
+    _call_setter("set_libraries_manager", runtime.libraries_manager)
+    _call_setter("set_agent_dependencies", runtime.autonomous_agent, runtime.memory_system, runtime.execution_engine)
+    _call_setter("set_skill_registry", runtime.skill_registry)
+    _call_setter("set_services_dependencies", runtime.pending_services_manager, runtime.service_injector)
+    _call_setter("set_skills_dependencies", runtime.pending_skills_manager, runtime.skill_registry)
+    _call_setter("set_coordinated_engine", runtime.coordinated_autonomy_engine)
+    _call_setter("set_mcp_registry", runtime.registry)
+    _call_setter("set_skill_registry_for_cb", runtime.skill_registry)

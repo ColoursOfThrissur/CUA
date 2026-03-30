@@ -25,7 +25,7 @@ class SandboxRunner:
             patch_content: Git patch to apply
             timeout: Timeout for test execution in seconds
         """
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         logger = get_logger("sandbox_runner")
         
         logger.info(f"Starting sandbox run (timeout={timeout}s)")
@@ -155,7 +155,7 @@ class SandboxRunner:
             timeout: Timeout in seconds
             changed_file: Specific file that was changed (for targeted testing)
         """
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         logger = get_logger("sandbox_runner")
         
         try:
@@ -340,7 +340,7 @@ class SandboxRunner:
     
     def _run_coverage(self, sandbox_path: Path, timeout: int, changed_file: str = None) -> Optional[float]:
         """Run coverage and return percentage"""
-        from core.logging_system import get_logger
+        from infrastructure.logging.logging_system import get_logger
         logger = get_logger("sandbox_runner")
         
         try:

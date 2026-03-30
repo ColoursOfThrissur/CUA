@@ -1,0 +1,24 @@
+{
+  "test_name": "Reasoning",
+  "test_description": "This test evaluates the model's ability to solve a logic puzzle.",
+  "input": {
+    "puzzle": "There are three boxes. One contains only apples, one contains only oranges, and one contains both apples and oranges. The boxes have been incorrectly labeled as 'Apples', 'Oranges', and 'Apples and Oranges'. You are allowed to pick only one fruit from one box, without looking inside the box. Which box would you pick from and how would you correctly label all the boxes?"
+  },
+  "output": {
+    "solution": {
+      "box_to_pick_from": "The box labeled 'Apples and Oranges'.",
+      "reasoning": "You know that every box is labeled incorrectly. Therefore, the box labeled 'Apples and Oranges' must contain either only apples or only oranges. It cannot contain both. By picking one fruit from this box, you will know its true contents.",
+      "steps": [
+        "1. Pick one fruit from the box labeled 'Apples and Oranges'.",
+        "2. If you pick an apple, you know that box contains only apples. Therefore, you can correctly label it 'Apples'.",
+        "3. Since you now know the box labeled 'Apples' is not 'Apples', and it can't be 'Apples and Oranges' (because all boxes are mislabeled), it must be 'Oranges'.",
+        "4. The remaining box, originally labeled 'Oranges', must contain 'Apples and Oranges'.",
+        "5. If you had picked an orange from the 'Apples and Oranges' box, the same logic applies, just with the labels swapped."
+      ]
+    }
+  },
+  "evaluation": {
+    "accuracy": "100% - The solution is correct and the reasoning is sound.",
+    "estimated_time_taken": "3 seconds"
+  }
+}

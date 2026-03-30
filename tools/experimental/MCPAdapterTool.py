@@ -253,7 +253,7 @@ class MCPAdapterTool(BaseTool):
 
     def _load_from_config(self) -> None:
         try:
-            from core.config_manager import get_config
+            from shared.config.config_manager import get_config
             servers = get_config().mcp_servers or []
             for s in servers:
                 if getattr(s, "enabled", False):
@@ -363,7 +363,7 @@ class MCPAdapterTool(BaseTool):
             return env
         # Try credential store
         try:
-            from core.credential_store import get_credential_store
+            from infrastructure.persistence.credential_store import get_credential_store
             value = get_credential_store().get(self._env_key)
             if value:
                 env[self._env_key] = value

@@ -12,6 +12,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from shared.config.branding import get_platform_name
 from tools.tool_interface import BaseTool
 from tools.tool_result import ToolResult, ResultStatus
 from tools.tool_capability import ToolCapability, Parameter, ParameterType, SafetyLevel
@@ -21,7 +22,7 @@ class SystemHealthTool(BaseTool):
     """AI-runtime-aware health monitoring — system + LLM + agent + CUA internals."""
 
     def __init__(self, orchestrator=None):
-        self.description = "System health monitoring: CPU/RAM/disk, Ollama runtime, agent behavior, CUA internals, and LLM advisor diagnosis."
+        self.description = "System health monitoring: CPU/RAM/disk, Ollama runtime, agent behavior, platform internals, and LLM advisor diagnosis."
         self.services = orchestrator.get_services(self.__class__.__name__) if orchestrator else None
         super().__init__()
 
@@ -288,7 +289,7 @@ class SystemHealthTool(BaseTool):
         # Circuit breaker states from circuit_breaker module
         cb_states = {}
         try:
-            from core.circuit_breaker import get_circuit_breaker
+            from infrastructure.failure_handling.circuit_breaker import get_circuit_breaker
             cb = get_circuit_breaker()
             for tool_name, circuit in cb.circuits.items():
                 state = circuit.state.value
@@ -394,7 +395,7 @@ class SystemHealthTool(BaseTool):
 
         # Open circuit breakers count
         try:
-            from core.circuit_breaker import get_circuit_breaker
+            from infrastructure.failure_handling.circuit_breaker import get_circuit_breaker
             open_count = len(get_circuit_breaker().get_all_open_circuits())
             result["open_circuit_breakers"] = open_count
         except Exception:
@@ -464,7 +465,7 @@ class SystemHealthTool(BaseTool):
                     context_parts.append(f"DB WARNING: {db} — {info['wal_warning']}")
 
         prompt = (
-            "You are a DevOps engineer and AI systems expert diagnosing a local AI agent system (CUA).\n"
+            f"You are a DevOps engineer and AI systems expert diagnosing {get_platform_name()}.\n"
             "Analyse the health data below and give a concise diagnosis.\n\n"
             + "\n\n".join(context_parts)
             + "\n\nReply with JSON:\n"

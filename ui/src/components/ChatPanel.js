@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User, Bot, Mic, Send, Square, ChevronDown, ChevronUp } from 'lucide-react';
 import OutputRenderer from './output/OutputRenderer';
+import ToolExecutionSteps from './ToolExecutionSteps';
+import { useTraceWebSocket } from '../hooks/useTraceWebSocket';
 import './ChatPanel.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -55,6 +57,7 @@ function AgentPlanStatus({ agentPlan }) {
 export default function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [], backendConnected = true, agentPlan = null }) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = useRef(null);
+  const traces = useTraceWebSocket({ limit: 3, persist: false, ttlMs: 5000 });
 
   const getPlaceholder = () => {
     return 'Ask anything or give a task... (Ctrl+Enter to send)';
@@ -115,7 +118,7 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
                 Backend offline — responses unavailable
               </div>
             )}
-            <h2>CUA Agent</h2>
+            <h2>Forge Assistant</h2>
             <p>What would you like to do?</p>
             <div className="example-commands">
               <button onClick={() => setInput('list files in current directory')}>List files</button>
@@ -251,6 +254,10 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
                     </div>
                   </div>
                 )}
+                {/* Tool execution steps */}
+                {msg.role === 'assistant' && msg.execution_result?.tool_history && (
+                  <ToolExecutionSteps toolHistory={msg.execution_result.tool_history} />
+                )}
                 {msg.components && <OutputRenderer components={msg.components} rawData={msg.execution_result?.primary_result} />}
                 {msg.timestamp && (
                   <div className="message-time">{msg.timestamp}</div>
@@ -266,9 +273,19 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
               {agentPlan ? (
                 <AgentPlanStatus agentPlan={agentPlan} />
               ) : (
-                <div className="typing-indicator">
-                  <span></span><span></span><span></span>
-                </div>
+                <>
+                  {traces.length > 0 && traces[0].type === 'thinking' && (
+                    <div className="thinking-trace">
+                      <div className="thinking-label">💭 Thinking...</div>
+                      <div className="thinking-content">{traces[0].message}</div>
+                    </div>
+                  )}
+                  {traces.length === 0 && (
+                    <div className="typing-indicator">
+                      <span></span><span></span><span></span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -318,4 +335,3 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
     </div>
   );
 }
-

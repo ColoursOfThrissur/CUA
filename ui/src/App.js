@@ -25,6 +25,7 @@ import ObservabilityPage from './components/ObservabilityPage';
 import ToolsManagementPage from './components/ToolsManagementPage';
 import SessionManagement from './components/SessionManagement';
 import TraceOverlay from './components/TraceOverlay';
+import ThinkingTrace from './components/ThinkingTrace';
 import './styles/variables.css';
 import './styles/theme.css';
 import './App.css';
@@ -474,7 +475,8 @@ function AppContent() {
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, session_id: sessionId })
+        body: JSON.stringify({ message, session_id: sessionId }),
+        signal: AbortSignal.timeout(300000) // 5 minute timeout
       });
 
       const data = await response.json();
@@ -595,6 +597,7 @@ function AppContent() {
     <ErrorBoundary>
       <div className={`app mode-${activeMode}`}>
         <TraceOverlay />
+        <ThinkingTrace />
         
         {!globalState.backendConnected && (
           <div style={{

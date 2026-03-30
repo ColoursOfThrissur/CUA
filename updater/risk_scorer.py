@@ -51,11 +51,11 @@ class RiskScorer:
     
     def __init__(self):
         # PHASE 2A: Initialize dependency analyzer
-        from core.dependency_analyzer import DependencyAnalyzer
+        from infrastructure.analysis.dependency_analyzer import DependencyAnalyzer
         self.dependency_analyzer = DependencyAnalyzer()
         
         # PHASE 3C: Initialize failure learner
-        from core.failure_learner import FailureLearner
+        from infrastructure.failure_handling.failure_learner import FailureLearner
         self.failure_learner = FailureLearner()
     
     def score_update(self, changed_files: List[str], diff_lines: int, change_type: str = "unknown") -> RiskScore:

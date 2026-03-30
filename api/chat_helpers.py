@@ -10,6 +10,24 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+# Import organized modules
+from api.chat.skill_handler import (
+    select_skill_for_message, build_planner_context,
+    selected_ui_renderer, selected_output_types
+)
+from api.chat.tool_executor import (
+    execute_tool_calls, continue_tool_calling,
+    select_primary_result, truncate_for_history,
+    validate_output_against_skill
+)
+from api.chat.message_utils import (
+    is_simple_message, simple_reply,
+    needs_runtime_refresh, has_referenced_tools_loaded
+)
+from api.chat.response_formatter import (
+    build_wra_components, format_tool_history_for_display
+)
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -25,49 +43,114 @@ class ChatResponse(BaseModel):
 
 _stop_requested = False
 
-_SIMPLE_PATTERNS = {
-    "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye",
-    "how are you", "what's up", "good morning", "good afternoon", "good evening",
-    "ok", "okay", "yes", "no", "sure", "great", "nice", "cool", "awesome",
-}
+
+def _sanitize_llm_response_text(text: Optional[str]) -> str:
+    """Strip chain-of-thought style text before sending it to the user."""
+    if not text:
+        return ""
+
+    cleaned = str(text).strip()
+    for marker in ("Thinking Process:", "Reasoning:", "Chain of Thought:", "Internal Analysis:"):
+        if marker in cleaned:
+            trailing = cleaned.split(marker, 1)[1].strip()
+            paragraphs = [p.strip() for p in trailing.split("\n\n") if p.strip()]
+            if paragraphs:
+                cleaned = paragraphs[-1]
+
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        cleaned = cleaned.strip("`").strip()
+
+    return cleaned.strip()
 
 
-def _is_simple_message(message: str) -> bool:
-    lower = message.lower().strip()
-    words = lower.split()
-    return (
-        lower in _SIMPLE_PATTERNS
-        or (
-            len(message.strip()) < 20
-            and not any(k in lower for k in [
-                "?", "what", "how", "when", "where", "why", "can you", "please",
-                "help", "do", "get", "find", "search", "open", "run", "execute",
-                "create", "make", "build", "write", "read", "list", "show",
-            ])
-        )
-        or (len(words) <= 3 and all(w in _SIMPLE_PATTERNS or len(w) <= 4 for w in words))
-    )
 
 
-def _simple_reply(message: str) -> str:
-    lower = message.lower()
-    if any(g in lower for g in ["hi", "hello", "hey"]):
-        return "Hello! How can I assist you today?"
-    if any(t in lower for t in ["thanks", "thank you"]):
-        return "You're welcome! Let me know if you need anything else."
-    if any(b in lower for b in ["bye", "goodbye"]):
-        return "Goodbye! Feel free to come back anytime."
-    if lower in ("ok", "okay", "yes", "sure"):
-        return "Great! What would you like to do next?"
-    if lower == "no":
-        return "No problem. Let me know if you change your mind."
-    return "I'm here to help! What can I do for you?"
 
 
-def _attempt_planning_fallback(
-    request_message, session_id, skill_selection,
-    task_planner, sessions, conv_mem,
-):
+def record_capability_gap(message: str, error: str, skill_selection: Dict, llm, reg) -> None:
+    try:
+        from domain.services.gap_detector import GapDetector
+        from domain.services.gap_tracker import GapTracker
+        from application.services.capability_mapper import CapabilityMapper
+
+        gap = GapDetector(CapabilityMapper()).analyze_failed_task(message, error, skill_selection)
+        if gap and gap.confidence >= 0.6:
+            # Skip if already resolved in cua.db
+            try:
+                from infrastructure.persistence.sqlite.cua_database import get_conn as _gc
+                with _gc() as _c:
+                    row = _c.execute(
+                        "SELECT id FROM resolved_gaps WHERE capability=? LIMIT 1",
+                        (gap.capability,)
+                    ).fetchone()
+                if row:
+                    return
+            except Exception:
+                pass
+            GapTracker().record_gap(gap)
+    except Exception as e:
+        print(f"[WARN] Gap recording failed: {e}")
+
+
+def _build_tool_history_from_plan_state(plan, state) -> List[Dict[str, Any]]:
+    """Convert a plan + execution state into tool history records."""
+    if not plan or not state or not hasattr(state, "step_results"):
+        return []
+
+    registry = getattr(state, "state_registry", None)
+    if registry is not None:
+        history = registry.build_tool_history()
+        if history:
+            return history
+
+    step_map = {step.step_id: step for step in getattr(plan, "steps", [])}
+    tool_history: List[Dict[str, Any]] = []
+
+    for step_id, step_result in state.step_results.items():
+        step = step_map.get(step_id)
+        if not step:
+            continue
+        status = getattr(getattr(step_result, "status", None), "value", str(getattr(step_result, "status", "")))
+        tool_history.append({
+            "tool": step.tool_name,
+            "operation": step.operation,
+            "success": status == "completed",
+            "data": getattr(step_result, "output", None),
+            "error": getattr(step_result, "error", None),
+            "execution_time": getattr(step_result, "execution_time", 0.0),
+        })
+
+    return tool_history
+
+
+def _apply_skill_registry_learning(skill_reg, skill_selection: Dict, request_message: str, execution_result: Optional[Dict]) -> None:
+    """Record tool usage and successful trigger learning across all execution paths."""
+    try:
+        if not skill_reg or not isinstance(execution_result, dict):
+            return
+
+        import re as _re
+
+        success = bool(execution_result.get("success"))
+        skill_name = skill_selection.get("skill_name")
+        for call in (execution_result.get("tool_history") or []):
+            tool_name = call.get("tool")
+            if not tool_name:
+                continue
+            skill_reg.record_tool_usage(
+                tool_name,
+                bool(call.get("success")),
+                latency_ms=float(call.get("execution_time") or 0.0) * 1000,
+            )
+
+        if success and skill_name and skill_name != "conversation":
+            skill_reg.learn_trigger(skill_name, set(_re.findall(r"[a-z0-9_]+", request_message.lower())))
+    except Exception as e:
+        print(f"[WARN] Skill registry learning failed: {e}")
+
+
+def _attempt_planning_fallback(request_message, session_id, skill_selection, task_planner, sessions, conv_mem):
+    """Fallback to task planning when tool calling fails."""
     if not task_planner:
         return None
     plan = task_planner.plan_task(request_message, context=build_planner_context(skill_selection))
@@ -96,332 +179,6 @@ def _attempt_planning_fallback(
     )
 
 
-def select_skill_for_message(message: str, skill_reg, skill_sel, llm, reg) -> Dict:
-    if not skill_reg or not skill_sel:
-        return {"matched": False, "skill_name": None, "category": None, "confidence": 0.0,
-                "reason": "skill_system_unavailable", "fallback_mode": "direct_tool_routing", "candidate_skills": []}
-    try:
-        result = skill_sel.select_skill(message, skill_reg, llm)
-        return {
-            "matched": bool(result.matched), "skill_name": result.skill_name,
-            "category": result.category, "confidence": result.confidence,
-            "reason": getattr(result, "reason", ""),
-            "fallback_mode": getattr(result, "fallback_mode", None),
-            "candidate_skills": getattr(result, "candidate_skills", []),
-            "planning_context": getattr(result, "planning_context", None),
-        }
-    except Exception as e:
-        print(f"[WARN] Skill selection failed: {e}")
-        return {"matched": False, "skill_name": None, "category": None, "confidence": 0.0,
-                "reason": f"error:{e}", "fallback_mode": "direct_tool_routing", "candidate_skills": []}
-
-
-def build_planner_context(skill_selection: Dict, skill_reg=None) -> Optional[Dict]:
-    if not skill_selection.get("matched"):
-        return None
-
-    skill_name = skill_selection.get("skill_name")
-    base = {
-        "skill_name": skill_name,
-        "category": skill_selection.get("category"),
-        "confidence": skill_selection.get("confidence"),
-        "planning_context": skill_selection.get("planning_context"),
-    }
-
-    # Enrich with full skill definition so planner gets preferred_tools,
-    # verification_mode, output_types, instructions_summary, constraints.
-    if skill_reg and skill_name:
-        skill_def = skill_reg.get(skill_name)
-        if skill_def:
-            instructions_summary = ""
-            try:
-                from pathlib import Path
-                md = Path(skill_def.instructions_path).read_text(encoding="utf-8")
-                # First non-empty paragraph after the heading
-                lines = [l.strip() for l in md.splitlines() if l.strip() and not l.startswith("#")]
-                instructions_summary = " ".join(lines[:3])[:300]
-            except Exception:
-                pass
-            base["skill_context"] = {
-                "skill_name": skill_name,
-                "category": skill_def.category,
-                "preferred_tools": skill_def.preferred_tools,
-                "required_tools": skill_def.required_tools,
-                "verification_mode": skill_def.verification_mode,
-                "output_types": skill_def.output_types,
-                "ui_renderer": skill_def.ui_renderer,
-                "instructions_summary": instructions_summary,
-                "skill_constraints": [],
-            }
-    return base
-
-
-def needs_runtime_refresh(message: str) -> bool:
-    lower = message.lower()
-    return any(k in lower for k in ["tool", "capability", "create", "evolve", "new tool"])
-
-
-def has_referenced_tools_loaded(reg, message: str) -> bool:
-    if not reg:
-        return False
-    lower = message.lower()
-    return any(lower in t.__class__.__name__.lower() for t in reg.tools)
-
-
-def execute_tool_calls(tool_calls: List[Dict], session_id: str, reg, sessions: Dict, refresh_registry) -> tuple:
-    from core.tool_orchestrator import ToolOrchestrator
-    import time as _time
-    orchestrator = ToolOrchestrator(registry=reg)
-    results: List[Any] = []
-    errors: List[str] = []
-    executed: List[Dict[str, Any]] = []
-    last_tool = None
-    last_op = None
-    for call in tool_calls:
-        tool_name = call.get("tool") or call.get("name", "")
-        operation = call.get("operation") or call.get("function", "")
-        parameters = call.get("parameters") or call.get("arguments") or {}
-        t0 = _time.time()
-        try:
-            tool_obj = None
-            if reg:
-                if hasattr(reg, 'get_tool'):
-                    tool_obj = reg.get_tool(tool_name)
-                if tool_obj is None and hasattr(reg, 'tools'):
-                    tool_obj = next(
-                        (t for t in reg.tools
-                         if t.__class__.__name__ == tool_name
-                         or (getattr(t, 'name', None) == tool_name)),
-                        None
-                    )
-            if tool_obj is None:
-                raise ValueError(f"Tool not found: {tool_name}")
-            orch_result = orchestrator.execute_tool_step(
-                tool=tool_obj, tool_name=tool_name, operation=operation, parameters=parameters
-            )
-            success, data, error = orch_result.success, orch_result.data, orch_result.error
-            elapsed = _time.time() - t0
-            record = {"tool": tool_name, "operation": operation, "parameters": parameters,
-                      "success": success, "data": data, "error": error, "execution_time": elapsed}
-            executed.append(record)
-            if success:
-                results.append({"tool": tool_name, "operation": operation, "data": data})
-                last_tool = tool_name
-                last_op = operation
-            else:
-                errors.append(f"{tool_name}.{operation}: {error}")
-        except Exception as e:
-            elapsed = _time.time() - t0
-            executed.append({"tool": tool_name, "operation": operation, "parameters": parameters,
-                             "success": False, "data": None, "error": str(e), "execution_time": elapsed})
-            errors.append(f"{tool_name}.{operation}: {e}")
-    return results, errors, executed, last_tool, last_op
-
-
-def continue_tool_calling(tool_caller, message: str, history: List[Dict], executed_batch: List[Dict],
-                          skill_selection: Dict, execution_context) -> tuple:
-    try:
-        # Build structured result entries so LLM sees actual outputs, not a truncated summary
-        result_lines = []
-        for c in executed_batch:
-            status = "ok" if c["success"] else "err"
-            preview = str(c.get("data") or c.get("error") or "")[:300]
-            result_lines.append(f"[{status}] {c['tool']}.{c['operation']}: {preview}")
-        tool_results_block = "\n".join(result_lines)
-        continuation_msg = (
-            f"Tool results:\n{tool_results_block}\n\n"
-            f"Original request: {message}\n"
-            "Do you need to call more tools to fully answer the request? "
-            "If yes, call them. If no, provide a final answer."
-        )
-        allowed_tools = None
-        if execution_context and execution_context.available_tools:
-            allowed_tools = list(execution_context.available_tools.keys())
-        success, calls, response = tool_caller.call_with_tools(
-            continuation_msg, history,
-            skill_context=skill_selection.get("planning_context"),
-            allowed_tools=allowed_tools,
-        )
-        return success, calls, response
-    except Exception as e:
-        print(f"[WARN] continue_tool_calling failed: {e}")
-        return False, None, None
-
-
-def selected_ui_renderer(skill_selection: Dict) -> str:
-    skill_name = (skill_selection or {}).get("skill_name") or ""
-    renderers = {"web_research": "web_results", "browser_automation": "screenshot",
-                 "data_operations": "table", "code_workspace": "code", "knowledge_management": "markdown"}
-    return renderers.get(skill_name, "default")
-
-
-def selected_output_types(skill_selection: Dict) -> List[str]:
-    skill_name = (skill_selection or {}).get("skill_name") or ""
-    output_map = {
-        "web_research": ["text", "url", "summary"], "browser_automation": ["screenshot", "text"],
-        "data_operations": ["json", "table"], "code_workspace": ["code", "text"],
-        "knowledge_management": ["text", "markdown"], "computer_automation": ["text", "file"],
-    }
-    return output_map.get(skill_name, [])
-
-
-def validate_output_against_skill(result_data: Any, execution_context) -> Optional[str]:
-    try:
-        if not execution_context or not result_data:
-            return None
-        if isinstance(result_data, dict) and result_data.get("error") and not result_data.get("success", True):
-            return f"Tool returned error: {result_data['error']}"
-        return None
-    except Exception:
-        return None
-
-
-def select_primary_result(results: List[Any], executed_history: List[Dict]) -> tuple:
-    if not results:
-        return None, None, None
-    best = results[0]
-    best_tool = executed_history[0].get("tool") if executed_history else None
-    best_op = executed_history[0].get("operation") if executed_history else None
-    for i, r in enumerate(results):
-        data = r.get("data") if isinstance(r, dict) else r
-        best_data = best.get("data") if isinstance(best, dict) else best
-        if data and len(str(data)) > len(str(best_data)):
-            best = r
-            if i < len(executed_history):
-                best_tool = executed_history[i].get("tool")
-                best_op = executed_history[i].get("operation")
-    data = best.get("data") if isinstance(best, dict) else best
-    return data, best_tool, best_op
-
-
-def truncate_for_history(executed_batch: List[Dict], limit: int = 1500) -> str:
-    parts = []
-    for c in executed_batch:
-        status = "ok" if c.get("success") else "err"
-        preview = str(c.get("data") or c.get("error") or "")[:200]
-        parts.append(f"{status} {c.get('tool')}.{c.get('operation')}: {preview}")
-    return "\n".join(parts)[:limit]
-
-
-def _build_wra_components(_answer: str, raw_data: list) -> list:
-    """Build clean UI components for WRA results — structured search results as table, skip raw HTML."""
-    import ast
-    from core.output_analyzer import OutputAnalyzer
-    search_results = []
-    components = []
-
-    for item in raw_data:
-        # Structured content dict from get_structured_content / extract_* operations
-        if isinstance(item, dict):
-            # done_extras from CrewAI-style structured done action
-            if item.get("key_facts") and isinstance(item["key_facts"], list):
-                components.append({"type": "list", "renderer": "list",
-                                    "items": item["key_facts"], "title": "Key Facts"})
-                continue
-            if item.get("items") and isinstance(item["items"], list):
-                components.append({"type": "list", "renderer": "list",
-                                    "items": item["items"], "title": "Results"})
-                continue
-            if item.get("value"):
-                components.append({"type": "text_content", "renderer": "text_content",
-                                    "content": f"{item['value']} {item.get('unit', '')}".strip(),
-                                    "title": "Value"})
-                continue
-            if item.get("tables"):
-                for tbl in item["tables"][:5]:
-                    if tbl.get("rows"):
-                        components.append({
-                            "type": "table", "renderer": "table",
-                            "data": tbl["rows"],
-                            "title": tbl.get("caption") or "Table",
-                            "columns": tbl.get("headers") or OutputAnalyzer._extract_columns(tbl["rows"]),
-                        })
-                continue
-            if item.get("lists"):
-                for lst in item["lists"][:5]:
-                    if lst.get("items"):
-                        components.append({"type": "list", "renderer": "list", "items": lst["items"]})
-                continue
-            if item.get("body") and len(str(item["body"])) > 100:
-                components.append({
-                    "type": "text_content", "renderer": "text_content",
-                    "content": item["body"],
-                    "title": item.get("title") or "Article",
-                    "source_url": item.get("url", ""),
-                })
-                continue
-            if isinstance(item.get("links"), list) and item["links"] and isinstance(item["links"][0], dict) and "href" in item["links"][0]:
-                components.append({
-                    "type": "table", "renderer": "table",
-                    "data": item["links"][:50],
-                    "title": "Links", "columns": ["text", "href", "title"],
-                })
-                continue
-
-        # Raw list of search result dicts (stored directly, not stringified)
-        if isinstance(item, list) and item and isinstance(item[0], dict):
-            for r in item:
-                if isinstance(r, dict) and (r.get("url") or r.get("link")):
-                    search_results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url") or r.get("link", ""),
-                        "snippet": r.get("snippet") or r.get("description") or r.get("content", ""),
-                    })
-            continue
-
-        # Stringified list of search result dicts (legacy fallback)
-        if isinstance(item, str):
-            try:
-                parsed = ast.literal_eval(item)
-                if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                    item = parsed
-            except Exception:
-                pass
-        if isinstance(item, list):
-            for r in item:
-                if isinstance(r, dict) and (r.get("url") or r.get("link")):
-                    search_results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url") or r.get("link", ""),
-                        "snippet": r.get("snippet") or r.get("description") or r.get("content", ""),
-                    })
-
-    if search_results:
-        components.append({
-            "type": "table",
-            "renderer": "table",
-            "data": search_results[:10],
-            "title": "Sources",
-            "columns": ["title", "url", "snippet"],
-        })
-    return components
-
-
-def record_capability_gap(message: str, error: str, skill_selection: Dict, llm, reg) -> None:
-    try:
-        from core.gap_detector import GapDetector
-        from core.gap_tracker import GapTracker
-        from core.capability_mapper import CapabilityMapper
-
-        gap = GapDetector(CapabilityMapper()).analyze_failed_task(message, error, skill_selection)
-        if gap and gap.confidence >= 0.6:
-            # Skip if already resolved in cua.db
-            try:
-                from core.cua_db import get_conn as _gc
-                with _gc() as _c:
-                    row = _c.execute(
-                        "SELECT id FROM resolved_gaps WHERE capability=? LIMIT 1",
-                        (gap.capability,)
-                    ).fetchone()
-                if row:
-                    return
-            except Exception:
-                pass
-            GapTracker().record_gap(gap)
-    except Exception as e:
-        print(f"[WARN] Gap recording failed: {e}")
-
-
 def create_chat_handler(runtime, sessions: Dict, refresh_registry):
     """Returns (stop_chat, chat) handler functions bound to runtime."""
 
@@ -433,6 +190,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
     task_planner = runtime.task_planner
     exec_engine = runtime.execution_engine
     agent = runtime.autonomous_agent
+    tool_orchestrator = runtime.tool_orchestrator
     circuit_breaker = runtime.circuit_breaker
     logger = runtime.logger
 
@@ -444,8 +202,21 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
     async def chat(request: ChatRequest):
         global _stop_requested
         _stop_requested = False
+        
+        # Set up thinking callback for LLM client
+        from api.trace_ws import broadcast_trace_sync
+        def thinking_callback(thinking_text: str):
+            broadcast_trace_sync("thinking", thinking_text, "in_progress")
+        llm.set_thinking_callback(thinking_callback)
+        
+        try:
+            return await _chat_impl(request)
+        finally:
+            llm.clear_thinking_callback()
+    
+    async def _chat_impl(request: ChatRequest):
 
-        from core.input_validation import validate_text_input
+        from infrastructure.validation.input_validator import validate_text_input
         try:
             validate_text_input(request.message, max_length=50000, field_name="message")
         except ValueError as e:
@@ -477,8 +248,8 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 )
 
             # Simple message fast path
-            if _is_simple_message(request.message):
-                response_text = _simple_reply(request.message)
+            if is_simple_message(request.message):
+                response_text = simple_reply(request.message)
                 execution_result = {"success": True, "mode": "conversation", "simple_greeting": True}
                 sessions[session_id]["messages"].append({
                     "role": "assistant", "content": response_text, "timestamp": time.time(),
@@ -492,10 +263,27 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 "reason": "skill_system_unavailable", "fallback_mode": "direct_tool_routing",
                 "candidate_skills": [],
             }
+            print(f"[DEBUG] Skill selection: {skill_selection.get('skill_name')} (confidence={skill_selection.get('confidence'):.2f}, reason={skill_selection.get('reason')})")
 
             # Conversation skill
             if skill_selection.get("skill_name") == "conversation":
-                response_text = llm.generate_response(request.message, sessions[session_id]["messages"][-5:])
+                # Enable streaming for conversational responses
+                from api.trace_ws import broadcast_trace_sync
+                accumulated_response = ""
+                
+                def stream_handler(chunk: str):
+                    nonlocal accumulated_response
+                    accumulated_response += chunk
+                    broadcast_trace_sync("llm_stream", chunk, "in_progress")
+                
+                response_text = llm.generate_response(
+                    request.message, 
+                    sessions[session_id]["messages"][-5:],
+                    stream=True,
+                    stream_callback=stream_handler
+                )
+                response_text = _sanitize_llm_response_text(response_text)
+                
                 execution_result = {
                     "success": True, "mode": "conversation", "skill_optimized": True,
                     "selected_skill": "conversation", "selected_category": "conversation",
@@ -522,12 +310,25 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     execution_id = f"{session_id}_approved_{int(time.time())}"
                     try:
                         state = exec_engine.execute_plan(pending_plan, execution_id) if exec_engine else None
+                        tool_history = _build_tool_history_from_plan_state(pending_plan, state)
                         if state and getattr(state, "error", None):
                             response_text = f"Plan approved, but execution failed: {state.error}"
-                            execution_result = {"success": False, "mode": "autonomous_agent", "status": "execution_failed", "error": state.error}
+                            execution_result = {
+                                "success": False,
+                                "mode": "autonomous_agent",
+                                "status": "execution_failed",
+                                "error": state.error,
+                                "tool_history": format_tool_history_for_display(tool_history),
+                            }
                         else:
                             response_text = "✓ Plan approved and executed."
-                            execution_result = {"success": True, "mode": "autonomous_agent", "status": "executed", "execution_id": execution_id}
+                            execution_result = {
+                                "success": True,
+                                "mode": "autonomous_agent",
+                                "status": "executed",
+                                "execution_id": execution_id,
+                                "tool_history": format_tool_history_for_display(tool_history),
+                            }
                     except Exception as e:
                         response_text = f"Plan approved, but execution failed: {str(e)}"
                         execution_result = {"success": False, "mode": "autonomous_agent", "status": "execution_failed", "error": str(e)}
@@ -552,6 +353,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     "skill_confidence": skill_selection.get("confidence"),
                     "fallback_used": False,
                 })
+                _apply_skill_registry_learning(skill_reg, skill_selection, request.message, execution_result)
                 return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
 
             # Registry refresh
@@ -567,7 +369,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
 
             if is_multi_step:
                 try:
-                    from core.autonomous_agent import AgentGoal
+                    from application.use_cases.autonomy.autonomous_agent import AgentGoal
                     import api.chat_helpers as _self
                     # Resolve short follow-up references using recent conversation history
                     goal_text = request.message
@@ -625,29 +427,33 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         # WRA path: no final_state, raw_data list returned directly
                         wra_raw = result.get("raw_data")
                         if not final_state and wra_raw:
-                            response_text = result.get("message", "Task completed.")
+                            response_text = _sanitize_llm_response_text(result.get("message", "Task completed."))
                             # Build components from synthesized answer + any structured search results
-                            agent_components = _build_wra_components(response_text, wra_raw)
+                            agent_components = build_wra_components(response_text, wra_raw)
+                            execution_result = {
+                                "success": True,
+                                "mode": "autonomous_agent",
+                                "selected_skill": skill_selection.get("skill_name"),
+                                "selected_category": skill_selection.get("category"),
+                                "skill_confidence": skill_selection.get("confidence"),
+                                "fallback_used": False,
+                                "tool_history": format_tool_history_for_display(result.get("tool_history") or []),
+                                "components": agent_components,
+                                "primary_result": wra_raw[0] if wra_raw else None,
+                                "ui_renderer": selected_ui_renderer(skill_selection),
+                            }
                             sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
                             if conv_mem:
                                 conv_mem.save_message(session_id, "assistant", response_text)
                             try:
-                                from core.event_bus import get_event_bus
+                                from infrastructure.messaging.event_bus import get_event_bus
                                 get_event_bus().emit_sync("agent_plan_clear", {})
                             except Exception:
                                 pass
+                            _apply_skill_registry_learning(skill_reg, skill_selection, request.message, execution_result)
                             return ChatResponse(
                                 response=response_text, session_id=session_id, success=True,
-                                execution_result={
-                                    "success": True, "mode": "autonomous_agent",
-                                    "selected_skill": skill_selection.get("skill_name"),
-                                    "selected_category": skill_selection.get("category"),
-                                    "skill_confidence": skill_selection.get("confidence"),
-                                    "fallback_used": False,
-                                    "components": agent_components,
-                                    "primary_result": wra_raw[0] if wra_raw else None,
-                                    "ui_renderer": selected_ui_renderer(skill_selection),
-                                },
+                                execution_result=execution_result,
                             )
 
                         step_outputs = []
@@ -708,18 +514,36 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         if step_outputs:
                             content_lines = [f"{k}: {v}" for o in step_outputs[:6] for k, v in o.items() if k != "step"]
                             has_rich = len(all_step_data) >= 2
-                            word_target = "100-200 words" if has_rich else "1-3 sentences"
-                            summary_prompt = (
-                                f"The user asked: {request.message}\n\nResults:\n"
-                                + "\n".join(f"- {line}" for line in content_lines)
-                                + f"\n\nWrite a {word_target} response that directly answers the user's question using the actual data above."
-                                + "\nHighlight key findings and specific values. Do NOT say 'I executed' or 'the tool returned'."
-                                + "\nStructured details (charts, tables) will appear below your response."
-                            )
-                            try:
-                                response_text = llm.generate_response(summary_prompt, [])
-                            except Exception:
-                                response_text = f"\u2713 {result.get('message', 'Task completed')}"
+                            
+                            # Special handling for financial operations
+                            primary_data = max(all_step_data, key=lambda x: len(str(x))) if all_step_data else {}
+                            if isinstance(primary_data, dict):
+                                # Morning note
+                                if primary_data.get("one_liner") or primary_data.get("market_mood"):
+                                    date_str = primary_data.get("date", "")
+                                    one_liner = primary_data.get("one_liner", "")
+                                    market_mood = primary_data.get("market_mood", "")
+                                    response_text = f"📊 {date_str}\n\n{one_liner}\n\n{market_mood}" if one_liner or market_mood else f"Morning note for {date_str} is ready."
+                                # Full report
+                                elif primary_data.get("executive_summary") or primary_data.get("rating"):
+                                    exec_summary = primary_data.get("executive_summary", "")
+                                    rating = primary_data.get("rating", "")
+                                    response_text = f"Investment report generated. Rating: {rating.upper()}\n\n{exec_summary}" if exec_summary else "Full investment report is ready."
+                                # Generic financial data
+                                else:
+                                    word_target = "2-3 sentences"
+                                    summary_prompt = (
+                                        f"User request: {request.message}\n\n"
+                                        f"Data: {str(primary_data)[:600]}\n\n"
+                                        f"Write a {word_target} natural response highlighting key findings. "
+                                        f"Be direct and specific. No meta-commentary."
+                                    )
+                                    try:
+                                        response_text = _sanitize_llm_response_text(llm.generate_response(summary_prompt, [], max_tokens=150))
+                                    except Exception:
+                                        response_text = f"✓ {result.get('message', 'Task completed')}"
+                            else:
+                                response_text = f"✓ {result.get('message', 'Task completed')}"
                         else:
                             response_text = f"\u2713 {result.get('message', 'Task completed')}"
                     else:
@@ -729,7 +553,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     agent_components = list(screenshot_components) if 'screenshot_components' in dir() else []
                     all_step_data_safe = all_step_data if 'all_step_data' in dir() else []
                     if result.get("success") and all_step_data_safe:
-                        from core.output_analyzer import OutputAnalyzer
+                        from infrastructure.analysis.output_analyzer import OutputAnalyzer
                         # Use the richest single output (largest dict or longest string)
                         primary = max(all_step_data_safe, key=lambda x: len(str(x)))
                         last_tool = None
@@ -753,30 +577,33 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     if conv_mem:
                         conv_mem.save_message(session_id, "assistant", response_text)
                     try:
-                        from core.event_bus import get_event_bus
+                        from infrastructure.messaging.event_bus import get_event_bus
                         get_event_bus().emit_sync("agent_plan_clear", {})
                     except Exception as e:
                         print(f"[WARN] Event bus emit failed: {e}")
                     primary_data = max(all_step_data_safe, key=lambda x: len(str(x))) if all_step_data_safe else None
+                    execution_result = {
+                        "success": bool(result.get("success")), "mode": "autonomous_agent",
+                        "selected_skill": skill_selection.get("skill_name"),
+                        "selected_category": skill_selection.get("category"),
+                        "skill_confidence": skill_selection.get("confidence"),
+                        "fallback_used": False,
+                        "tool_history": format_tool_history_for_display(result.get("tool_history") or []),
+                        "components": agent_components,
+                        "primary_result": primary_data,
+                    }
+                    _apply_skill_registry_learning(skill_reg, skill_selection, request.message, execution_result)
                     return ChatResponse(
                         response=response_text, session_id=session_id, success=True,
-                        execution_result={
-                            "success": bool(result.get("success")), "mode": "autonomous_agent",
-                            "selected_skill": skill_selection.get("skill_name"),
-                            "selected_category": skill_selection.get("category"),
-                            "skill_confidence": skill_selection.get("confidence"),
-                            "fallback_used": False,
-                            "components": agent_components,
-                            "primary_result": primary_data,
-                        },
+                        execution_result=execution_result,
                     )
                 except Exception as e:
                     print(f"[DEBUG] Autonomous agent failed: {e}, falling back to tool calling")
 
             # Native tool calling
             from planner.tool_calling import ToolCallingClient
-            from core.skills import SkillContextHydrator
-            from core.skills.tool_selector import ContextAwareToolSelector
+            from application.services.skill_context_hydrator import SkillContextHydrator
+            from application.services.tool_selector import ContextAwareToolSelector
 
             tool_caller = ToolCallingClient(ollama_url=llm.ollama_url, model=llm.model, registry=reg)
 
@@ -785,7 +612,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
             if skill_selection.get("matched") and skill_selection.get("skill_name"):
                 skill_def = skill_reg.get(skill_selection["skill_name"])
                 if skill_def:
-                    from core.skills.models import SkillSelection as SkillSelectionModel
+                    from domain.entities.skill_models import SkillSelection as SkillSelectionModel
                     skill_sel_obj = SkillSelectionModel(
                         matched=True, skill_name=skill_selection["skill_name"],
                         category=skill_selection.get("category"),
@@ -819,7 +646,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     planned = _attempt_planning_fallback(request.message, session_id, skill_selection, task_planner, sessions, conv_mem)
                     if planned:
                         return planned
-                response_text = llm.generate_response(request.message, conversation_history)
+                response_text = _sanitize_llm_response_text(llm.generate_response(request.message, conversation_history))
                 execution_result = {"success": True, "mode": "conversation", "fallback": True}
 
             elif tool_calls:
@@ -841,7 +668,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         execution_context.warnings.append(f"Starting continuation round {round_index + 1}")
 
                     results, errors, executed_calls_batch, last_tool_name, last_operation = execute_tool_calls(
-                        current_calls, session_id, reg, sessions, refresh_registry,
+                        current_calls, session_id, reg, sessions, refresh_registry, tool_orchestrator,
                     )
                     aggregated_results.extend(results)
                     aggregated_errors.extend(errors)
@@ -929,8 +756,14 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     if not validation_failed:
                         # Check if result is from DataVisualizationTool render_output
                         viz_output = None
-                        if isinstance(result_data, dict) and result_data.get("type") in ("chart_image", "table", "metrics", "code", "text"):
-                            viz_output = result_data
+                        if isinstance(result_data, dict):
+                            # Check both direct format and success-wrapped format
+                            output_type = result_data.get("type")
+                            if output_type in ("chart_image", "table", "metrics", "code", "text"):
+                                viz_output = result_data
+                            # Also check if wrapped in success envelope
+                            elif result_data.get("success") and result_data.get("renderer") in ("chart_image", "table", "metrics", "code", "text"):
+                                viz_output = result_data
                         
                         if viz_output:
                             # DataVisualizationTool already formatted the output
@@ -971,12 +804,12 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                                     f"The formatted visualization appears below your response."
                                 )
                                 try:
-                                    response_text = llm.generate_response(summary_prompt, [])
+                                    response_text = _sanitize_llm_response_text(llm.generate_response(summary_prompt, [], max_tokens=150))
                                 except Exception:
                                     response_text = "Here's the formatted output:"
                         else:
                             # Fallback to OutputAnalyzer for non-viz outputs
-                            from core.output_analyzer import OutputAnalyzer
+                            from infrastructure.analysis.output_analyzer import OutputAnalyzer
                             components = OutputAnalyzer.analyze(
                                 result_data, tool_name, operation,
                                 preferred_renderer=selected_ui_renderer(skill_selection),
@@ -990,41 +823,57 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             if final_direct_response:
                                 response_text = final_direct_response
                             else:
-                                word_target = "100-200 words" if has_rich_components else "1-3 sentences"
-                                summary_prompt = (
-                                    f"The user asked: {request.message}\n\n"
-                                    f"Tool: {tool_name}.{operation}\n"
-                                    f"Result: {str(result_data)[:800]}\n\n"
-                                    f"Write a {word_target} response that:\n"
-                                    f"- Directly answers the user's question\n"
-                                    f"- Highlights the most important findings\n"
-                                    f"- Mentions specific numbers/values from the result\n"
-                                    f"- Does NOT say 'I executed' or 'the tool returned'\n"
-                                    f"Structured details (charts, tables) will appear below your response."
-                                )
-                                try:
-                                    response_text = llm.generate_response(summary_prompt, [])
-                                except Exception:
-                                    response_text = "Done."
+                                # Special handling for morning notes and reports
+                                if operation == "generate_morning_note" and isinstance(result_data, dict):
+                                    date_str = result_data.get("date", "")
+                                    one_liner = result_data.get("one_liner", "")
+                                    market_mood = result_data.get("market_mood", "")
+                                    response_text = f"📊 {date_str}\n\n{one_liner}\n\n{market_mood}" if one_liner or market_mood else f"Morning note for {date_str} is ready."
+                                elif operation == "generate_full_report" and isinstance(result_data, dict):
+                                    exec_summary = result_data.get("executive_summary", "")
+                                    rating = result_data.get("rating", "")
+                                    response_text = f"Investment report generated. Rating: {rating.upper()}\n\n{exec_summary}" if exec_summary else "Full investment report is ready."
+                                else:
+                                    word_target = "100-200 words" if has_rich_components else "1-3 sentences"
+                                    summary_prompt = (
+                                        f"The user asked: {request.message}\n\n"
+                                        f"Tool: {tool_name}.{operation}\n"
+                                        f"Result: {str(result_data)[:800]}\n\n"
+                                        f"Write a {word_target} response that:\n"
+                                        f"- Directly answers the user's question\n"
+                                        f"- Highlights the most important findings\n"
+                                        f"- Mentions specific numbers/values from the result\n"
+                                        f"- Does NOT say 'I executed' or 'the tool returned'\n"
+                                        f"Structured details (charts, tables) will appear below your response."
+                                    )
+                                    try:
+                                        response_text = _sanitize_llm_response_text(llm.generate_response(summary_prompt, [], max_tokens=200))
+                                    except Exception:
+                                        response_text = "Done."
                         if not response_text:
                             response_text = "Task completed."
                         execution_result = {
                             "success": True, "results": aggregated_results, "primary_result": result_data,
-                            "tool_history": executed_history, "tool_calling": True, "components": components,
+                            "tool_history": format_tool_history_for_display(executed_history),
+                            "tool_calling": True, "components": components,
                             "ui_renderer": selected_ui_renderer(skill_selection), "rounds_used": round_index + 1,
                         }
 
                 if aggregated_errors or not aggregated_results:
                     error_msg = "; ".join(aggregated_errors) if aggregated_errors else "Execution failed"
                     try:
-                        response_text = llm.generate_response(
-                            f"A tool execution failed. Explain naturally.\nError: {error_msg}\nBe concise (1-2 sentences).", []
-                        )
+                        response_text = _sanitize_llm_response_text(llm.generate_response(
+                            f"A tool execution failed. Explain naturally.\nError: {error_msg}\nBe concise (1-2 sentences).", [],
+                            max_tokens=100
+                        ))
                     except Exception:
                         response_text = f"I encountered an issue: {error_msg}"
                     if not response_text:
                         response_text = f"Task failed: {error_msg}"
-                    execution_result = {"success": False, "errors": aggregated_errors, "tool_history": executed_history}
+                    execution_result = {
+                        "success": False, "errors": aggregated_errors,
+                        "tool_history": format_tool_history_for_display(executed_history)
+                    }
 
             else:
                 response_text = initial_response or "I understand your request."
@@ -1040,23 +889,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
             if conv_mem:
                 conv_mem.save_message(session_id, "assistant", response_text)
 
-            # Skill registry learning
-            try:
-                if skill_reg and isinstance(execution_result, dict):
-                    import re as _re
-                    _success = bool(execution_result.get("success"))
-                    _skill_name = skill_selection.get("skill_name")
-                    for _call in (execution_result.get("tool_history") or []):
-                        _tname = _call.get("tool")
-                        if _tname:
-                            skill_reg.record_tool_usage(
-                                _tname, bool(_call.get("success")),
-                                latency_ms=float(_call.get("execution_time") or 0.0) * 1000,
-                            )
-                    if _success and _skill_name and _skill_name != "conversation":
-                        skill_reg.learn_trigger(_skill_name, set(_re.findall(r"[a-z0-9_]+", request.message.lower())))
-            except Exception as e:
-                print(f"[WARN] Skill registry learning failed: {e}")
+            _apply_skill_registry_learning(skill_reg, skill_selection, request.message, execution_result)
 
             # Finalize execution_result metadata
             try:
@@ -1068,7 +901,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     "ui_renderer": selected_ui_renderer(skill_selection),
                 })
                 try:
-                    from core.decision_engine import get_decision_engine
+                    from domain.services.decision_engine import get_decision_engine
                     _de = get_decision_engine()
                     _scores = {skill_selection.get("skill_name", "unknown"): skill_selection.get("confidence", 0.0)} if skill_selection.get("skill_name") else None
                     _r = _de.score(skill_scores=_scores)

@@ -1,0 +1,68 @@
+.thinking-trace {
+  position: fixed;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: 300px;
+  padding: 12px 16px;
+  background: rgba(var(--bg-secondary-rgb, 30, 30, 40), 0.95);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  z-index: 9998;
+  animation: thinkingSlideIn 0.3s ease, thinkingFadeOut 0.5s ease 3.5s forwards;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.thinking-icon {
+  flex-shrink: 0;
+  color: var(--accent-color, #6366f1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brain-pulse {
+  animation: brainPulse 1.5s ease-in-out infinite;
+}
+
+.thinking-text {
+  flex: 1;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+@keyframes thinkingSlideIn {
+  from {
+    transform: translateY(-50%) translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(-50%) translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes thinkingFadeOut {
+  to {
+    opacity: 0;
+    transform: translateY(-50%) translateX(50px);
+  }
+}
+
+@keyframes brainPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}

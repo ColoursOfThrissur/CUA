@@ -14,6 +14,8 @@ class SafetyLevel(Enum):
 class ParameterType(Enum):
     STRING = "string"
     INTEGER = "integer"
+    FLOAT = "float"
+    NUMBER = "number"
     BOOLEAN = "boolean"
     LIST = "list"
     DICT = "dict"

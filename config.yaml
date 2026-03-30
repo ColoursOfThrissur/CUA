@@ -26,12 +26,23 @@ security:
   - .ps1
   - .sh
   - .dll
+branding:
+  internal_project_name: CUA
+  platform_name: Forge
+  assistant_name: Forge Assistant
 llm:
-  analysis_model: qwen
-  code_model: qwen
-  review_model: qwen
-  fallback_model: qwen
-  default_model: qwen
+  # Vision model for chat/planning, coder for code generation
+  chat_model: qwen         # qwen3.5:9b - vision + reasoning
+  planning_model: qwen     # qwen3.5:9b - vision-based planning
+  code_model: qwen-coder   # qwen2.5-coder:14b - tool creation/evolution
+  autonomy_model: qwen-coder     # qwen2.5-coder:14b - autonomy scanning
+  
+  # Legacy fields (for backward compatibility)
+  analysis_model: qwen-coder
+  review_model: qwen-coder
+  fallback_model: qwen-coder
+  default_model: qwen-coder
+  
   temperature: 0.7
   max_tokens: 4096
   max_retries: 3
@@ -40,24 +51,35 @@ llm:
   provider: ollama
   api_key: ''
   base_url: ''
+  
   models:
     qwen:
-      name: qwen2.5-coder:14b
-      context_length: 16384
-      description: Qwen 2.5 Coder 14B - Optimized for code generation (Q4_K_M)
+      name: qwen3.5:9b
+      context_length: 32768
+      description: Qwen3.5 9B - Vision + reasoning (Thinking model)
       strengths:
-      - code_generation
-      - syntax
-      - refactoring
+      - vision
+      - reasoning
+      - chat
+      - multimodal
     mistral:
       name: mistral:7b
       context_length: 8192
-      description: Mistral 7B - Fast reasoning and analysis
+      description: Mistral 7B - Fast reasoning and structured output
       strengths:
       - reasoning
       - analysis
       - planning
-      - review
+      - json_generation
+    qwen-coder:
+      name: qwen2.5-coder:14b
+      context_length: 32768
+      description: Qwen 2.5 Coder 14B - Code generation specialist
+      strengths:
+      - code_generation
+      - refactoring
+      - tool_creation
+      - evolution
     phi:
       name: phi3:latest
       context_length: 2048

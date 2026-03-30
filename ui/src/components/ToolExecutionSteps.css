@@ -1,0 +1,127 @@
+.tool-execution-steps {
+  margin: 12px 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.steps-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+}
+
+.steps-header:hover {
+  background: var(--hover-bg);
+}
+
+.steps-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-badge {
+  background: var(--error-color);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.steps-list {
+  border-top: 1px solid var(--border-color);
+}
+
+.step-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.step-item:last-child {
+  border-bottom: none;
+}
+
+.step-item.error {
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-icon {
+  flex-shrink: 0;
+}
+
+.success-icon {
+  color: var(--success-color);
+}
+
+.error-icon {
+  color: var(--error-color);
+}
+
+.step-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.step-number {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.step-tool {
+  color: var(--text-primary);
+  font-family: 'Courier New', monospace;
+}
+
+.step-duration {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.step-error {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error-color);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.step-error strong {
+  color: var(--error-color);
+}
+
+.step-preview {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

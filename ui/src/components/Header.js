@@ -212,7 +212,7 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
   const [showLLMSettings, setShowLLMSettings] = useState(false);
 
   const modes = [
-    { id: 'chat', label: 'CUA', icon: MessageSquare },
+    { id: 'chat', label: 'Forge', icon: MessageSquare },
     { id: 'tools', label: 'Tools', icon: Wrench },
     { id: 'evolution', label: 'Evolution', icon: Zap },
     { id: 'autonomy', label: 'Autonomy', icon: Bot }
@@ -237,7 +237,7 @@ function Header({ loopStatus, availableModels, currentModel, onModelChange, onOp
   return (
     <header className="header">
       <div className="header-left">
-        <h1 className="logo">CUA Agent</h1>
+        <h1 className="logo">Forge</h1>
         <span className="status-badge">
           <span className={`status-dot ${loopStatus.running ? 'running' : 'stopped'}`}></span>
           {loopStatus.running ? `Running (${loopStatus.iteration}/${loopStatus.maxIterations})` : 'Idle'}

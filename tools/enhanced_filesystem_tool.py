@@ -16,7 +16,7 @@ class FilesystemTool(BaseTool):
     """Filesystem operations with sandboxed access."""
 
     def __init__(self, orchestrator=None, allowed_roots: List[str] = None):
-        from core.config_manager import get_config
+        from shared.config.config_manager import get_config
         if allowed_roots is not None:
             if not allowed_roots:
                 raise ValueError("allowed_roots cannot be an empty list.")

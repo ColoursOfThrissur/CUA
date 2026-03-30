@@ -23,6 +23,11 @@ class ToolResult:
     execution_time: float = 0.0
     timestamp: datetime = None
     metadata: Dict[str, Any] = None
+    action_status: Optional[str] = None
+    world_state: Optional[Dict[str, Any]] = None
+    confidence: Optional[float] = None
+    blocking_reason: Optional[str] = None
+    recommended_action: Optional[str] = None
     
     def __post_init__(self):
         if self.timestamp is None:
@@ -45,7 +50,12 @@ class ToolResult:
             "error_message": self.error_message,
             "execution_time": self.execution_time,
             "timestamp": self.timestamp.isoformat(),
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "action_status": self.action_status,
+            "world_state": self.world_state,
+            "confidence": self.confidence,
+            "blocking_reason": self.blocking_reason,
+            "recommended_action": self.recommended_action,
         }
     
     def to_llm_feedback(self) -> str:

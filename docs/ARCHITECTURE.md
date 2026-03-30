@@ -1,4 +1,4 @@
-# CUA System Architecture
+# Forge System Architecture
 **Last Updated**: February 20, 2026  
 **Version**: 2.0 - Complete Modular Tool Creation Flow
 
@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-CUA is an autonomous agent system with hybrid self-improvement engine and modular tool creation capabilities. The system uses Qwen 14B for code generation with deterministic policy enforcement, achieving 80% success rate on improvements and validated tool generation flow.
+Forge is an autonomous agent system with hybrid self-improvement engine and modular tool creation capabilities. The system uses Qwen 14B for code generation with deterministic policy enforcement, achieving 80% success rate on improvements and validated tool generation flow.
 
 **Key Achievements**:
 - ✅ Modular tool creation pipeline (validated Feb 20, 2026)
@@ -24,7 +24,7 @@ CUA is an autonomous agent system with hybrid self-improvement engine and modula
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     CUA SYSTEM                               │
+│                   FORGE PLATFORM                             │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
@@ -481,7 +481,7 @@ cua/
 ### Keep for Reference
 1. `core/tool_creation_flow.py` - Contains fallback logic and validation examples
 2. `core/tool_generation_orchestrator.py` - Reference implementation
-3. `docs/TOOL_CREATION_FLOW_COMPLETE.md` - Documentation
+3. `docs/TOOL_CREATION_FLOW_EXPLAINED.md` - Documentation
 4. Test files in `tests/experimental/` - Validation
 5. LLM logs in `logs/llm/` - Debugging
 
@@ -532,9 +532,8 @@ cua/
 ## References
 
 - [Tool Creation Flow](docs/TOOL_CREATION_FLOW_EXPLAINED.md)
-- [Thin Tool Implementation](docs/THIN_TOOL_IMPLEMENTATION.md)
-- [Inter-Tool Communication](docs/INTER_TOOL_COMMUNICATION.md)
-- [Capability Gap Testing](docs/CAPABILITY_GAP_TEST_PROMPTS.md)
+- [System Architecture](docs/SYSTEM_ARCHITECTURE.md)
+- [Observability](docs/OBSERVABILITY.md)
 
 ---
 

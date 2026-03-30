@@ -1,7 +1,7 @@
 # Tool Creation Flow - Complete Guide
 
 ## Overview
-CUA's tool creation system generates different types of tools from capability gap descriptions using a multi-stage LLM pipeline with comprehensive validation.
+Forge's tool creation system generates different types of tools from capability gap descriptions using a multi-stage LLM pipeline with comprehensive validation.
 
 ## Flow Architecture
 

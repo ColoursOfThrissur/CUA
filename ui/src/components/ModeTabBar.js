@@ -4,7 +4,7 @@ import './ModeTabBar.css';
 
 function ModeTabBar({ activeMode, onModeChange }) {
   const modes = [
-    { id: 'chat', label: 'CUA Chat', icon: MessageSquare },
+    { id: 'chat', label: 'Forge Chat', icon: MessageSquare },
     { id: 'tools', label: 'Tools', icon: Wrench },
     { id: 'evolution', label: 'Evolution', icon: Zap },
     { id: 'autonomy', label: 'Autonomy', icon: Bot },

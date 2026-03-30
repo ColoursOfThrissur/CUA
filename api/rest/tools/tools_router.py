@@ -1,0 +1,41 @@
+"""Compatibility exports for tool-sync and registry endpoints."""
+
+from api.rest.tools.tools_api import (
+    SyncResponse,
+    get_capabilities_text,
+    get_tool_registry,
+    llm_client_instance,
+    refresh_runtime_registry_from_files,
+    registry_manager,
+    router,
+    runtime_registry,
+    set_llm_client_for_sync,
+    set_registry_manager,
+    set_runtime_registry,
+    set_tool_orchestrator_for_sync,
+    set_tool_registrar_for_sync,
+    sync_tool_capabilities,
+    test_tool,
+    tool_orchestrator,
+    tool_registrar,
+)
+
+__all__ = [
+    "SyncResponse",
+    "get_capabilities_text",
+    "get_tool_registry",
+    "llm_client_instance",
+    "refresh_runtime_registry_from_files",
+    "registry_manager",
+    "router",
+    "runtime_registry",
+    "set_llm_client_for_sync",
+    "set_registry_manager",
+    "set_runtime_registry",
+    "set_tool_orchestrator_for_sync",
+    "set_tool_registrar_for_sync",
+    "sync_tool_capabilities",
+    "test_tool",
+    "tool_orchestrator",
+    "tool_registrar",
+]

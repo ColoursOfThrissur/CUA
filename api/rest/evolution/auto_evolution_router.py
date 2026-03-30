@@ -1,0 +1,43 @@
+"""Compatibility router export for auto-evolution endpoints."""
+
+from api.rest.evolution.auto_evolution_api import (
+    ConfigUpdate,
+    CoordinatorConfigUpdate,
+    disable_trigger,
+    enable_trigger,
+    get_coordinated_status,
+    get_queue,
+    get_status,
+    get_triggers_status,
+    router,
+    run_coordinated_cycle,
+    set_coordinated_engine,
+    start_coordinated_engine,
+    start_orchestrator,
+    stop_coordinated_engine,
+    stop_orchestrator,
+    trigger_scan,
+    update_config,
+    update_coordinated_config,
+)
+
+__all__ = [
+    "ConfigUpdate",
+    "CoordinatorConfigUpdate",
+    "disable_trigger",
+    "enable_trigger",
+    "get_coordinated_status",
+    "get_queue",
+    "get_status",
+    "get_triggers_status",
+    "router",
+    "run_coordinated_cycle",
+    "set_coordinated_engine",
+    "start_coordinated_engine",
+    "start_orchestrator",
+    "stop_coordinated_engine",
+    "stop_orchestrator",
+    "trigger_scan",
+    "update_config",
+    "update_coordinated_config",
+]
