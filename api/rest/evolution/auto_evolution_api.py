@@ -35,6 +35,17 @@ def _coordinated_reload_block_reason() -> str:
         "Run the server without reload for unattended create/evolve cycles."
     )
 
+
+def _get_active_orchestrator():
+    return coordinated_engine.auto_orchestrator if coordinated_engine else orchestrator
+
+
+def _require_active_orchestrator():
+    active_orch = _get_active_orchestrator()
+    if not active_orch:
+        raise HTTPException(400, "Orchestrator not initialized")
+    return active_orch
+
 class ConfigUpdate(BaseModel):
     mode: Optional[str] = None
     scan_interval: Optional[int] = None
@@ -92,9 +103,8 @@ async def stop_orchestrator():
 @router.get("/status")
 async def get_status():
     """Get orchestrator status"""
-    global orchestrator, trigger_manager
-    # Prefer the coordinated engine's inner orchestrator when available
-    active_orch = coordinated_engine.auto_orchestrator if coordinated_engine else orchestrator
+    global trigger_manager
+    active_orch = _get_active_orchestrator()
     if not active_orch:
         return {"running": False, "message": "Orchestrator not initialized"}
     status = active_orch.get_status()
@@ -105,22 +115,16 @@ async def get_status():
 @router.post("/config")
 async def update_config(config: ConfigUpdate):
     """Update orchestrator configuration"""
-    global orchestrator
+    active_orch = _require_active_orchestrator()
+    config_dict = {k: v for k, v in config.model_dump().items() if v is not None}
+    active_orch.update_config(config_dict)
     
-    if not orchestrator:
-        raise HTTPException(400, "Orchestrator not initialized")
-        
-    config_dict = {k: v for k, v in config.dict().items() if v is not None}
-    orchestrator.update_config(config_dict)
-    
-    return {"success": True, "config": orchestrator.config}
+    return {"success": True, "config": active_orch.config}
 
 @router.get("/queue")
 async def get_queue():
     """Get current evolution queue"""
-    global orchestrator
-    # Prefer the coordinated engine's inner orchestrator when available
-    active_orch = coordinated_engine.auto_orchestrator if coordinated_engine else orchestrator
+    active_orch = _get_active_orchestrator()
     if not active_orch:
         return {"queue": [], "in_progress": [], "running": False, "message": "Orchestrator not initialized"}
     queue_with_priority = []
@@ -135,21 +139,15 @@ async def trigger_scan():
     """Manually trigger tool health scan"""
     global orchestrator
     try:
-        # Always prefer the coordinated engine's orchestrator so the queue is shared
-        if coordinated_engine:
-            active_orch = coordinated_engine.auto_orchestrator
-            await active_orch.ensure_initialized()
-            active_orch.queue.clear_queue()
-            await active_orch._scan_and_queue()
-            return {"success": True, "message": "Scan completed", "queue_size": len(active_orch.queue.queue)}
-        # Fallback: standalone orchestrator
-        if not orchestrator:
+        active_orch = _get_active_orchestrator()
+        if not active_orch:
             from api.server import llm_client, registry
             orchestrator = AutoEvolutionOrchestrator(llm_client, registry)
-        await orchestrator.ensure_initialized()
-        orchestrator.queue.clear_queue()
-        await orchestrator._scan_and_queue()
-        return {"success": True, "message": "Scan completed", "queue_size": len(orchestrator.queue.queue)}
+            active_orch = orchestrator
+        await active_orch.ensure_initialized()
+        active_orch.queue.clear_queue()
+        await active_orch._scan_and_queue()
+        return {"success": True, "message": "Scan completed", "queue_size": len(active_orch.queue.queue)}
     except Exception as e:
         import traceback
         raise HTTPException(500, f"Scan failed: {str(e)}\n{traceback.format_exc()}")
@@ -236,5 +234,5 @@ async def get_coordinated_status():
 async def update_coordinated_config(config: CoordinatorConfigUpdate):
     if not coordinated_engine:
         raise HTTPException(400, "Coordinated engine not initialized")
-    config_dict = {k: v for k, v in config.dict().items() if v is not None}
+    config_dict = {k: v for k, v in config.model_dump().items() if v is not None}
     return {"success": True, "config": coordinated_engine.update_config(config_dict)}

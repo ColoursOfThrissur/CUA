@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
 
+from application.services.diff_payload import build_diff_payload
 from infrastructure.persistence.sqlite.logging import get_logger
 from infrastructure.persistence.sqlite.utils import safe_connect, safe_close
 
@@ -139,6 +140,7 @@ class PlanHistory:
             "description": row[4],
             "proposal": json.loads(row[5]),
             "patch": row[6],
+            "diff_payload": build_diff_payload(row[6] or ""),
             "risk_level": row[7],
             "test_result": json.loads(row[8]),
             "apply_result": json.loads(row[9]),

@@ -101,6 +101,20 @@ class StateRegistry:
             })
         return history
 
+    def build_completed_steps(self) -> List[Dict[str, Any]]:
+        """Return compact completed-step records for local policy/recovery decisions."""
+        steps: List[Dict[str, Any]] = []
+        for record in self._steps.values():
+            if record.get("status") != "completed":
+                continue
+            steps.append({
+                "tool": record.get("tool_name"),
+                "operation": record.get("operation"),
+                "parameters": dict(record.get("resolved_parameters") or {}),
+                "output": record.get("output"),
+            })
+        return steps
+
     def _serialize_output(self, output: Any, max_chars: int = 4000) -> Dict[str, Any]:
         try:
             if isinstance(output, (dict, list)):

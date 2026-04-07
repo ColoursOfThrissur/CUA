@@ -13,7 +13,7 @@ class ShellService:
         self.timeout = 120
         self.allowed_commands = [
             'dir', 'ls', 'cat', 'echo', 'pwd', 'cd', 'mkdir', 'rm', 'cp', 'mv',
-            'git', 'python', 'pip', 'npm', 'node', 'curl', 'wget'
+            'git', 'python', 'pip', 'npm', 'node', 'curl', 'wget', 'nvidia-smi'
         ]
     
     def execute(self, command: str, cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:

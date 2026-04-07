@@ -1,6 +1,7 @@
 """Memory System - Manages conversation context and learned patterns using centralized cua.db."""
 import json
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from dataclasses import dataclass
@@ -198,6 +199,27 @@ class MemorySystem:
         if context:
             context.execution_history.append(execution_id)
             context.updated_at = datetime.now().isoformat()
+
+    def touch_session(self, session_id: str):
+        """Refresh session timestamps for activity that writes through another store."""
+        context = self.get_session(session_id)
+        if not context:
+            context = self.create_session(session_id)
+        now = datetime.now().isoformat()
+        context.updated_at = now
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                    (now, session_id),
+                )
+        except Exception as e:
+            logger.warning(f"Failed to touch session in cua.db: {e}")
+
+    def refresh_session(self, session_id: str):
+        """Invalidate any cached session state and reload it from cua.db on next access."""
+        self.active_sessions.pop(session_id, None)
+        return self.get_session(session_id)
     
     def update_preference(self, session_id: str, key: str, value: Any):
         """Update user preference in cua.db."""
@@ -264,4 +286,168 @@ class MemorySystem:
             logger.warning(f"Failed to clear session from cua.db: {e}")
         
         logger.info(f"Cleared session: {session_id}")
+
+    def save_memory_note(
+        self,
+        scope: str,
+        content: str,
+        title: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        scope_key: Optional[str] = None,
+        source_session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist an explicit user- or project-scoped memory note."""
+        normalized_scope = self._normalize_scope(scope)
+        cleaned_content = (content or "").strip()
+        if not cleaned_content:
+            raise ValueError("Memory content cannot be empty")
+
+        resolved_scope_key = scope_key or self._default_scope_key(normalized_scope)
+        now = datetime.now().isoformat()
+        resolved_title = (title or cleaned_content[:80]).strip() or "Untitled memory note"
+
+        with get_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO memory_entries (
+                    scope, scope_key, title, content, source_session_id, metadata, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_scope,
+                    resolved_scope_key,
+                    resolved_title,
+                    cleaned_content,
+                    source_session_id,
+                    json.dumps(metadata) if metadata else None,
+                    now,
+                    now,
+                ),
+            )
+            note_id = cursor.lastrowid
+
+        return {
+            "id": note_id,
+            "scope": normalized_scope,
+            "scope_key": resolved_scope_key,
+            "title": resolved_title,
+            "content": cleaned_content,
+            "source_session_id": source_session_id,
+            "metadata": metadata or {},
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_memory_notes(
+        self,
+        scope: Optional[str] = None,
+        limit: int = 10,
+        scope_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List recent explicit memory notes across user/project scopes."""
+        params: List[Any] = []
+        query = """
+            SELECT id, scope, scope_key, title, content, source_session_id, metadata, created_at, updated_at
+            FROM memory_entries
+        """
+        clauses: List[str] = []
+        if scope:
+            normalized_scope = self._normalize_scope(scope)
+            clauses.append("scope = ?")
+            params.append(normalized_scope)
+            clauses.append("scope_key = ?")
+            params.append(scope_key or self._default_scope_key(normalized_scope))
+        elif scope_key:
+            clauses.append("scope_key = ?")
+            params.append(scope_key)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit or 10)))
+
+        with get_conn() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._row_to_memory_note(row) for row in rows]
+
+    def search_memory_notes(
+        self,
+        query: str,
+        scope: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Search explicit memory notes with lightweight token matching."""
+        terms = [term.lower() for term in str(query or "").split() if term.strip()]
+        if not terms:
+            return []
+
+        candidates = self.list_memory_notes(scope=scope, limit=max(20, limit * 4))
+        ranked = []
+        for note in candidates:
+            haystack = f"{note.get('title', '')} {note.get('content', '')}".lower()
+            score = sum(haystack.count(term) for term in terms)
+            if score <= 0:
+                continue
+            note_with_score = dict(note)
+            note_with_score["score"] = score
+            ranked.append(note_with_score)
+        ranked.sort(key=lambda item: (-item["score"], item["updated_at"]), reverse=False)
+        return ranked[: max(1, int(limit or 10))]
+
+    def get_memory_overview(self) -> Dict[str, Any]:
+        """Return count-oriented overview across explicit memory scopes."""
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT scope, COUNT(*) as total
+                FROM memory_entries
+                GROUP BY scope
+                """
+            ).fetchall()
+        counts = {row["scope"]: row["total"] for row in rows}
+        recent = self.list_memory_notes(limit=5)
+        return {
+            "counts": {
+                "user": counts.get("user", 0),
+                "project": counts.get("project", 0),
+                "total": sum(counts.values()),
+            },
+            "recent": recent,
+        }
+
+    def delete_memory_notes(self, note_ids: List[int]) -> int:
+        """Delete explicit memory notes by id."""
+        cleaned_ids = [int(note_id) for note_id in note_ids if str(note_id).strip()]
+        if not cleaned_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in cleaned_ids)
+        with get_conn() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM memory_entries WHERE id IN ({placeholders})",
+                tuple(cleaned_ids),
+            )
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
+    def _normalize_scope(self, scope: str) -> str:
+        normalized = (scope or "").strip().lower()
+        if normalized not in {"user", "project"}:
+            raise ValueError("Scope must be 'user' or 'project'")
+        return normalized
+
+    def _default_scope_key(self, scope: str) -> str:
+        if scope == "user":
+            return "default_user"
+        return str(Path.cwd().resolve())
+
+    def _row_to_memory_note(self, row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "scope": row["scope"],
+            "scope_key": row["scope_key"],
+            "title": row["title"],
+            "content": row["content"],
+            "source_session_id": row["source_session_id"],
+            "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 

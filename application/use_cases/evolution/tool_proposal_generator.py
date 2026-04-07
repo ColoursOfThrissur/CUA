@@ -1,7 +1,10 @@
 """Proposal generator for tool evolution - matches spec generator pattern."""
 import json
 from typing import Dict, Any, Optional
-from domain.services.architecture_contract import derive_skill_contract_for_tool, enrich_contract_from_skill_context
+from infrastructure.validation.ast.architecture_validator import (
+    enrich_tool_spec_with_skill_context,
+    infer_skill_contract_for_tool,
+)
 from infrastructure.persistence.sqlite.logging import get_logger
 
 logger = get_logger("proposal_generator")
@@ -147,7 +150,7 @@ Return ONLY valid JSON."""
             
             # Add analysis context
             proposal['analysis'] = analysis
-            proposal["tool_spec"] = enrich_contract_from_skill_context(
+            proposal["tool_spec"] = enrich_tool_spec_with_skill_context(
                 {
                     "name": analysis.get("tool_name"),
                     "domain": "general",
@@ -155,7 +158,7 @@ Return ONLY valid JSON."""
                     "artifact_types": [],
                     "code": analysis.get("current_code", ""),
                 },
-                derive_skill_contract_for_tool(analysis.get("tool_name", "")),
+                infer_skill_contract_for_tool(analysis.get("tool_name", "")),
             )
             
             # Add service descriptions for UI

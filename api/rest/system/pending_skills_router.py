@@ -33,6 +33,13 @@ async def get_pending_skills():
     pending = _pending_skills_manager.get_pending_skills()
     return {"success": True, "pending_skills": pending}
 
+@router.get("/history")
+async def get_skill_history():
+    """Get approved/rejected skill history."""
+    if not _pending_skills_manager:
+        raise HTTPException(status_code=503, detail="Skills manager not initialized")
+    return {"success": True, "history": _pending_skills_manager.get_history()}
+
 @router.get("/pending/{skill_id}")
 async def get_skill_details(skill_id: str):
     """Get details of a pending skill"""

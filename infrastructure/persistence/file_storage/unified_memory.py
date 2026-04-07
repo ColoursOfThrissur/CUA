@@ -68,6 +68,7 @@ class UnifiedMemory:
         results.extend(self._search_strategic(q_tokens))
         results.extend(self._search_patterns(q_tokens))
         results.extend(self._search_improvements(q_tokens, query))
+        results.extend(self._search_scoped_memory(q_tokens))
         if session_id:
             results.extend(self._search_conversation(q_tokens, session_id))
 
@@ -207,6 +208,32 @@ class UnifiedMemory:
                         "content": msg.content[:200],
                         "metadata": {"role": msg.role, "timestamp": msg.timestamp},
                     })
+            return results
+        except Exception:
+            return []
+
+    def _search_scoped_memory(self, q_tokens: set) -> List[Dict]:
+        if not self._ms or not hasattr(self._ms, "list_memory_notes"):
+            return []
+        try:
+            notes = self._ms.list_memory_notes(limit=40)
+            results = []
+            for note in notes:
+                text = f"{note.get('title', '')} {note.get('content', '')}"
+                score = _score(q_tokens, text)
+                if score > 0:
+                    results.append(
+                        {
+                            "source": f"memory:{note.get('scope', 'unknown')}",
+                            "score": score,
+                            "content": f"{note.get('title', 'Note')}: {note.get('content', '')[:200]}",
+                            "metadata": {
+                                "scope": note.get("scope"),
+                                "source_session_id": note.get("source_session_id"),
+                                "updated_at": note.get("updated_at"),
+                            },
+                        }
+                    )
             return results
         except Exception:
             return []

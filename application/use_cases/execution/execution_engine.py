@@ -9,11 +9,13 @@ from datetime import datetime
 from enum import Enum
 
 from application.state.state_registry import StateRegistry
+from application.services.worktree_execution_service import WorktreeExecutionService
 from application.use_cases.planning.task_planner import ExecutionPlan, TaskStep
 from infrastructure.validation.verification_engine import get_verification_engine, VERDICT_RETRY, VERDICT_FALLBACK
 from application.use_cases.autonomy.execution_supervisor import (
     ExecutionSupervisor, DECISION_CONTINUE, DECISION_RETRY_STEP, DECISION_REPLAN, DECISION_ABORT
 )
+from application.use_cases.autonomy.local_desktop_policy import LocalDesktopPolicy
 
 logger = logging.getLogger(__name__)
 _MAX_REPLAN_TEXT_CHARS = 4000
@@ -87,19 +89,23 @@ class ExecutionState:
     error: Optional[str] = None
     recovery_attempts: Dict[str, int] = field(default_factory=dict)
     state_registry: StateRegistry = field(default_factory=StateRegistry)
+    task_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class ExecutionEngine:
     """Executes multi-step plans with error recovery."""
     
-    def __init__(self, tool_registry, tool_orchestrator=None, execution_logger=None, task_planner=None):
+    def __init__(self, tool_registry, tool_orchestrator=None, execution_logger=None, task_planner=None, task_manager=None):
         self.tool_registry = tool_registry
         self.tool_orchestrator = tool_orchestrator
         self.execution_logger = execution_logger
         self.task_planner = task_planner
+        self.task_manager = task_manager
         self.active_executions: Dict[str, ExecutionState] = {}
         self._verifier = get_verification_engine()
         self._supervisor = ExecutionSupervisor(tool_registry=tool_registry)
+        self._worktree_execution = WorktreeExecutionService()
 
         from infrastructure.failure_handling.error_recovery import ErrorRecovery, RecoveryConfig, RecoveryStrategy
         self.error_recovery = ErrorRecovery(RecoveryConfig(
@@ -114,7 +120,9 @@ class ExecutionEngine:
         plan: ExecutionPlan,
         execution_id: Optional[str] = None,
         pause_on_failure: bool = False,
-        skill_context: Optional[Any] = None
+        skill_context: Optional[Any] = None,
+        session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> ExecutionState:
         """
         Execute a complete plan.
@@ -133,8 +141,22 @@ class ExecutionEngine:
         logger.info(f"[ENGINE] Starting execution {execution_id} — goal: '{plan.goal[:80]}'")
         
         # Initialize execution state
-        state = ExecutionState(plan=plan)
+        state = ExecutionState(plan=plan, task_id=task_id, session_id=session_id)
+        state._skill_context = skill_context
         self.active_executions[execution_id] = state
+        local_desktop_policy = LocalDesktopPolicy.build(plan=plan, skill_context=skill_context)
+
+        if self.task_manager and session_id:
+            if task_id:
+                self.task_manager.attach_execution(task_id, execution_id, status="in_progress")
+            else:
+                state.task_id = self.task_manager.create_task_from_plan(
+                    session_id=session_id,
+                    plan=plan,
+                    status="in_progress",
+                    source="execution",
+                    execution_id=execution_id,
+                )
         
         # Initialize all steps as pending
         for step in plan.steps:
@@ -171,17 +193,33 @@ class ExecutionEngine:
                     state.current_step = step.step_id
                     result = self._execute_step(step, state, skill_context)
                     state.step_results[step.step_id] = result
+                    if self.task_manager and state.task_id:
+                        self.task_manager.update_from_execution_state(state.task_id, state)
                     executed_step_ids.add(step.step_id)
 
                     decision = self._supervisor.assess_wave(
                         {step.step_id: result}, wave, remaining_after, state, skill_context
                     )
-                    wave_index = self._apply_supervisor_decision(
+                    next_wave_index = self._apply_supervisor_decision(
                         decision, wave, waves, wave_index, remaining_after,
                         all_steps, executed_step_ids, state, plan, pause_on_failure, skill_context
                     )
-                    if wave_index < 0:
+                    if next_wave_index < 0:
                         return state
+                    next_wave_index = self._apply_local_desktop_policy_decision(
+                        policy=local_desktop_policy,
+                        wave_results={step.step_id: result},
+                        remaining_after=remaining_after,
+                        waves=waves,
+                        wave_index=wave_index,
+                        all_steps=all_steps,
+                        executed_step_ids=executed_step_ids,
+                        state=state,
+                        current_default_index=next_wave_index,
+                    )
+                    if next_wave_index < 0:
+                        return state
+                    wave_index = next_wave_index
                 else:
                     eligible = [s for s in wave if self._dependencies_met(s, state)]
                     skipped_steps = [s for s in wave if s not in eligible]
@@ -196,6 +234,8 @@ class ExecutionEngine:
                         for step_id, result in wave_results.items():
                             state.step_results[step_id] = result
                             executed_step_ids.add(step_id)
+                        if self.task_manager and state.task_id:
+                            self.task_manager.update_from_execution_state(state.task_id, state)
 
                         # Wave-level verification
                         completed = {sid: r.output for sid, r in wave_results.items() if r.status == StepStatus.COMPLETED}
@@ -213,12 +253,26 @@ class ExecutionEngine:
                         decision = self._supervisor.assess_wave(
                             wave_results, eligible, remaining_after, state, skill_context
                         )
-                        wave_index = self._apply_supervisor_decision(
+                        next_wave_index = self._apply_supervisor_decision(
                             decision, eligible, waves, wave_index, remaining_after,
                             all_steps, executed_step_ids, state, plan, pause_on_failure, skill_context
                         )
-                        if wave_index < 0:
+                        if next_wave_index < 0:
                             return state
+                        next_wave_index = self._apply_local_desktop_policy_decision(
+                            policy=local_desktop_policy,
+                            wave_results=wave_results,
+                            remaining_after=remaining_after,
+                            waves=waves,
+                            wave_index=wave_index,
+                            all_steps=all_steps,
+                            executed_step_ids=executed_step_ids,
+                            state=state,
+                            current_default_index=next_wave_index,
+                        )
+                        if next_wave_index < 0:
+                            return state
+                        wave_index = next_wave_index
                     else:
                         wave_index += 1
             
@@ -229,6 +283,9 @@ class ExecutionEngine:
                 state.error = f"{len(failed_steps)} steps failed"
             else:
                 state.status = "completed"
+
+            if self.task_manager and state.task_id:
+                self.task_manager.update_from_execution_state(state.task_id, state)
             
             logger.info(f"[ENGINE] Execution {execution_id} finished: {state.status}")
             
@@ -236,6 +293,8 @@ class ExecutionEngine:
             logger.error(f"Execution {execution_id} failed: {e}")
             state.status = "failed"
             state.error = str(e)
+            if self.task_manager and state.task_id:
+                self.task_manager.update_from_execution_state(state.task_id, state)
         
         finally:
             state.end_time = time.time()
@@ -435,6 +494,57 @@ class ExecutionEngine:
 
         return wave_index + 1
 
+    def _apply_local_desktop_policy_decision(
+        self,
+        *,
+        policy: Optional[LocalDesktopPolicy],
+        wave_results: Dict[str, StepResult],
+        remaining_after: List[TaskStep],
+        waves: List[List[TaskStep]],
+        wave_index: int,
+        all_steps: List[TaskStep],
+        executed_step_ids: set,
+        state: "ExecutionState",
+        current_default_index: int,
+    ) -> int:
+        """Allow a bounded local desktop policy to stop early or insert recovery steps."""
+        if policy is None or current_default_index < 0:
+            return current_default_index
+
+        decision = policy.assess_wave(
+            wave_results=wave_results,
+            remaining_steps=remaining_after,
+            state=state,
+        )
+        if decision.action == "continue":
+            return current_default_index
+
+        logger.info(f"[DESKTOP_POLICY] {decision.action}: {decision.reason}")
+
+        if decision.action == "complete":
+            for step in all_steps:
+                if step.step_id in executed_step_ids:
+                    continue
+                step_result = state.step_results.get(step.step_id)
+                if step_result and step_result.status == StepStatus.PENDING:
+                    step_result.status = StepStatus.SKIPPED
+            state.status = "completed"
+            state.error = None
+            return len(waves)
+
+        if decision.action == "recover" and decision.recovery_steps:
+            for step in decision.recovery_steps:
+                if step.step_id not in state.step_results:
+                    state.step_results[step.step_id] = StepResult(step_id=step.step_id, status=StepStatus.PENDING)
+            recovery_waves = self._build_execution_waves(decision.recovery_steps)
+            insert_at = wave_index + 1
+            waves[insert_at:insert_at] = recovery_waves
+            existing_ids = {step.step_id for step in all_steps}
+            all_steps.extend([step for step in decision.recovery_steps if step.step_id not in existing_ids])
+            return insert_at
+
+        return current_default_index
+
     def _build_execution_waves(self, steps: List[TaskStep]) -> List[List[TaskStep]]:
         """Group steps into parallel waves. Steps in the same wave have no inter-dependencies."""
         step_map = {s.step_id: s for s in steps}
@@ -499,13 +609,21 @@ class ExecutionEngine:
         # Resolve parameters (may reference previous step outputs)
         try:
             resolved_params = self._resolve_parameters(step.parameters, state)
+            resolved_params, execution_profile = self._worktree_execution.apply_to_step(
+                step=step,
+                parameters=resolved_params,
+                plan=state.plan,
+            )
         except Exception as e:
             result.status = StepStatus.FAILED
             result.error = f"Parameter resolution failed: {e}"
             logger.error(f"Parameter resolution error for {step.step_id}: {e}")
             self._record_step_state(state, step, result)
             return result
-        
+        result.meta["resolved_parameters"] = resolved_params
+        if execution_profile:
+            result.meta["execution_profile"] = execution_profile
+
         # Get tool instance
         tool = None
         for tool_instance in getattr(self.tool_registry, 'tools', []):
@@ -532,7 +650,10 @@ class ExecutionEngine:
                         parameters=resolved_params,
                         execution_context=skill_context
                     )
-                    result.meta = dict(orchestrated_result.meta or {})
+                    result.meta = {
+                        **result.meta,
+                        **dict(orchestrated_result.meta or {}),
+                    }
                     feedback = result.meta.get("execution_feedback", {})
                     
                     if orchestrated_result.success:
@@ -745,10 +866,14 @@ class ExecutionEngine:
                 if len(eligible) == 1:
                     result = self._execute_step(eligible[0], state)
                     state.step_results[eligible[0].step_id] = result
+                    if self.task_manager and state.task_id:
+                        self.task_manager.update_from_execution_state(state.task_id, state)
                 elif eligible:
                     wave_results = self._execute_parallel(eligible, state, None)
                     for step_id, result in wave_results.items():
                         state.step_results[step_id] = result
+                    if self.task_manager and state.task_id:
+                        self.task_manager.update_from_execution_state(state.task_id, state)
 
             failed = [r for r in state.step_results.values() if r.status == StepStatus.FAILED]
             state.status = "completed_with_errors" if failed else "completed"

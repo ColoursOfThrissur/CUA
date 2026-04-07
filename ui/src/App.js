@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { API_URL, WS_URL } from './config';
+import { API_URL } from './config';
 import { GlobalStateProvider, useGlobalState } from './GlobalState';
 import { ToastProvider, useToast } from './components/Toast';
 import ErrorBoundary from './components/ErrorBoundary';
 import Header from './components/Header';
-import ModeTabBar from './components/ModeTabBar';
 import MainCanvas from './components/MainCanvas';
-import AgentMode from './components/AgentMode';
 import RightOverlay from './components/RightOverlay';
 import QualityOverlay from './components/QualityOverlay';
 import PendingEvolutionsOverlay from './components/PendingEvolutionsOverlay';
@@ -19,6 +17,7 @@ import ToolRegistryPanel from './components/ToolRegistryPanel';
 import AutoEvolutionPanel from './components/AutoEvolutionPanel';
 import CodePreviewModal from './components/CodePreviewModal';
 import DiffModal from './components/DiffModal';
+import StagingPreviewModal from './components/StagingPreviewModal';
 import ApprovalNotification from './components/ApprovalNotification';
 import ObservabilityOverlay from './components/ObservabilityOverlay';
 import ObservabilityPage from './components/ObservabilityPage';
@@ -32,6 +31,7 @@ import './App.css';
 
 function AppContent() {
   const globalState = useGlobalState();
+  const updateState = globalState.updateState;
   const toast = useToast();
   const [messages, setMessages] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -43,8 +43,6 @@ function AppContent() {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   });
   const [selectedProposal, setSelectedProposal] = useState(null);
-  const [customPrompt, setCustomPrompt] = useState('');
-  const [dryRun, setDryRun] = useState(false);
   const [availableModels, setAvailableModels] = useState({});
   const [currentModel, setCurrentModel] = useState('mistral:latest');
   const [activeMode, setActiveMode] = useState('chat');
@@ -52,17 +50,22 @@ function AppContent() {
   const [showStagingModal, setShowStagingModal] = useState(false);
   const [stagingParentId, setStagingParentId] = useState(null);
   const [codePreview, setCodePreview] = useState(null);
+  const [domainHint, setDomainHint] = useState(() => localStorage.getItem('chat-domain-hint') || 'auto');
 
   const refreshPendingTools = async () => {
     const listRes = await fetch(`${API_URL}/pending-tools/list`);
     const listData = await listRes.json();
-    globalState.updateState({ pendingTools: listData.pending_tools || [] });
+    updateState({ pendingTools: listData.pending_tools || [] });
   };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('chat-domain-hint', domainHint);
+  }, [domainHint]);
 
   useEffect(() => {
     if (!isProcessing) return;
@@ -110,25 +113,25 @@ function AppContent() {
     fetch(`${API_URL}/skills/list`)
       .then(res => res.json())
       .then(data => {
-        globalState.updateState({
+        updateState({
           skillCatalog: data.skills || [],
           skillCategories: data.categories || {}
         });
       })
       .catch(err => {
         console.error('Failed to load skills:', err);
-        globalState.updateState({
+        updateState({
           skillCatalog: [],
           skillCategories: {}
         });
       });
-  }, []);
+  }, [updateState]);
 
   const handleClearLogs = async () => {
     if (!window.confirm('Clear all logs?')) return;
     
     try {
-      globalState.updateState({ logs: [] });
+      updateState({ logs: [] });
       
       await fetch(`${API_URL}/improvement/clear-logs`, {
         method: 'POST',
@@ -154,96 +157,6 @@ function AppContent() {
     a.click();
     URL.revokeObjectURL(url);
     toast.success('Logs saved successfully');
-  };
-
-  const handleStartLoop = async () => {
-    try {
-      globalState.updateState({ running: true });
-      
-      const response = await fetch(`${API_URL}/improvement/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          max_iterations: 1,
-          custom_prompt: customPrompt || null,
-          dry_run: dryRun
-        })
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        globalState.updateState({ running: false });
-        toast.error('Failed to start: ' + (data.detail || 'Unknown error'));
-      } else {
-        setCustomPrompt('');
-        toast.success('Self-improvement started');
-      }
-    } catch (error) {
-      globalState.updateState({ running: false });
-      toast.error('Failed to start loop: ' + error.message);
-    }
-  };
-
-  const handleStartContinuous = async () => {
-    try {
-      globalState.updateState({ running: true });
-      
-      const response = await fetch(`${API_URL}/improvement/start-continuous`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        globalState.updateState({ running: false });
-        toast.error('Failed to start: ' + (data.detail || 'Unknown error'));
-      } else {
-        toast.success('Continuous mode started - will run until stopped');
-      }
-    } catch (error) {
-      globalState.updateState({ running: false });
-      toast.error('Failed to start continuous: ' + error.message);
-    }
-  };
-
-  const handleStopLoop = async (mode) => {
-    try {
-      // Optimistically update UI
-      if (mode === 'immediate') {
-        globalState.updateState({ running: false, iteration: 0 });
-      }
-      
-      const response = await fetch(`${API_URL}/improvement/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
-      });
-      
-      const data = await response.json();
-      
-      if (response.ok) {
-        if (data.mode === 'immediate' || data.status === 'stopped') {
-          globalState.updateState({ running: false, iteration: 0 });
-          toast.info('Self-improvement stopped');
-        } else if (data.mode === 'deferred') {
-          toast.warning('In critical section - will stop at safe point');
-        } else {
-          toast.info('Stop requested - finishing current task');
-        }
-      } else {
-        if (mode === 'immediate') {
-          globalState.updateState({ running: true });
-        }
-        toast.error('Failed to stop: ' + (data.detail || 'Unknown error'));
-      }
-    } catch (error) {
-      if (mode === 'immediate') {
-        globalState.updateState({ running: true });
-      }
-      toast.error('Failed to stop loop: ' + error.message);
-    }
   };
 
   const handleProviderSaved = async (newModel) => {
@@ -356,7 +269,7 @@ function AppContent() {
       });
       
       if (response.ok) {
-        globalState.updateState({ taskManager: { active: false } });
+        updateState({ taskManager: { active: false } });
         toast.success('Task aborted');
       } else {
         const data = await response.json();
@@ -464,7 +377,8 @@ function AppContent() {
     const userMsg = {
       role: 'user',
       content: message,
-      timestamp: formatTimestamp(new Date())
+      timestamp: formatTimestamp(new Date()),
+      domain_hint: domainHint,
     };
     
     setMessages(prev => [...prev, userMsg]);
@@ -475,7 +389,11 @@ function AppContent() {
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, session_id: sessionId }),
+        body: JSON.stringify({
+          message,
+          session_id: sessionId,
+          domain_hint: domainHint === 'auto' ? null : domainHint,
+        }),
         signal: AbortSignal.timeout(300000) // 5 minute timeout
       });
 
@@ -490,7 +408,8 @@ function AppContent() {
           execution_result: data.execution_result || null,
           skill: data.execution_result?.selected_skill || null,
           category: data.execution_result?.selected_category || null,
-          ui_renderer: data.execution_result?.ui_renderer || null
+          ui_renderer: data.execution_result?.ui_renderer || null,
+          domain_hint: domainHint,
         };
         setMessages(prev => [...prev, assistantMsg]);
       }
@@ -503,7 +422,7 @@ function AppContent() {
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsProcessing(false);
-      globalState.updateState({ agentPlan: null });
+      updateState({ agentPlan: null });
     }
   };
 
@@ -568,7 +487,13 @@ function AppContent() {
       case 'auto-evolution':
         return <AutoEvolutionPanel onClose={() => setOverlayOpen(null)} />;
       case 'sessions':
-        return <SessionManagement onClose={() => setOverlayOpen(null)} />;
+        return (
+          <SessionManagement
+            onClose={() => setOverlayOpen(null)}
+            currentSessionId={sessionId}
+            onRunCommand={handleSendMessage}
+          />
+        );
       case 'history':
         return <div style={{padding: '40px', textAlign: 'center', color: 'white'}}>Evolution History</div>;
       default:
@@ -662,12 +587,14 @@ function AppContent() {
             onFloatingAction={handleFloatingAction}
             onModeChange={setActiveMode}
             agentPlan={globalState.agentPlan}
+            domainHint={domainHint}
+            onDomainHintChange={setDomainHint}
             loopStatus={{
               running: globalState.running,
               iteration: globalState.iteration,
               maxIterations: globalState.maxIterations
             }}
-            onStatusChange={(status) => globalState.updateState(status)}
+            onStatusChange={updateState}
           />
         )}
         
@@ -693,6 +620,16 @@ function AppContent() {
           <CodePreviewModal
             tool={codePreview}
             onClose={() => setCodePreview(null)}
+          />
+        )}
+
+        {showStagingModal && (
+          <StagingPreviewModal
+            parentId={stagingParentId}
+            onClose={() => {
+              setShowStagingModal(false);
+              setStagingParentId(null);
+            }}
           />
         )}
         

@@ -2,6 +2,7 @@
 Conversation Memory - Persistent chat history using centralized cua.db
 """
 import json
+import time
 from typing import List, Dict
 from datetime import datetime
 
@@ -73,3 +74,27 @@ class ConversationMemory:
                 conn.execute("DELETE FROM conversations")
         except Exception as e:
             print(f"[WARN] Failed to clear all conversations: {e}")
+
+    def replace_history(self, session_id: str, messages: List[Dict]):
+        """Replace a session history with a compacted or normalized message list."""
+        base_ts = time.time() - max(len(messages), 1)
+        try:
+            with get_conn() as conn:
+                conn.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+                for idx, message in enumerate(messages):
+                    conn.execute(
+                        "INSERT INTO conversations (session_id, timestamp, role, content, metadata) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            session_id,
+                            base_ts + idx,
+                            message.get("role"),
+                            message.get("content"),
+                            json.dumps(message.get("metadata")) if message.get("metadata") else None,
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                    (datetime.now().isoformat(), session_id),
+                )
+        except Exception as e:
+            print(f"[WARN] Failed to replace conversation history: {e}")

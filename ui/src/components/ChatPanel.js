@@ -6,6 +6,22 @@ import { useTraceWebSocket } from '../hooks/useTraceWebSocket';
 import './ChatPanel.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const DOMAIN_OPTIONS = [
+  { value: 'auto', label: 'Auto', hint: 'Let Forge route and narrow context automatically.' },
+  { value: 'computer', label: 'Computer', hint: 'Desktop apps, local files, shell, and system control.' },
+  { value: 'web', label: 'Web', hint: 'Browser work and web-facing automation.' },
+  { value: 'code', label: 'Code', hint: 'Repository work, editing, tests, and implementation.' },
+  { value: 'research', label: 'Research', hint: 'Search, summarize, compare, and gather information.' },
+  { value: 'finance', label: 'Finance', hint: 'Markets, portfolios, reports, and investing workflows.' },
+];
+const COMMAND_SHORTCUTS = [
+  { label: '/doctor', action: 'send', value: '/doctor' },
+  { label: '/memory maintain', action: 'send', value: '/memory maintain' },
+  { label: '/worktree', action: 'send', value: '/worktree' },
+  { label: '/worktree list', action: 'send', value: '/worktree list' },
+  { label: '/plan', action: 'draft', value: '/plan ' },
+  { label: '/plan isolated', action: 'draft', value: '/plan isolated ' },
+];
 
 function AgentPlanStatus({ agentPlan }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -54,10 +70,21 @@ function AgentPlanStatus({ agentPlan }) {
   );
 }
 
-export default function ChatPanel({ messages, onSendMessage, isProcessing, mode, skills = [], backendConnected = true, agentPlan = null }) {
+export default function ChatPanel({
+  messages,
+  onSendMessage,
+  isProcessing,
+  mode,
+  skills = [],
+  backendConnected = true,
+  agentPlan = null,
+  domainHint = 'auto',
+  onDomainHintChange,
+}) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = useRef(null);
   const traces = useTraceWebSocket({ limit: 3, persist: false, ttlMs: 5000 });
+  const selectedDomain = DOMAIN_OPTIONS.find(option => option.value === domainHint) || DOMAIN_OPTIONS[0];
 
   const getPlaceholder = () => {
     return 'Ask anything or give a task... (Ctrl+Enter to send)';
@@ -107,7 +134,26 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <h3>Task Execution</h3>
+        <div className="chat-scope-panel">
+          <div className="chat-scope-copy">
+            <span className="chat-scope-kicker">Planning Scope</span>
+            <h3>{selectedDomain.label}</h3>
+            <p>{selectedDomain.hint}</p>
+          </div>
+          <div className="chat-scope-options" role="tablist" aria-label="Planning scope">
+            {DOMAIN_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={`chat-scope-chip ${domainHint === option.value ? 'is-active' : ''}`}
+                onClick={() => onDomainHintChange?.(option.value)}
+                aria-pressed={domainHint === option.value}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
       
       <div className="chat-messages">
@@ -124,6 +170,29 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
               <button onClick={() => setInput('list files in current directory')}>List files</button>
               <button onClick={() => setInput('search the web for latest AI news')}>Web search</button>
               <button onClick={() => setInput('what can you do?')}>What can you do?</button>
+            </div>
+            <div className="command-shortcuts">
+              <h4>Operational Shortcuts</h4>
+              <div className="command-shortcut-list">
+                {COMMAND_SHORTCUTS.map((shortcut) => (
+                  <button
+                    key={shortcut.label}
+                    type="button"
+                    className="command-shortcut"
+                    onClick={() => {
+                      if (shortcut.action === 'send') {
+                        onSendMessage(shortcut.value);
+                        return;
+                      }
+                      setInput(shortcut.value);
+                    }}
+                    disabled={isProcessing}
+                  >
+                    <span>{shortcut.label}</span>
+                    <small>{shortcut.action === 'send' ? 'run now' : 'draft'}</small>
+                  </button>
+                ))}
+              </div>
             </div>
             {skills.length > 0 && (
               <div className="skills-grid">
@@ -156,6 +225,9 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
               <div className="message-content">
                 {(msg.skill || msg.category) && (
                   <div className="message-skill-tags">
+                    {msg.role === 'user' && msg.domain_hint && (
+                      <span className="skill-tag skill-tag--scope">{msg.domain_hint}</span>
+                    )}
                     {msg.skill && <span className="skill-tag skill-tag--green">skill: {msg.skill}</span>}
                     {msg.category && <span className="skill-tag skill-tag--blue">{msg.category}</span>}
                     {msg.execution_result?.decision?.strategy && msg.execution_result.decision.strategy !== 'conversation' && (
@@ -207,6 +279,20 @@ export default function ChatPanel({ messages, onSendMessage, isProcessing, mode,
                     background: 'rgba(255,255,255,0.04)'
                   }}>
                     <div style={{ fontWeight: 700, marginBottom: '6px' }}>Plan approval required</div>
+                    {msg.execution_result.plan.workflow_metadata?.worktree?.worktree_path && (
+                      <div style={{ fontSize: '13px', opacity: 0.9, marginBottom: '10px' }}>
+                        Isolated worktree: {msg.execution_result.plan.workflow_metadata.worktree.label}
+                        <br />
+                        <span style={{ opacity: 0.75 }}>{msg.execution_result.plan.workflow_metadata.worktree.worktree_path}</span>
+                      </div>
+                    )}
+                    {msg.execution_result.plan.workflow_metadata?.isolation_policy?.level && (
+                      <div style={{ fontSize: '13px', opacity: 0.9, marginBottom: '10px' }}>
+                        Isolation policy: {msg.execution_result.plan.workflow_metadata.isolation_policy.level}
+                        <br />
+                        <span style={{ opacity: 0.75 }}>{msg.execution_result.plan.workflow_metadata.isolation_policy.reason}</span>
+                      </div>
+                    )}
                     {Array.isArray(msg.execution_result.plan.steps) && (
                       <div style={{ fontSize: '13px', opacity: 0.9, marginBottom: '10px' }}>
                         {msg.execution_result.plan.steps.slice(0, 8).map((s) => (

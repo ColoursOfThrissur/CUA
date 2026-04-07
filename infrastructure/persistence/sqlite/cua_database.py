@@ -21,12 +21,13 @@ from contextlib import contextmanager
 DB_PATH = Path("data/cua.db")
 
 _lock = threading.Lock()
-_initialised = False
+_initialised_path: str | None = None
 
 
 def _ensure_init() -> None:
-    global _initialised
-    if _initialised:
+    global _initialised_path
+    resolved_path = str(DB_PATH.resolve())
+    if _initialised_path == resolved_path and DB_PATH.exists():
         return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(DB_PATH), timeout=10) as conn:
@@ -34,7 +35,7 @@ def _ensure_init() -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
         _create_all_tables(conn)
         conn.commit()
-    _initialised = True
+    _initialised_path = resolved_path
 
 
 @contextmanager
@@ -193,6 +194,45 @@ def _create_all_tables(conn: sqlite3.Connection) -> None:
             created_at TEXT,
             updated_at TEXT
         )""",
+
+        """CREATE TABLE IF NOT EXISTS task_artifacts (
+            task_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            execution_id TEXT,
+            status TEXT NOT NULL,
+            description TEXT,
+            goal TEXT,
+            priority TEXT,
+            source TEXT,
+            target_file TEXT,
+            total_subtasks INTEGER DEFAULT 0,
+            completed_subtasks INTEGER DEFAULT 0,
+            plan_json TEXT,
+            step_results_json TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            completed_at TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_task_artifacts_session ON task_artifacts(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_task_artifacts_status ON task_artifacts(status)",
+        "CREATE INDEX IF NOT EXISTS idx_task_artifacts_updated ON task_artifacts(updated_at)",
+
+        """CREATE TABLE IF NOT EXISTS worktree_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            worktree_label TEXT,
+            worktree_path TEXT,
+            session_id TEXT,
+            task_id TEXT,
+            execution_id TEXT,
+            details_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_worktree_events_ts ON worktree_events(timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_worktree_events_type ON worktree_events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_worktree_events_session ON worktree_events(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_worktree_events_label ON worktree_events(worktree_label)",
 
         """CREATE TABLE IF NOT EXISTS learned_patterns (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -382,6 +422,19 @@ def _create_all_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_et_tool ON execution_telemetry(tool_name)",
         "CREATE INDEX IF NOT EXISTS idx_et_op ON execution_telemetry(operation)",
         "CREATE INDEX IF NOT EXISTS idx_et_ts ON execution_telemetry(timestamp)",
+        """CREATE TABLE IF NOT EXISTS memory_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            scope_key TEXT NOT NULL,
+            title TEXT,
+            content TEXT NOT NULL,
+            source_session_id TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_memory_entries_scope ON memory_entries(scope, scope_key)",
+        "CREATE INDEX IF NOT EXISTS idx_memory_entries_updated ON memory_entries(updated_at)",
     ]
     for stmt in stmts:
         conn.execute(stmt)

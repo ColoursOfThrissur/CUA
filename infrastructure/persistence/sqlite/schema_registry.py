@@ -235,6 +235,24 @@ DATABASE_SCHEMAS = {
                     "SELECT * FROM plan_history ORDER BY timestamp DESC LIMIT 10",
                 ],
             },
+            "worktree_events": {
+                "columns": {
+                    "id": "INTEGER PRIMARY KEY",
+                    "timestamp": "TEXT",
+                    "event_type": "TEXT",
+                    "worktree_label": "TEXT",
+                    "worktree_path": "TEXT",
+                    "session_id": "TEXT",
+                    "task_id": "TEXT",
+                    "execution_id": "TEXT",
+                    "details_json": "TEXT - JSON",
+                },
+                "indexes": ["timestamp", "event_type", "session_id", "worktree_label"],
+                "common_queries": [
+                    "SELECT event_type, COUNT(*) FROM worktree_events GROUP BY event_type",
+                    "SELECT * FROM worktree_events ORDER BY id DESC LIMIT 20",
+                ],
+            },
             "improvement_metrics": {
                 "columns": {
                     "id": "INTEGER PRIMARY KEY",

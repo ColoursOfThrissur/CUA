@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { API_URL } from '../config';
 import './HistoryViewer.css';
+import DiffViewer from './output/DiffViewer';
 
 function HistoryViewer({ onViewDiff }) {
   const [history, setHistory] = useState([]);
@@ -136,7 +137,7 @@ function HistoryViewer({ onViewDiff }) {
               {selectedPlan.patch && (
                 <div className="detail-section">
                   <div className="detail-label">Patch:</div>
-                  <pre className="patch-preview">{selectedPlan.patch.slice(0, 500)}...</pre>
+                  <DiffViewer payload={selectedPlan.diff_payload} patch={selectedPlan.patch} title="Plan Patch" compact />
                 </div>
               )}
             </div>

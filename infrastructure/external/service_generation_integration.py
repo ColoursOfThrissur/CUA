@@ -27,7 +27,9 @@ class ServiceGenerationIntegration:
             }
         """
         # Run validation
-        is_valid, error = self.validator.validate(code, class_name)
+        validation = self.validator.validate(code, class_name)
+        is_valid = validation.get('valid', False)
+        error = '; '.join(validation.get('errors', []))
         
         # Get missing services
         missing_services = self.validator.get_missing_services()

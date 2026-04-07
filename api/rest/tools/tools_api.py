@@ -58,14 +58,11 @@ def _discover_tool_files() -> Tuple[List[str], set]:
 
     experimental_tools = list((tools_dir / "experimental").glob("*.py"))
     
-    # Add computer_use tools (exclude agent files - they're not standalone tools)
+    # Add real computer_use tools only; support modules live beside them.
     computer_use_tools = []
     computer_use_dir = tools_dir / "computer_use"
     if computer_use_dir.exists():
-        computer_use_tools = [
-            f for f in computer_use_dir.glob("*.py") 
-            if f.name != "__init__.py" and not f.name.endswith("_agent.py")
-        ]
+        computer_use_tools = list(computer_use_dir.glob("*_tool.py"))
     
     tool_files = primary_tools + experimental_tools + computer_use_tools
 

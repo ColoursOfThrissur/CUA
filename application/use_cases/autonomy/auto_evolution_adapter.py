@@ -10,8 +10,8 @@ class AutoEvolutionOrchestratorAdapter:
     async def ensure_initialized(self):
         await self._orchestrator.ensure_initialized()
 
-    async def run_cycle(self, max_items=None):
-        return await self._orchestrator.run_cycle(max_items)
+    async def run_cycle(self, max_items=None, rescan=True):
+        return await self._orchestrator.run_cycle(max_items, rescan=rescan)
         
     async def start(self):
         await self._orchestrator.start()

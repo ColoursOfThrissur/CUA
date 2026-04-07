@@ -1,6 +1,7 @@
 """Observability API - unified access to the consolidated cua.db."""
 from fastapi import APIRouter, Query
 from typing import Optional
+from application.services.worktree_event_service import WorktreeEventService
 from infrastructure.persistence.sqlite.cua_database import get_conn
 
 router = APIRouter()
@@ -51,3 +52,18 @@ async def get_tool_evolution(limit: int = Query(100, le=1000), offset: int = 0):
 @router.get("/observability/chat")
 async def get_chat_history(limit: int = Query(100, le=1000), offset: int = 0):
     return {"data": query_table("conversations", limit, offset)}
+
+
+@router.get("/observability/worktrees")
+async def get_worktree_events(
+    limit: int = Query(100, le=1000),
+    session_id: Optional[str] = None,
+    worktree_label: Optional[str] = None,
+):
+    return {
+        "data": WorktreeEventService().list_events(
+            limit=limit,
+            session_id=session_id,
+            worktree_label=worktree_label,
+        )
+    }

@@ -19,7 +19,7 @@ loop_instance = None
 def set_loop_instance(loop):
     global loop_instance
     loop_instance = loop
-    print(f"[DEBUG] Loop instance set: {loop is not None}")
+    logger.debug("Loop instance set: %s", loop is not None)
 
 class StartLoopRequest(BaseModel):
     max_iterations: Optional[int] = 1

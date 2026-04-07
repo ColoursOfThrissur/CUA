@@ -65,7 +65,6 @@
     "SystemControlTool",
     "InputAutomationTool",
     "ScreenPerceptionTool",
-    "ComputerUseController",
     "BenchmarkRunnerTool"
   ],
   "required_tools": [],
@@ -73,8 +72,21 @@
   "skill_constraints": [
     "For simple desktop tasks (screenshot, click, type, launch app), use individual tools: ScreenPerceptionTool, InputAutomationTool, SystemControlTool",
     "Individual tools can be mixed with other platform tools (web research, file operations, etc.) in multi-step plans",
-    "For complex multi-step desktop workflows that need visual feedback and automatic retry, use ComputerUseController.automate_task as fallback",
-    "Prefer composing individual tool calls over using ComputerUseController - allows better integration with main TaskPlanner"
+    "For complex desktop workflows, keep the Observe -> Act -> Verify loop inside the main TaskPlanner DAG instead of delegating to a secondary controller",
+    "Prefer composing individual tool calls over nested controllers so memory, gap tracking, and circuit breaking stay on the main execution path"
+  ],
+  "vision_mode": true,
+  "screenshot_at_each_step": true,
+  "observe_act_verify_loop": true,
+  "failure_categories": [
+    "TIMING_ISSUE",
+    "ENVIRONMENT_CHANGED",
+    "NO_EFFECT"
+  ],
+  "workflow_guidance": [
+    "Launch or focus the target app first, then observe the current UI state before interacting.",
+    "After each state-changing interaction, verify the resulting screen state before moving to the next risky action.",
+    "Prefer ScreenPerceptionTool.extract_text or infer_visual_state for verification instead of open-ended screen description."
   ],
   "input_types": [
     "path",

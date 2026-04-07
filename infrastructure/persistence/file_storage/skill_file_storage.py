@@ -75,6 +75,16 @@ class SkillFileStorage(ISkillRepository):
             return None
 
         try:
+            metadata = {}
+            explicit_metadata = data.get("metadata")
+            if isinstance(explicit_metadata, dict):
+                metadata.update(explicit_metadata)
+            metadata.update({
+                key: value
+                for key, value in data.items()
+                if key not in self.REQUIRED_FIELDS and key != "metadata"
+            })
+
             return SkillDefinition(
                 name=str(data["name"]),
                 category=str(data["category"]),
@@ -91,6 +101,7 @@ class SkillFileStorage(ISkillRepository):
                 fallback_strategy=str(data["fallback_strategy"]),
                 skill_dir=str(skill_dir),
                 instructions_path=str(skill_md),
+                metadata=metadata,
             )
         except Exception as exc:
             self.logger.error("skill_normalization_failed", skill_dir=str(skill_dir), error=str(exc))

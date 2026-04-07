@@ -1,8 +1,10 @@
 import React from 'react';
 import './CodePreviewModal.css';
+import DiffViewer from './output/DiffViewer';
 
 const CodePreviewModal = ({ tool, onClose }) => {
   if (!tool) return null;
+  const hasDiff = Boolean(tool.diff_payload || tool.patch);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -18,11 +20,15 @@ const CodePreviewModal = ({ tool, onClose }) => {
             <code>{tool.tool_file}</code>
           </div>
 
-          <div className="code-container">
-            <pre>
-              <code>{tool.code || 'No code available'}</code>
-            </pre>
-          </div>
+          {hasDiff ? (
+            <DiffViewer payload={tool.diff_payload} patch={tool.patch} title="Patch Preview" compact />
+          ) : (
+            <div className="code-container">
+              <pre>
+                <code>{tool.code || 'No code available'}</code>
+              </pre>
+            </div>
+          )}
         </div>
 
         <div className="modal-footer">

@@ -305,13 +305,26 @@ class PendingToolsManager:
         """Get all pending tools"""
         try:
             if self.storage_path.exists():
-                data = json.loads(self.storage_path.read_text())
+                data = self._normalize_storage(json.loads(self.storage_path.read_text()))
                 pending = data.get('pending', {})
                 self.pending_tools = pending
+                self.tool_history = data.get('history', [])
                 return list(pending.values())
         except Exception as e:
             logger.warning("Failed reading pending tools list from %s: %s", self.storage_path, e)
         return list(self.pending_tools.values())
+
+    def get_history(self) -> List[Dict]:
+        """Get approved/rejected tool history."""
+        try:
+            if self.storage_path.exists():
+                data = self._normalize_storage(json.loads(self.storage_path.read_text()))
+                self.pending_tools = data.get('pending', {})
+                self.tool_history = data.get('history', [])
+                return list(self.tool_history)
+        except Exception as e:
+            logger.warning("Failed reading pending tools history from %s: %s", self.storage_path, e)
+        return list(self.tool_history)
     
     def get_tool(self, tool_id: str) -> Optional[Dict]:
         """Get specific tool metadata"""
@@ -341,8 +354,41 @@ class PendingToolsManager:
         """Load from disk"""
         try:
             if self.storage_path.exists():
-                data = json.loads(self.storage_path.read_text())
+                data = self._normalize_storage(json.loads(self.storage_path.read_text()))
                 self.pending_tools = data.get('pending', {})
                 self.tool_history = data.get('history', [])
         except Exception as e:
             logger.warning("Failed loading pending tools from %s: %s", self.storage_path, e)
+
+    def _normalize_storage(self, raw) -> Dict:
+        """Normalize legacy storage formats."""
+        if isinstance(raw, dict):
+            pending = raw.get('pending', {})
+            history = raw.get('history', [])
+            if isinstance(pending, list):
+                pending = {
+                    item.get('tool_id', f"legacy_{index}"): item
+                    for index, item in enumerate(pending)
+                    if isinstance(item, dict)
+                }
+            if not isinstance(pending, dict):
+                pending = {}
+            if not isinstance(history, list):
+                history = []
+            return {'pending': pending, 'history': history}
+
+        if isinstance(raw, list):
+            pending = {}
+            history = []
+            for index, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    continue
+                status = item.get('status', 'pending')
+                tool_id = item.get('tool_id', f"legacy_{index}")
+                if status == 'pending':
+                    pending[tool_id] = item
+                else:
+                    history.append(item)
+            return {'pending': pending, 'history': history}
+
+        return {'pending': {}, 'history': []}

@@ -64,12 +64,13 @@ class EvolutionOrchestrator:
             self.processor = EvolutionProcessor(self.logger, self.queue, self.config, self.llm_client, self.test_orchestrator, self.evolution_flow, self.quality_analyzer)
 
 
-    async def run_cycle(self, max_items: Optional[int] = None) -> Dict:
+    async def run_cycle(self, max_items: Optional[int] = None, rescan: bool = True) -> Dict:
         """Run a single scan-and-process cycle without background loops."""
         await self.ensure_initialized()
         broadcast_trace_sync("auto", "Auto-evolution scan starting", "in_progress", {"stage": "scan_start"})
-        self.queue.clear_queue()
-        await self.scanner._scan_and_queue()
+        if rescan:
+            self.queue.clear_queue()
+            await self.scanner._scan_and_queue()
         processed = 0
         failures = 0
         limit = max_items if max_items is not None else len(self.queue.queue)

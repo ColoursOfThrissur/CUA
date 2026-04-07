@@ -126,12 +126,16 @@ class SystemHealthTool(BaseTool):
 
     def _get_gpu_stats(self) -> dict:
         try:
-            import subprocess
-            out = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=name,memory.used,memory.total,utilization.gpu",
-                 "--format=csv,noheader,nounits"],
-                timeout=3, stderr=subprocess.DEVNULL
-            ).decode().strip()
+            if not self.services or not getattr(self.services, "shell", None):
+                return None
+            result = self.services.shell.execute(
+                "nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits"
+            )
+            if not result.get("success"):
+                return None
+            out = str(result.get("stdout") or "").strip()
+            if not out:
+                return None
             parts = [p.strip() for p in out.split(",")]
             if len(parts) >= 4:
                 return {

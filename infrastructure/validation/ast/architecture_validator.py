@@ -17,7 +17,7 @@ def normalize_artifact_types(value: Any) -> List[str]:
     return result
 
 
-def enrich_contract_from_skill_context(spec: Dict[str, Any], skill_context: Optional[dict]) -> Dict[str, Any]:
+def enrich_tool_spec_with_skill_context(spec: Dict[str, Any], skill_context: Optional[dict]) -> Dict[str, Any]:
     if not skill_context:
         spec.setdefault("artifact_types", normalize_artifact_types(spec.get("outputs", [])))
         return spec
@@ -68,7 +68,7 @@ def enrich_contract_from_skill_context(spec: Dict[str, Any], skill_context: Opti
     return spec
 
 
-def validate_architecture_contract(spec: Dict[str, Any]) -> Tuple[bool, str]:
+def validate_skill_aware_architecture_contract(spec: Dict[str, Any]) -> Tuple[bool, str]:
     target_skill = str(spec.get("target_skill") or "").strip()
     target_category = str(spec.get("target_category") or "").strip()
     verification_mode = str(spec.get("verification_mode") or "").strip()
@@ -126,7 +126,7 @@ def validate_service_alignment(spec: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-def derive_skill_contract_for_tool(tool_name: str) -> Dict[str, Any]:
+def infer_skill_contract_for_tool(tool_name: str) -> Dict[str, Any]:
     try:
         from application.services.skill_registry import SkillRegistry
 

@@ -1,10 +1,13 @@
 """Native tool calling for Mistral and compatible models"""
 import json
+import logging
 import re
 import requests
 from typing import Dict, List, Optional, Any, Tuple
 
 from shared.config.branding import get_assistant_name, get_platform_name
+
+logger = logging.getLogger(__name__)
 
 class ToolCallingClient:
     """LLM client with native function calling support"""
@@ -55,9 +58,9 @@ class ToolCallingClient:
         context_summarizer_available = any(
             "ContextSummarizerTool" in tool["function"]["name"] for tool in tools
         )
-        print(f"[DEBUG] ContextSummarizerTool available: {context_summarizer_available}")
+        logger.debug("ContextSummarizerTool available: %s", context_summarizer_available)
         if skill_context and skill_context.get("category") == "web":
-            print(f"[DEBUG] Web research skill detected, ensuring summarization tools are available")
+            logger.debug("Web research skill detected, ensuring summarization tools are available")
         
         # Build messages with system prompt
         platform_name = get_platform_name()
@@ -127,12 +130,15 @@ When doing web research:
             }
 
             # Debug: Log tool definitions being sent
-            print(f"[DEBUG] Sending {len(tools)} tool definitions to LLM (provider={self.provider})")
+            logger.debug("Sending %s tool definitions to LLM (provider=%s)", len(tools), self.provider)
             if tools:
-                print(f"[DEBUG] First 3 tools: {[t['function']['name'] for t in tools[:3]]}")
+                logger.debug("First 3 tools: %s", [t["function"]["name"] for t in tools[:3]])
                 benchmark_tools = [t for t in tools if 'BenchmarkRunnerTool' in t['function']['name']]
                 if benchmark_tools:
-                    print(f"[DEBUG] BenchmarkRunnerTool operations: {[t['function']['name'] for t in benchmark_tools]}")
+                    logger.debug(
+                        "BenchmarkRunnerTool operations: %s",
+                        [t["function"]["name"] for t in benchmark_tools],
+                    )
 
             # Route to API provider or Ollama
             api_provider = self._get_api_provider()
@@ -155,7 +161,7 @@ When doing web research:
             
             # Handle case where Mistral returns JSON in content instead of tool_calls
             if not tool_calls and content:
-                print(f"[DEBUG] No tool_calls, checking content: {content[:200]}")
+                logger.debug("No tool_calls, checking content: %s", content[:200])
                 # Strip markdown code blocks
                 stripped = content.strip()
                 if stripped.startswith("```"):
@@ -163,30 +169,30 @@ When doing web research:
                     # Remove first line (```json or ```) and last line (```)
                     if len(lines) > 2:
                         stripped = "\n".join(lines[1:-1]).strip()
-                        print(f"[DEBUG] Stripped markdown: {stripped[:200]}")
+                        logger.debug("Stripped markdown: %s", stripped[:200])
                 
                 # Try parsing as single tool call or array of tool calls
                 if stripped.startswith("{") or stripped.startswith("["):
                     try:
                         import json as json_lib
-                        print(f"[DEBUG] Attempting JSON parse...")
+                        logger.debug("Attempting JSON parse...")
                         parsed = json_lib.loads(stripped)
-                        print(f"[DEBUG] Parsed type: {type(parsed)}")
+                        logger.debug("Parsed type: %s", type(parsed))
                         
                         # Handle array of tool calls
                         if isinstance(parsed, list):
-                            print(f"[DEBUG] Found array with {len(parsed)} items")
+                            logger.debug("Found array with %s items", len(parsed))
                             tool_calls = [{"function": call} for call in parsed if "name" in call]
                             if tool_calls:
-                                print(f"[DEBUG] Extracted {len(tool_calls)} tool calls from array")
+                                logger.debug("Extracted %s tool calls from array", len(tool_calls))
                                 content = ""  # Clear content since we extracted tool calls
                         # Handle single tool call
                         elif isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
-                            print(f"[DEBUG] Found single tool call: {parsed.get('name')}")
+                            logger.debug("Found single tool call: %s", parsed.get("name"))
                             tool_calls = [{"function": parsed}]
                             content = ""  # Clear content since we extracted tool calls
                     except Exception as e:
-                        print(f"[DEBUG] JSON parse failed: {e}")
+                        logger.debug("JSON parse failed: %s", e)
                         pass
                 # Handle multiple JSON objects separated by newlines (common LLM output)
                 elif "{" in stripped:
@@ -212,13 +218,13 @@ When doing web research:
             
             if tool_calls:
                 # Model selected tools - return them (ignore any text content)
-                print(f"[DEBUG] Processing {len(tool_calls)} tool calls")
+                logger.debug("Processing %s tool calls", len(tool_calls))
                 parsed_calls = []
                 allowed_set = set(allowed_tools or [])
                 for call in tool_calls:
                     func = call.get("function", {})
                     full_name = func.get("name", "")
-                    print(f"[DEBUG] Tool call: {full_name}")
+                    logger.debug("Tool call: %s", full_name)
                     # Parse ToolName_operation format.
                     # MCP adapters are registered as MCPAdapterTool_<server> so their
                     # full_name looks like MCPAdapterTool_github_list_repos.
@@ -254,29 +260,29 @@ When doing web research:
                         "parameters": wrapped_parameters if wrapped_operation and isinstance(wrapped_parameters, dict) else func.get("arguments", {})
                     }
                     if allowed_set and tool_name not in allowed_set and not any(tool_name.startswith(a) for a in allowed_set):
-                        print(f"[DEBUG] Skipping disallowed tool call: {tool_name}")
+                        logger.debug("Skipping disallowed tool call: %s", tool_name)
                         continue
                     parsed_calls.append(parsed_call)
                 if not parsed_calls and allowed_set:
                     return False, None, "NO_ALLOWED_TOOL_CALLS"
-                print(f"[DEBUG] Returning {len(parsed_calls)} parsed calls")
+                logger.debug("Returning %s parsed calls", len(parsed_calls))
                 return True, parsed_calls, None  # Return None for content when tools are called
             
             # No tool calls - check if content looks like JSON that should be tool calls
             if content and content.strip().startswith("{"):
-                print(f"[DEBUG] WARNING: Content looks like JSON but wasn't parsed as tool call: {content[:100]}")
+                logger.debug("Content looks like JSON but wasn't parsed as tool call: %s", content[:100])
             
             if self._is_clarification_response(content):
-                print("[DEBUG] Returning clarification response to UI")
+                logger.debug("Returning clarification response to UI")
                 return True, None, content
 
             if self._is_actionable_request(user_message):
-                print("[DEBUG] Actionable request returned no tool calls")
+                logger.debug("Actionable request returned no tool calls")
                 return False, None, "NO_TOOL_CALLS_FOR_ACTIONABLE_REQUEST"
 
             # No tool calls - return text response
             content = message.get("content", "")
-            print(f"[DEBUG] No tool calls, returning conversational response: {content[:100]}")
+            logger.debug("No tool calls, returning conversational response: %s", content[:100])
             return True, None, content
             
         except Exception as e:
@@ -320,7 +326,7 @@ When doing web research:
         if not best_cat or best_score == 0:
             return None
         allowed = self._CORE_TOOLS | self._CATEGORY_TOOLS.get(best_cat, set())
-        print(f"[DEBUG] Category fallback filter: '{best_cat}' (score={best_score}) → {sorted(allowed)}")
+        logger.debug("Category fallback filter: '%s' (score=%s) -> %s", best_cat, best_score, sorted(allowed))
         return list(allowed)
 
     def _build_tool_definitions(self, allowed_tools: Optional[List[str]] = None, user_message: str = "") -> List[Dict]:
@@ -331,22 +337,30 @@ When doing web research:
             return tools
 
         if allowed_tools:
-            print(f"[DEBUG] Building tool definitions for allowed tools only: {allowed_tools}")
+            logger.debug("Building tool definitions for allowed tools only: %s", allowed_tools)
             allowed_set = set(allowed_tools)
             tools_to_process = [
                 t for t in self.registry.tools
                 if t.__class__.__name__ in allowed_set
                 or any(t.__class__.__name__.startswith(a) for a in allowed_set)
             ]
-            print(f"[DEBUG] Found {len(tools_to_process)} matching tools out of {len(self.registry.tools)} total")
+            logger.debug(
+                "Found %s matching tools out of %s total",
+                len(tools_to_process),
+                len(self.registry.tools),
+            )
         else:
             # No skill matched — derive category filter from message keywords
             category_filter = self._infer_category_tools(user_message)
             if category_filter:
                 tools_to_process = [t for t in self.registry.tools if t.__class__.__name__ in category_filter]
-                print(f"[DEBUG] Category-filtered tools: {len(tools_to_process)} of {len(self.registry.tools)}")
+                logger.debug(
+                    "Category-filtered tools: %s of %s",
+                    len(tools_to_process),
+                    len(self.registry.tools),
+                )
             else:
-                print(f"[DEBUG] No filter applied - building definitions for all {len(self.registry.tools)} tools")
+                logger.debug("No filter applied - building definitions for all %s tools", len(self.registry.tools))
                 tools_to_process = self.registry.tools
 
         # Check if WebAccessTool is available (hides raw web tools)
@@ -395,7 +409,7 @@ When doing web research:
                     }
                 })
         
-        print(f"[DEBUG] Built {len(tools)} tool definitions")
+        logger.debug("Built %s tool definitions", len(tools))
         return tools
     
     def _map_param_type(self, param_type) -> str:

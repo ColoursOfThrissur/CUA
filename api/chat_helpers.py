@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
@@ -27,10 +28,15 @@ from api.chat.message_utils import (
 from api.chat.response_formatter import (
     build_wra_components, format_tool_history_for_display
 )
+from application.commands.command_models import CommandContext
+from application.commands.dispatch_command import try_execute_command
+
+logger = logging.getLogger(__name__)
 
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+    domain_hint: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -59,6 +65,65 @@ def _sanitize_llm_response_text(text: Optional[str]) -> str:
 
     if cleaned.startswith("```") and cleaned.endswith("```"):
         cleaned = cleaned.strip("`").strip()
+
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    meta_markers = (
+        "drafting the response",
+        "attempt 1",
+        "attempt 2",
+        "attempt 3",
+        "critique 1",
+        "critique 2",
+        "critique 3",
+        "final response:",
+        "final answer:",
+        "response:",
+        "internal analysis",
+        "thinking process",
+        "reasoning:",
+        "chain of thought",
+    )
+    final_markers = (
+        "final answer:",
+        "final response:",
+        "response:",
+    )
+
+    for marker in final_markers:
+        lowered = cleaned.lower()
+        if marker in lowered:
+            idx = lowered.rfind(marker)
+            candidate = cleaned[idx + len(marker):].strip()
+            if candidate:
+                cleaned = candidate
+                break
+
+    filtered_lines = []
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower().strip("*#- ").strip()
+        if not stripped:
+            filtered_lines.append("")
+            continue
+        if any(marker in lowered for marker in meta_markers):
+            continue
+        if lowered.startswith("step ") and "draft" in lowered:
+            continue
+        filtered_lines.append(stripped)
+
+    candidate = "\n".join(filtered_lines).strip()
+    if candidate:
+        cleaned = candidate
+
+    # If the model returned multiple self-critique paragraphs, keep the last user-facing block.
+    paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
+    if len(paragraphs) > 1:
+        non_meta = [
+            p for p in paragraphs
+            if not any(marker in p.lower() for marker in meta_markers)
+        ]
+        if non_meta:
+            cleaned = non_meta[-1]
 
     return cleaned.strip()
 
@@ -89,7 +154,7 @@ def record_capability_gap(message: str, error: str, skill_selection: Dict, llm, 
                 pass
             GapTracker().record_gap(gap)
     except Exception as e:
-        print(f"[WARN] Gap recording failed: {e}")
+        logger.warning("Gap recording failed: %s", e)
 
 
 def _build_tool_history_from_plan_state(plan, state) -> List[Dict[str, Any]]:
@@ -123,6 +188,17 @@ def _build_tool_history_from_plan_state(plan, state) -> List[Dict[str, Any]]:
     return tool_history
 
 
+def _serialize_plan_for_response(plan):
+    """Serialize a plan while preserving optional workflow metadata."""
+    if not hasattr(plan, "__dataclass_fields__"):
+        return plan
+    payload = asdict(plan)
+    workflow_metadata = getattr(plan, "workflow_metadata", None)
+    if workflow_metadata:
+        payload["workflow_metadata"] = workflow_metadata
+    return payload
+
+
 def _apply_skill_registry_learning(skill_reg, skill_selection: Dict, request_message: str, execution_result: Optional[Dict]) -> None:
     """Record tool usage and successful trigger learning across all execution paths."""
     try:
@@ -146,18 +222,37 @@ def _apply_skill_registry_learning(skill_reg, skill_selection: Dict, request_mes
         if success and skill_name and skill_name != "conversation":
             skill_reg.learn_trigger(skill_name, set(_re.findall(r"[a-z0-9_]+", request_message.lower())))
     except Exception as e:
-        print(f"[WARN] Skill registry learning failed: {e}")
+        logger.warning("Skill registry learning failed: %s", e)
 
 
-def _attempt_planning_fallback(request_message, session_id, skill_selection, task_planner, sessions, conv_mem):
+def _attempt_planning_fallback(
+    request_message,
+    session_id,
+    skill_selection,
+    task_planner,
+    sessions,
+    conv_mem,
+    task_manager=None,
+    domain_hint=None,
+):
     """Fallback to task planning when tool calling fails."""
     if not task_planner:
         return None
-    plan = task_planner.plan_task(request_message, context=build_planner_context(skill_selection))
+    plan = task_planner.plan_task(
+        request_message,
+        context=build_planner_context(skill_selection, user_request=request_message, domain_hint=domain_hint),
+    )
     plan.requires_approval = True
     sessions[session_id]["pending_agent_plan"] = plan
     sessions[session_id]["pending_agent_plan_iteration"] = None
-    plan_dict = asdict(plan) if hasattr(plan, "__dataclass_fields__") else plan
+    if task_manager:
+        sessions[session_id]["pending_task_id"] = task_manager.create_task_from_plan(
+            session_id=session_id,
+            plan=plan,
+            status="awaiting_approval",
+            source="planned_fallback",
+        )
+    plan_dict = _serialize_plan_for_response(plan)
     response_text = "I identified this as an executable task and prepared a plan. Review it and reply 'go ahead' to run it."
     sessions[session_id]["messages"].append({
         "role": "assistant", "content": response_text, "timestamp": time.time(),
@@ -193,6 +288,8 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
     tool_orchestrator = runtime.tool_orchestrator
     circuit_breaker = runtime.circuit_breaker
     logger = runtime.logger
+    memory_system = getattr(runtime, "memory_system", None)
+    task_manager = getattr(runtime, "task_manager", None)
 
     async def stop_chat():
         global _stop_requested
@@ -204,15 +301,19 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
         _stop_requested = False
         
         # Set up thinking callback for LLM client
-        from api.trace_ws import broadcast_trace_sync
-        def thinking_callback(thinking_text: str):
-            broadcast_trace_sync("thinking", thinking_text, "in_progress")
-        llm.set_thinking_callback(thinking_callback)
+        if llm and hasattr(llm, "set_thinking_callback"):
+            from api.trace_ws import broadcast_trace_sync
+
+            def thinking_callback(thinking_text: str):
+                broadcast_trace_sync("thinking", thinking_text, "in_progress")
+
+            llm.set_thinking_callback(thinking_callback)
         
         try:
             return await _chat_impl(request)
         finally:
-            llm.clear_thinking_callback()
+            if llm and hasattr(llm, "clear_thinking_callback"):
+                llm.clear_thinking_callback()
     
     async def _chat_impl(request: ChatRequest):
 
@@ -227,12 +328,16 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
             sessions[session_id] = {"messages": []}
             if conv_mem:
                 sessions[session_id]["messages"] = conv_mem.get_history(session_id, limit=20)
+        if memory_system and memory_system.get_session(session_id) is None:
+            memory_system.create_session(session_id)
 
         sessions[session_id]["messages"].append({
             "role": "user", "content": request.message, "timestamp": time.time(),
         })
         if conv_mem:
             conv_mem.save_message(session_id, "user", request.message)
+        if memory_system:
+            memory_system.touch_session(session_id)
         if logger:
             logger.log_request(session_id, request.message)
 
@@ -247,6 +352,33 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     execution_result={"success": False, "error": "System not initialized"},
                 )
 
+            command_result = try_execute_command(CommandContext(
+                runtime=runtime,
+                session_id=session_id,
+                request_message=request.message,
+                sessions=sessions,
+            ))
+            if command_result is not None:
+                response_text = command_result.response_text
+                execution_result = command_result.execution_result
+                sessions[session_id]["messages"].append({
+                    "role": "assistant",
+                    "content": response_text,
+                    "timestamp": time.time(),
+                    "skill": "command",
+                    "category": "system",
+                })
+                if conv_mem:
+                    conv_mem.save_message(session_id, "assistant", response_text)
+                if memory_system:
+                    memory_system.touch_session(session_id)
+                return ChatResponse(
+                    response=response_text,
+                    session_id=session_id,
+                    success=command_result.success,
+                    execution_result=execution_result,
+                )
+
             # Simple message fast path
             if is_simple_message(request.message):
                 response_text = simple_reply(request.message)
@@ -256,14 +388,21 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 })
                 if conv_mem:
                     conv_mem.save_message(session_id, "assistant", response_text)
+                if memory_system:
+                    memory_system.touch_session(session_id)
                 return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
 
-            skill_selection = select_skill_for_message(request.message, skill_reg, skill_sel, llm, reg) or {
+            skill_selection = select_skill_for_message(request.message, skill_reg, skill_sel, llm, reg, request.domain_hint) or {
                 "matched": False, "skill_name": None, "category": None, "confidence": 0.0,
                 "reason": "skill_system_unavailable", "fallback_mode": "direct_tool_routing",
                 "candidate_skills": [],
             }
-            print(f"[DEBUG] Skill selection: {skill_selection.get('skill_name')} (confidence={skill_selection.get('confidence'):.2f}, reason={skill_selection.get('reason')})")
+            logger.debug(
+                "Skill selection: %s (confidence=%.2f, reason=%s)",
+                skill_selection.get("skill_name"),
+                skill_selection.get("confidence", 0.0),
+                skill_selection.get("reason"),
+            )
 
             # Conversation skill
             if skill_selection.get("skill_name") == "conversation":
@@ -295,6 +434,8 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 })
                 if conv_mem:
                     conv_mem.save_message(session_id, "assistant", response_text)
+                if memory_system:
+                    memory_system.touch_session(session_id)
                 return ChatResponse(response=response_text, session_id=session_id, success=True, execution_result=execution_result)
 
             # Pending plan approval
@@ -307,9 +448,19 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 if msg_norm in approve_words:
                     sessions[session_id].pop("pending_agent_plan", None)
                     sessions[session_id].pop("pending_agent_plan_iteration", None)
+                    pending_task_id = sessions[session_id].pop("pending_task_id", None)
                     execution_id = f"{session_id}_approved_{int(time.time())}"
                     try:
-                        state = exec_engine.execute_plan(pending_plan, execution_id) if exec_engine else None
+                        state = (
+                            exec_engine.execute_plan(
+                                pending_plan,
+                                execution_id,
+                                session_id=session_id,
+                                task_id=pending_task_id,
+                            )
+                            if exec_engine
+                            else None
+                        )
                         tool_history = _build_tool_history_from_plan_state(pending_plan, state)
                         if state and getattr(state, "error", None):
                             response_text = f"Plan approved, but execution failed: {state.error}"
@@ -321,13 +472,18 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                                 "tool_history": format_tool_history_for_display(tool_history),
                             }
                         else:
-                            response_text = "✓ Plan approved and executed."
+                            workflow_metadata = getattr(pending_plan, "workflow_metadata", {}) or {}
+                            worktree_info = workflow_metadata.get("worktree") if isinstance(workflow_metadata, dict) else None
+                            response_text = "Plan approved and executed."
+                            if worktree_info:
+                                response_text += f" Prepared worktree remains available at {worktree_info.get('worktree_path')}."
                             execution_result = {
                                 "success": True,
                                 "mode": "autonomous_agent",
                                 "status": "executed",
                                 "execution_id": execution_id,
                                 "tool_history": format_tool_history_for_display(tool_history),
+                                "workflow_metadata": workflow_metadata,
                             }
                     except Exception as e:
                         response_text = f"Plan approved, but execution failed: {str(e)}"
@@ -336,17 +492,22 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 elif msg_norm in reject_words:
                     sessions[session_id].pop("pending_agent_plan", None)
                     sessions[session_id].pop("pending_agent_plan_iteration", None)
+                    pending_task_id = sessions[session_id].pop("pending_task_id", None)
+                    if task_manager and pending_task_id:
+                        task_manager.mark_status(pending_task_id, "rejected", completed=True)
                     response_text = "Cancelled. I won't execute that plan."
                     execution_result = {"success": False, "mode": "autonomous_agent", "status": "rejected"}
 
                 else:
-                    plan_dict = asdict(pending_plan) if hasattr(pending_plan, "__dataclass_fields__") else pending_plan
+                    plan_dict = _serialize_plan_for_response(pending_plan)
                     response_text = "Plan requires user approval. Reply 'go ahead' to approve or 'cancel' to reject."
                     execution_result = {"success": False, "mode": "autonomous_agent", "status": "awaiting_approval", "plan": plan_dict}
 
                 sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
                 if conv_mem:
                     conv_mem.save_message(session_id, "assistant", response_text)
+                if memory_system:
+                    memory_system.touch_session(session_id)
                 execution_result.update({
                     "selected_skill": skill_selection.get("skill_name"),
                     "selected_category": skill_selection.get("category"),
@@ -361,7 +522,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 try:
                     refresh_registry()
                 except Exception as e:
-                    print(f"[WARN] Registry refresh failed: {e}")
+                    logger.warning("Registry refresh failed: %s", e)
 
             # Autonomous agent (multi-step)
             skill_cat = skill_selection.get("category") or ""
@@ -386,7 +547,12 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         goal_text=goal_text, success_criteria=[],
                         max_iterations=5, require_approval=False,
                     )
-                    _skill_context = build_planner_context(skill_selection, skill_reg) or {"skill_context": {"skill_name": skill_selection.get("skill_name", "")}}
+                    _skill_context = build_planner_context(
+                        skill_selection,
+                        skill_reg,
+                        user_request=request.message,
+                        domain_hint=request.domain_hint,
+                    ) or {"skill_context": {"skill_name": skill_selection.get("skill_name", "")}}
                     if prev_context:
                         _skill_context["previous_context"] = prev_context
                     conv_history = [
@@ -404,11 +570,20 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         plan_obj = result["plan"]
                         sessions[session_id]["pending_agent_plan"] = plan_obj
                         sessions[session_id]["pending_agent_plan_iteration"] = result.get("iteration")
-                        plan_dict = asdict(plan_obj) if hasattr(plan_obj, "__dataclass_fields__") else plan_obj
+                        if task_manager:
+                            sessions[session_id]["pending_task_id"] = task_manager.create_task_from_plan(
+                                session_id=session_id,
+                                plan=plan_obj,
+                                status="awaiting_approval",
+                                source="autonomous_agent",
+                            )
+                        plan_dict = _serialize_plan_for_response(plan_obj)
                         response_text = result.get("message", "Plan requires user approval")
                         sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
                         if conv_mem:
                             conv_mem.save_message(session_id, "assistant", response_text)
+                        if memory_system:
+                            memory_system.touch_session(session_id)
                         return ChatResponse(
                             response=response_text, session_id=session_id, success=True,
                             execution_result={
@@ -445,6 +620,8 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                             sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
                             if conv_mem:
                                 conv_mem.save_message(session_id, "assistant", response_text)
+                            if memory_system:
+                                memory_system.touch_session(session_id)
                             try:
                                 from infrastructure.messaging.event_bus import get_event_bus
                                 get_event_bus().emit_sync("agent_plan_clear", {})
@@ -576,11 +753,13 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     sessions[session_id]["messages"].append({"role": "assistant", "content": response_text, "timestamp": time.time()})
                     if conv_mem:
                         conv_mem.save_message(session_id, "assistant", response_text)
+                    if memory_system:
+                        memory_system.touch_session(session_id)
                     try:
                         from infrastructure.messaging.event_bus import get_event_bus
                         get_event_bus().emit_sync("agent_plan_clear", {})
                     except Exception as e:
-                        print(f"[WARN] Event bus emit failed: {e}")
+                        logger.warning("Event bus emit failed: %s", e)
                     primary_data = max(all_step_data_safe, key=lambda x: len(str(x))) if all_step_data_safe else None
                     execution_result = {
                         "success": bool(result.get("success")), "mode": "autonomous_agent",
@@ -598,7 +777,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         execution_result=execution_result,
                     )
                 except Exception as e:
-                    print(f"[DEBUG] Autonomous agent failed: {e}, falling back to tool calling")
+                    logger.debug("Autonomous agent failed: %s, falling back to tool calling", e)
 
             # Native tool calling
             from planner.tool_calling import ToolCallingClient
@@ -628,7 +807,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                                      if t.__class__.__name__.startswith("MCPAdapterTool") and t.is_connected()]
                         if mcp_tools:
                             allowed_tools = list(set(allowed_tools or []) | set(mcp_tools))
-                    print(f"[DEBUG] Skill tool filter: {skill_selection['skill_name']} -> {allowed_tools}")
+                    logger.debug("Skill tool filter: %s -> %s", skill_selection["skill_name"], allowed_tools)
 
             conversation_history = sessions[session_id]["messages"][-5:]
             success, tool_calls, initial_response = tool_caller.call_with_tools(
@@ -636,14 +815,28 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 skill_context=skill_selection.get("planning_context"),
                 allowed_tools=allowed_tools,
             )
-            print(f"[DEBUG] Tool calling: success={success}, calls={tool_calls}, response={str(initial_response)[:100]}")
+            logger.debug(
+                "Tool calling: success=%s, calls=%s, response=%s",
+                success,
+                tool_calls,
+                str(initial_response)[:100],
+            )
 
             response_text = None
 
             if not success:
                 if initial_response == "NO_TOOL_CALLS_FOR_ACTIONABLE_REQUEST":
                     record_capability_gap(request.message, "NO_TOOL_CALLS_FOR_ACTIONABLE_REQUEST", skill_selection, llm, reg)
-                    planned = _attempt_planning_fallback(request.message, session_id, skill_selection, task_planner, sessions, conv_mem)
+                    planned = _attempt_planning_fallback(
+                        request.message,
+                        session_id,
+                        skill_selection,
+                        task_planner,
+                        sessions,
+                        conv_mem,
+                        task_manager,
+                        request.domain_hint,
+                    )
                     if planned:
                         return planned
                 response_text = _sanitize_llm_response_text(llm.generate_response(request.message, conversation_history))
@@ -704,7 +897,12 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                     follow_success, follow_tool_calls, follow_response = continue_tool_calling(
                         tool_caller, request.message, current_history, executed_calls_batch, skill_selection, execution_context,
                     )
-                    print(f"[DEBUG] Continuation {round_index + 1}: success={follow_success}, response={str(follow_response)[:100]}")
+                    logger.debug(
+                        "Continuation %s: success=%s, response=%s",
+                        round_index + 1,
+                        follow_success,
+                        str(follow_response)[:100],
+                    )
 
                     current_history.append({"role": "assistant", "content": truncate_for_history(executed_calls_batch, limit=1500)})
                     if execution_context:
@@ -888,6 +1086,8 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
             })
             if conv_mem:
                 conv_mem.save_message(session_id, "assistant", response_text)
+            if memory_system:
+                memory_system.touch_session(session_id)
 
             _apply_skill_registry_learning(skill_reg, skill_selection, request.message, execution_result)
 
@@ -911,7 +1111,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                         "reasoning": _r.reasoning,
                     }
                 except Exception as e:
-                    print(f"[WARN] Decision engine scoring failed: {e}")
+                    logger.warning("Decision engine scoring failed: %s", e)
                 if execution_result.get("success") is False:
                     err_text = "; ".join(execution_result.get("errors", [])) if execution_result.get("errors") else execution_result.get("error", "")
                     record_capability_gap(request.message, err_text, skill_selection, llm, reg)
@@ -919,7 +1119,7 @@ def create_chat_handler(runtime, sessions: Dict, refresh_registry):
                 elif execution_result.get("mode") == "conversation":
                     record_capability_gap(request.message, "", skill_selection, llm, reg)
             except Exception as e:
-                print(f"[WARN] Execution result finalization failed: {e}")
+                logger.warning("Execution result finalization failed: %s", e)
 
             return ChatResponse(
                 response=response_text, session_id=session_id, success=True,

@@ -22,6 +22,7 @@ _ALL_TABLES = [
     {"db": "cua.db", "table": "risk_weights",            "label": "Risk Weights"},
     {"db": "cua.db", "table": "improvements",            "label": "Improvements"},
     {"db": "cua.db", "table": "plan_history",            "label": "Plan History"},
+    {"db": "cua.db", "table": "worktree_events",         "label": "Worktree Events"},
     {"db": "cua.db", "table": "tool_metrics_hourly",     "label": "Tool Metrics (Hourly)"},
     {"db": "cua.db", "table": "system_metrics_hourly",   "label": "System Metrics (Hourly)"},
     {"db": "cua.db", "table": "auto_evolution_metrics",  "label": "Auto-Evolution Metrics"},

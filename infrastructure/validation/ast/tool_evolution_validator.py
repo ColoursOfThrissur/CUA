@@ -1,7 +1,7 @@
 """Validator for tool evolution - ensures no breaking changes."""
 import ast
 from typing import Tuple, Dict, Any, List
-from domain.services.architecture_contract import validate_architecture_contract
+from infrastructure.validation.ast.architecture_validator import validate_skill_aware_architecture_contract
 from infrastructure.validation.enhanced_code_validator import EnhancedCodeValidator
 from infrastructure.analysis.cua_code_analyzer import CUACodeAnalyzer, CodeIssue
 from infrastructure.external.service_validation import ServicePatternValidator
@@ -33,14 +33,15 @@ class EvolutionValidator:
                 return False, f"Syntax error in generated code: {syntax_detail}"
             return False, "Could not extract class name from improved code (no class definition found)"
         
-        is_valid, error = self.enhanced_validator.validate(improved_code, class_name)
-        if not is_valid:
+        validation = self.enhanced_validator.validate(improved_code, class_name)
+        if not validation.get("valid", False):
+            error = "; ".join(validation.get("errors", [])) or "unknown validation error"
             return False, f"Enhanced validation failed: {error}"
         
         # 0.5. CUA architecture validation (NEW)
         tool_spec = proposal.get('tool_spec')  # May be None for some evolutions
         if tool_spec:
-            contract_ok, contract_error = validate_architecture_contract(tool_spec)
+            contract_ok, contract_error = validate_skill_aware_architecture_contract(tool_spec)
             if not contract_ok:
                 return False, f"Architecture contract failed: {contract_error}"
         cua_issues = self.cua_analyzer.analyze(improved_code, tool_spec)

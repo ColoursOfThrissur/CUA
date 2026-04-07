@@ -373,7 +373,7 @@ class CoordinatedAutonomyEngine:
                 )
 
             if queued > 0:
-                await self.auto_orchestrator.run_cycle(max_items=queued)
+                await self.auto_orchestrator.run_cycle(max_items=queued, rescan=False)
 
             return {
                 "queued": queued,

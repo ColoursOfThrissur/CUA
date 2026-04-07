@@ -222,7 +222,7 @@ export const GlobalStateProvider = ({ children }) => {
         socket.close();
       }
     };
-  }, []);
+  }, [API_URL, updateState]);
 
   const value = {
     ...state,

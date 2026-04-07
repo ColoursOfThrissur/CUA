@@ -5,7 +5,10 @@ import logging
 import re
 from typing import Optional, Any, List
 
-from domain.services.architecture_contract import enrich_contract_from_skill_context, validate_architecture_contract
+from infrastructure.validation.ast.architecture_validator import (
+    enrich_tool_spec_with_skill_context,
+    validate_skill_aware_architecture_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +232,8 @@ Example inputs format:
             spec['missing_services'] = service_resolution['missing']
             spec['service_methods'] = service_resolution['methods']
             
-            spec = enrich_contract_from_skill_context(spec, skill_context)
-            contract_ok, contract_error = validate_architecture_contract(spec)
+            spec = enrich_tool_spec_with_skill_context(spec, skill_context)
+            contract_ok, contract_error = validate_skill_aware_architecture_contract(spec)
             if not contract_ok:
                 logger.warning(f"Architecture contract rejected tool spec: {contract_error}")
                 return None

@@ -140,48 +140,86 @@ class ContextSummarizerTool(BaseTool):
                 self.services.logging.error(f"Failed to summarize text: {e}")
                 summaries.append(None)
 
-        return {'summaries': summaries}
+        return {'success': True, 'data': {'summaries': summaries}}
 
     def _handle_batch(self, **kwargs) -> dict:
         texts = kwargs.get('texts')
         if not texts or not isinstance(texts, list):
             return {'error': 'Missing or invalid parameter: texts'}
+
+        capability = kwargs.get('capability', 'summarize_texts')
+
         try:
             results = []
             for text in texts:
-                summary = self._handle_summarize_text(input_text=text)
-                results.append({'text': text, 'summary': summary})
-            return {'success': True, 'results': results}
+                if capability == 'batch_summarize_texts':
+                    summary = self._handle_summarize_text(input_text=text)
+                    results.append({'text': text, 'summary': summary})
+                else:
+                    return {'error': 'Unsupported capability'}
+
+            return {'success': True, 'data': results}
+
         except Exception as e:
             self.services.logging.error(f"Batch processing failed: {e}")
             return {'success': False, 'error': str(e)}
 
     def _handle_highlight_important_phrases(self, **kwargs) -> dict:
         input_text = kwargs.get('input_text')
-        if not input_text:
-            return {'error': 'Missing required parameter: input_text'}
+        batch_summarize_texts = kwargs.get('batch_summarize_texts', False)
+
+        if not input_text and not batch_summarize_texts:
+            return {'error': 'Missing required parameter: input_text or batch_summarize_texts'}
+
         try:
+            if batch_summarize_texts:
+                texts = kwargs.get('texts', [])
+                if not texts:
+                    return {'success': False, 'error': 'No texts provided for batch summarization'}
+
+                summaries = []
+                for text in texts:
+                    prompt = f"Summarize this text:\n\n{text}"
+                    summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=200)
+                    summaries.append({'text': text[:100] + ('...' if len(text) > 100 else ''), 'summary': summary.strip()})
+
+                return {'success': True, 'summaries': summaries}
+
             prompt = f"Extract the most important phrases and quotes from this text, one per line:\n\n{input_text}"
             result = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
             phrases = [line.strip() for line in result.splitlines() if line.strip()]
             context_snippet = input_text[:200] + ('...' if len(input_text) > 200 else '')
             highlighted = [{'phrase': p, 'context': context_snippet} for p in phrases]
+
             return {'success': True, 'highlighted_phrases': highlighted}
+
         except Exception as e:
             self.services.logging.error(f"Operation failed: {e}")
             return {'success': False, 'error': str(e)}
 
     def _handle_translate_text(self, **kwargs) -> dict:
-        input_text = kwargs.get('input_text')
+        input_texts = kwargs.get('input_texts')
         target_language = kwargs.get('target_language')
+        batch_summarize_texts = kwargs.get('batch_summarize_texts', False)
 
-        if not input_text or not target_language:
-            return {'error': 'Missing required parameters: input_text and target_language'}
+        if not input_texts or not target_language:
+            return {'error': 'Missing required parameters: input_texts and target_language'}
 
-        prompt = f"Translate the following text into {target_language}: {input_text}"
-        translated_text = self.services.llm.generate(prompt)
+        if batch_summarize_texts:
+            summaries = []
+            for text in input_texts:
+                prompt = f"Summarize the following text into {target_language}: {text}"
+                summary = self.services.llm.generate(prompt)
+                summaries.append(summary)
+            return {'success': True, 'data': summaries}
 
-        return {'success': True, 'data': translated_text}
+        translated_texts = []
+        for text in input_texts:
+            prompt = f"Translate the following text into {target_language}: {text}"
+            translated_text = self.services.llm.generate(prompt)
+            translated_texts.append(translated_text)
+
+        return {'success': True, 'data': translated_texts}
 
     def execute(self, operation: str, **kwargs) -> ToolResult:
         """Execute tool operation"""
@@ -209,36 +247,36 @@ class ContextSummarizerTool(BaseTool):
         raise ValueError(f"Unsupported operation: {operation}")
 
     def _handle_summarize_text(self, **kwargs):
-            required_params = ['input_text']
-            missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
-            if missing:
-                self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
-                raise ValueError(f"Missing required parameters: {', '.join(missing)}")
+        required_params = ['input_text']
+        missing = [p for p in required_params if p not in kwargs or kwargs[p] in (None, "")]
+        if missing:
+            self.services.logging.error(f"Missing required parameters: {', '.join(missing)}")
+            return {'success': False, 'error': f"Missing required parameters: {', '.join(missing)}"}
 
-            input_text = kwargs['input_text']
-            summary_length = kwargs.get('summary_length', 50)
+        input_text = kwargs['input_text']
+        summary_length = kwargs.get('summary_length', 50)
 
-            if not self.services or not self.services.llm:
-                self.services.logging.error("LLM service not available")
-                raise RuntimeError("LLM service not available")
+        if not self.services or not self.services.llm:
+            self.services.logging.error("LLM service not available")
+            return {'success': False, 'error': "LLM service not available"}
 
-            cache_key = (input_text, summary_length)
-            if cache_key in self._cache:
-                return self._cache[cache_key]
+        cache_key = (input_text, summary_length)
+        if cache_key in self._cache:
+            return {'success': True, 'data': self._cache[cache_key]}
 
-            prompt = f"Summarize the following text in approximately {summary_length} words:\n\n{input_text}"
-            try:
-                summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
-            except Exception as e:
-                self.services.logging.error(f"Failed to generate summary: {e}")
-                raise RuntimeError(f"Failed to generate summary: {e}")
+        prompt = f"Summarize the following text in approximately {summary_length} words:\n\n{input_text}"
+        try:
+            summary = self.services.llm.generate(prompt, temperature=0.3, max_tokens=500)
+        except Exception as e:
+            self.services.logging.error(f"Failed to generate summary: {e}")
+            return {'success': False, 'error': f"Failed to generate summary: {e}"}
 
-            self._cache[cache_key] = {
-                "summary": summary,
-                "original_length": len(input_text.split()),
-                "summary_length": len(summary.split()),
-            }
-            return self._cache[cache_key]
+        self._cache[cache_key] = {
+            "summary": summary,
+            "original_length": len(input_text.split()),
+            "summary_length": len(summary.split()),
+        }
+        return {'success': True, 'data': self._cache[cache_key]}
 
     def _handle_extract_key_points(self, **kwargs):
             required_params = ['input_text']

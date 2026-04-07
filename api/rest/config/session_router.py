@@ -2,9 +2,21 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List
 
+from application.services.session_workflow_service import SessionWorkflowService
+from application.services.task_artifact_service import TaskArtifactService
+from infrastructure.persistence.file_storage.conversation_memory import ConversationMemory
+from infrastructure.persistence.file_storage.memory_system import MemorySystem
 from infrastructure.persistence.sqlite.cua_database import get_conn
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+def _workflow_service() -> SessionWorkflowService:
+    return SessionWorkflowService(
+        memory_system=MemorySystem(),
+        conversation_memory=ConversationMemory(),
+        task_manager=TaskArtifactService(),
+    )
 
 
 @router.get("/list")
@@ -81,6 +93,38 @@ async def delete_session(session_id: str) -> Dict:
         return {"success": True, "message": f"Session {session_id} deleted"}
     except Exception as e:
         raise HTTPException(500, f"Failed to delete session: {str(e)}")
+
+
+@router.get("/{session_id}/summary")
+async def get_session_summary(session_id: str) -> Dict:
+    summary = _workflow_service().summarize_session(session_id, {})
+    if not summary["overview"]["exists"]:
+        raise HTTPException(404, "Session not found")
+    return summary
+
+
+@router.post("/{session_id}/export")
+async def export_session(session_id: str) -> Dict:
+    overview = _workflow_service().get_session_overview(session_id, {})
+    if not overview["exists"]:
+        raise HTTPException(404, "Session not found")
+    return _workflow_service().export_session(session_id, {})
+
+
+@router.post("/{session_id}/resume")
+async def resume_session(session_id: str) -> Dict:
+    result = _workflow_service().resume_session(session_id, {})
+    if not result["success"]:
+        raise HTTPException(404, "Session not found")
+    return result
+
+
+@router.post("/{session_id}/compact")
+async def compact_session(session_id: str, keep_recent: int = 8) -> Dict:
+    result = _workflow_service().compact_session(session_id, {}, keep_recent=keep_recent)
+    if not result["success"]:
+        raise HTTPException(404, "Session not found")
+    return result
 
 
 @router.post("/{session_id}/clear-messages")

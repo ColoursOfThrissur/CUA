@@ -39,12 +39,10 @@ Default to the smallest tool set that can solve the task:
 - `InputAutomationTool` for typing, clicking, and key presses
 - `ScreenPerceptionTool` for screenshots, OCR, and UI inspection
 
-Use `ComputerUseController` only when the task is genuinely multi-step, visually uncertain, or likely to need retries and replanning.
-
 Example: "open notepad and type hello world"
 - Prefer: `SystemControlTool` + `InputAutomationTool`
-- Use `ComputerUseController.automate_task(...)` if the target app/state is uncertain
-- Do not default to `ComputerUseController` for every desktop action
+- If the target app/state is uncertain, add an explicit `ScreenPerceptionTool` observe step before interacting
+- Keep retries and verification in the main planner flow instead of wrapping the task in a controller
 
 ### For Simple File/Command Operations
 
@@ -55,19 +53,19 @@ Use direct tools:
 
 ### For Complex Desktop Workflows
 
-Use `ComputerUseController` when you need:
+For multi-step desktop workflows, keep the loop inside the main plan:
 
-- visual feedback loops
-- retry/adaptation on uncertain UI state
-- multi-step interaction across screens/windows
-- verified completion instead of one-shot input actions
+- observe current UI state with `ScreenPerceptionTool`
+- act with `SystemControlTool` or `InputAutomationTool`
+- verify the result with `ScreenPerceptionTool` or strong postconditions
+- let the main execution engine retry or replan with structured failure feedback when needed
 
 ## Preferred Execution Surfaces
 
 **Priority order:**
 1. `FilesystemTool` / `ShellTool` for direct file and command work
 2. `SystemControlTool`, `InputAutomationTool`, `ScreenPerceptionTool` for focused desktop actions
-3. `ComputerUseController` for complex interactive workflows with feedback/retry needs
+3. Compose the same direct tools into Observe -> Act -> Verify waves for complex interactive workflows
 
 ## Verification Guidance
 
@@ -77,7 +75,7 @@ Success is strongest when:
 - command execution returns expected output
 - requested artifact exists at the expected path
 - desktop state changed as requested
-- `ComputerUseController` reports verified success with screenshot confirmation when used
+- a verification step confirms the post-action screen state or extracted UI text
 
 ## Failure Interpretation
 
@@ -104,8 +102,8 @@ Prefer outputs such as:
 
 If automation cannot proceed safely:
 
-- try direct desktop primitives before escalating to the controller
-- let `ComputerUseController` adapt and retry only for complex workflows
+- try direct desktop primitives first
+- add an explicit observe or verification step before escalating to replanning
 - explain the blocking condition when still failing
 - fall back to direct tool routing only if policy-compliant
 - record the missing or blocked capability

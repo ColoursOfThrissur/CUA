@@ -60,6 +60,9 @@ class RuntimeState:
     skill_selector: Any = None
     coordinated_autonomy_engine: Any = None
     circuit_breaker: Any = None
+    task_manager: Any = None
+    session_workflow_service: Any = None
+    memory_maintenance_loop: Any = None
     # Singleton managers (created once here, reused by routers)
     quality_analyzer: Any = None
     evolution_orchestrator: Any = None
@@ -89,7 +92,7 @@ def _load_tool_with_timeout(tool_module_name: str, orchestrator, timeout: float)
     t.start()
     t.join(timeout)
     if t.is_alive():
-        print(f"Warning: {tool_module_name} load timed out after {timeout}s — skipped")
+        print(f"Warning: {tool_module_name} load timed out after {timeout}s - skipped")
         return None
     if exc[0]:
         print(f"Warning: Could not load {tool_module_name}: {exc[0]}")
@@ -145,6 +148,7 @@ def load_router_bundle() -> RouterBundle:
         from api.rest.system.pending_skills_router import router as pending_skills_router, set_skills_dependencies
         from api.rest.config.mcp_router import router as mcp_router, set_registry as set_mcp_registry
         from api.rest.config.credentials_router import router as credentials_router
+        from api.rest.system.worktree_router import router as worktree_router
 
         return RouterBundle(
             routers_available=True,
@@ -157,7 +161,7 @@ def load_router_bundle() -> RouterBundle:
                 tool_info_router, tool_list_router, tools_management_router, metrics_router,
                 auto_evolution_router, agent_router, skills_router, trace_router,
                 circuit_breaker_router, session_router, services_router,
-                pending_skills_router, mcp_router, credentials_router,
+                pending_skills_router, mcp_router, credentials_router, worktree_router,
             ],
             refresh_runtime_registry_from_files=refresh_runtime_registry_from_files,
             setters={
@@ -201,12 +205,13 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
     try:
         from tools.capability_registry import CapabilityRegistry
         from tools.enhanced_filesystem_tool import FilesystemTool
+        from tools.glob_tool import GlobTool
+        from tools.grep_tool import GrepTool
         from tools.http_tool import HTTPTool
         from tools.json_tool import JSONTool
         from tools.shell_tool import ShellTool
         from tools.web_access_tool import WebAccessTool
         from tools.computer_use import (
-            ComputerUseController,
             ScreenPerceptionTool,
             InputAutomationTool,
             SystemControlTool,
@@ -231,6 +236,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from application.use_cases.planning.task_planner import TaskPlanner
         from application.use_cases.execution.execution_engine import ExecutionEngine
         from infrastructure.persistence.file_storage.memory_system import MemorySystem
+        from infrastructure.persistence.file_storage.strategic_memory import get_strategic_memory
         from application.use_cases.autonomy.autonomous_agent import AutonomousAgent
         from infrastructure.metrics.scheduler import get_metrics_scheduler
         from application.services.skill_registry import SkillRegistry
@@ -244,6 +250,9 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from application.services.expansion_mode import ExpansionMode
         from application.managers.pending_services_manager import PendingServicesManager
         from application.managers.pending_skills_manager import PendingSkillsManager
+        from application.services.task_artifact_service import TaskArtifactService
+        from application.services.session_workflow_service import SessionWorkflowService
+        from application.services.memory_maintenance_service import MemoryMaintenanceLoop, MemoryMaintenanceService
 
         config = get_config()
         circuit_breaker = get_circuit_breaker()
@@ -256,11 +265,12 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
 
         for tool in (
             FilesystemTool(), 
+            GlobTool(),
+            GrepTool(),
             HTTPTool(), 
             JSONTool(), 
             ShellTool(), 
             WebAccessTool(orchestrator=tool_orchestrator),
-            ComputerUseController(orchestrator=tool_orchestrator),
             ScreenPerceptionTool(orchestrator=tool_orchestrator),
             InputAutomationTool(orchestrator=tool_orchestrator),
             SystemControlTool(orchestrator=tool_orchestrator),
@@ -273,7 +283,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             if tool:
                 registry.register_tool(tool)
 
-        # Load MCP adapters in parallel threads — each gets _MCP_LOAD_TIMEOUT seconds
+        # Load MCP adapters in parallel threads - each gets _MCP_LOAD_TIMEOUT seconds
         from infrastructure.external.mcp_process_manager import get_mcp_process_manager
         mcp_manager = get_mcp_process_manager()
 
@@ -309,7 +319,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         for name, t in mcp_threads:
             t.join(timeout=_MCP_LOAD_TIMEOUT)
             if t.is_alive():
-                print(f"Warning: MCP server '{name}' load timed out after {_MCP_LOAD_TIMEOUT}s — skipped")
+                print(f"Warning: MCP server '{name}' load timed out after {_MCP_LOAD_TIMEOUT}s - skipped")
 
         executor = SecureExecutor(registry)
         parser = PlanParser()
@@ -331,15 +341,15 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
                 print(f"[BOOTSTRAP] models_dict keys: {list(models_dict.keys())}")
                 if chat_model_alias in models_dict:
                     resolved_model = models_dict[chat_model_alias].get('name', chat_model_alias)
-                    print(f"[BOOTSTRAP] Resolved '{chat_model_alias}' → '{resolved_model}'")
+                    print(f"[BOOTSTRAP] Resolved '{chat_model_alias}' -> '{resolved_model}'")
                     print(f"[BOOTSTRAP] Calling llm_client.set_model('{resolved_model}')...")
                     llm_client.set_model(resolved_model)
                     print(f"[BOOTSTRAP] After set_model, llm_client.model = {llm_client.model}")
-                    print(f"✓ LLM client initialized with model: {resolved_model} (from alias: {chat_model_alias})")
+                    print(f"[BOOTSTRAP] LLM client initialized with model: {resolved_model} (from alias: {chat_model_alias})")
                 else:
-                    print(f"✗ Model alias '{chat_model_alias}' not found in models dict. Available: {list(models_dict.keys())}")
+                    print(f"[BOOTSTRAP] Model alias '{chat_model_alias}' not found in models dict. Available: {list(models_dict.keys())}")
         else:
-            print(f"✗ config.yaml not found at {config_file.absolute()}")
+            print(f"[BOOTSTRAP] config.yaml not found at {config_file.absolute()}")
         
         skill_selector = SkillSelector()
         get_decision_engine(skill_registry=skill_registry)
@@ -381,9 +391,20 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
 
         task_planner = TaskPlanner(llm_client, registry, skill_registry=skill_registry)
         tool_orchestrator.main_planner = task_planner
-        execution_engine = ExecutionEngine(registry, tool_orchestrator=tool_orchestrator, task_planner=task_planner)
+        task_manager = TaskArtifactService()
+        execution_engine = ExecutionEngine(
+            registry,
+            tool_orchestrator=tool_orchestrator,
+            task_planner=task_planner,
+            task_manager=task_manager,
+        )
         tool_orchestrator.set_execution_engine(execution_engine)
         memory_system = MemorySystem()
+        session_workflow_service = SessionWorkflowService(
+            memory_system=memory_system,
+            conversation_memory=conversation_memory,
+            task_manager=task_manager,
+        )
         autonomous_agent = AutonomousAgent(
             task_planner=task_planner,
             execution_engine=execution_engine,
@@ -397,6 +418,7 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             llm_client=llm_client,
             registry=registry,
         )
+        improvement_loop._task_manager_stub = task_manager
 
         # Build singleton managers once
         from infrastructure.logging.tool_execution_logger import get_execution_logger
@@ -419,6 +441,11 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
         from infrastructure.persistence.file_storage.improvement_memory import ImprovementMemory
         from infrastructure.persistence.file_storage.unified_memory import get_unified_memory
         get_unified_memory(memory_system=memory_system, improvement_memory=ImprovementMemory())
+        memory_maintenance_loop = MemoryMaintenanceLoop(
+            MemoryMaintenanceService(memory_system=memory_system, strategic_memory=get_strategic_memory()),
+            interval_seconds=21600,
+        )
+        memory_maintenance_loop.start()
 
         runtime = RuntimeState(
             system_available=True,
@@ -446,6 +473,9 @@ def build_runtime(bundle: Optional[RouterBundle] = None) -> RuntimeState:
             skill_selector=skill_selector,
             coordinated_autonomy_engine=coordinated_autonomy_engine,
             circuit_breaker=circuit_breaker,
+            task_manager=task_manager,
+            session_workflow_service=session_workflow_service,
+            memory_maintenance_loop=memory_maintenance_loop,
             quality_analyzer=quality_analyzer,
             evolution_orchestrator=evolution_orchestrator,
             pending_evolutions_manager=pending_evolutions_manager,
@@ -484,7 +514,7 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     _call_setter("set_loop_instance", runtime.improvement_loop)
     _call_setter("set_llm_client", runtime.llm_client)
     _call_setter("set_scheduler", runtime.scheduler)
-    _call_setter("set_task_manager", runtime.improvement_loop.task_manager)
+    _call_setter("set_task_manager", runtime.task_manager)
     _call_setter("set_pending_tools_manager", runtime.improvement_loop.pending_tools_manager)
     _call_setter("set_tool_registrar", runtime.tool_registrar)
     _call_setter("set_registry_manager_for_pending", runtime.registry_manager)
@@ -501,3 +531,32 @@ def wire_router_dependencies(runtime: RuntimeState, bundle: RouterBundle) -> Non
     _call_setter("set_coordinated_engine", runtime.coordinated_autonomy_engine)
     _call_setter("set_mcp_registry", runtime.registry)
     _call_setter("set_skill_registry_for_cb", runtime.skill_registry)
+
+
+def shutdown_runtime(runtime: Optional[RuntimeState]) -> None:
+    """Stop background runtime services during app shutdown."""
+    if not runtime:
+        return
+
+    try:
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler and hasattr(scheduler, "stop"):
+            scheduler.stop()
+    except Exception as e:
+        print(f"Warning: failed to stop improvement scheduler cleanly: {e}")
+
+    try:
+        memory_maintenance_loop = getattr(runtime, "memory_maintenance_loop", None)
+        if memory_maintenance_loop and hasattr(memory_maintenance_loop, "stop"):
+            memory_maintenance_loop.stop()
+    except Exception as e:
+        print(f"Warning: failed to stop memory maintenance loop cleanly: {e}")
+
+    try:
+        from infrastructure.metrics.scheduler import get_metrics_scheduler
+
+        metrics_scheduler = get_metrics_scheduler()
+        if metrics_scheduler and hasattr(metrics_scheduler, "stop"):
+            metrics_scheduler.stop()
+    except Exception as e:
+        print(f"Warning: failed to stop metrics scheduler cleanly: {e}")

@@ -128,7 +128,7 @@ def select_primary_result(
     for i, r in enumerate(results):
         data = r.get("data") if isinstance(r, dict) else r
         best_data = best.get("data") if isinstance(best, dict) else best
-        if data and len(str(data)) > len(str(best_data)):
+        if _primary_result_score(data) > _primary_result_score(best_data):
             best = r
             if i < len(executed_history):
                 best_tool = executed_history[i].get("tool")
@@ -136,6 +136,44 @@ def select_primary_result(
     
     data = best.get("data") if isinstance(best, dict) else best
     return data, best_tool, best_op
+
+
+def _primary_result_score(data: Any) -> float:
+    """Rank answer-quality evidence above payload length."""
+    if data is None:
+        return -100.0
+
+    score = 0.0
+    if isinstance(data, dict):
+        if data.get("success") is False:
+            score -= 50.0
+        if data.get("grounded") is True:
+            score += 45.0
+        elif data.get("grounding", {}).get("target_app") and data.get("grounded") is False:
+            score -= 40.0
+        if data.get("answer_ready") is True:
+            score += 120.0
+        if data.get("requested_field") and data.get("field_value") and not data.get("ambiguous", False):
+            score += 90.0
+        if data.get("structured_rows"):
+            score += 35.0
+        if data.get("items"):
+            score += 20.0 + min(len(data.get("items") or []), 10)
+        if data.get("summary"):
+            score += 12.0
+        if data.get("target"):
+            score += 8.0
+        if data.get("ambiguous"):
+            score -= 25.0
+        if data.get("error") or data.get("error_message"):
+            score -= 30.0
+    else:
+        text = str(data)
+        if text.strip():
+            score += 5.0
+
+    score += min(len(str(data)) / 250.0, 8.0)
+    return score
 
 
 def truncate_for_history(executed_batch: List[Dict], limit: int = 1500) -> str:

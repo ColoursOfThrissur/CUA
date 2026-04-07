@@ -260,6 +260,11 @@ class EnhancedCodeValidator:
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     imported_names.add(alias.asname or alias.name)
+        module_level_functions: set = {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
         # Collect names defined at class level (methods + class vars)
         class_names: set = set()
         for node in target_class.body:
@@ -291,7 +296,12 @@ class EnhancedCodeValidator:
                 if not isinstance(node.func, ast.Name):
                     continue
                 name = node.func.id
-                if name in builtin_names or name in imported_names or name in local_names:
+                if (
+                    name in builtin_names
+                    or name in imported_names
+                    or name in module_level_functions
+                    or name in local_names
+                ):
                     continue
                 if name in class_names:  # defined as a method (called without self — unusual but valid)
                     continue
@@ -419,6 +429,7 @@ class EnhancedCodeValidator:
         """Catch bare function calls that aren't builtins, imports, or class methods."""
         # Collect all names imported at module level
         imported_names: Set[str] = set()
+        module_level_functions: Set[str] = set()
         for node in tree.body:
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -426,6 +437,8 @@ class EnhancedCodeValidator:
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     imported_names.add(alias.asname or alias.name)
+            elif isinstance(node, ast.FunctionDef):
+                module_level_functions.add(node.name)
 
         # Collect class-level defined names (methods + class vars)
         class_names: Set[str] = set()
@@ -437,7 +450,7 @@ class EnhancedCodeValidator:
                     if isinstance(t, ast.Name):
                         class_names.add(t.id)
 
-        safe = self._SAFE_BARE_CALLS | imported_names | class_names
+        safe = self._SAFE_BARE_CALLS | imported_names | class_names | module_level_functions
 
         for method in target_class.body:
             if not isinstance(method, ast.FunctionDef):

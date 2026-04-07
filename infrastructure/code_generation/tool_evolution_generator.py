@@ -433,6 +433,8 @@ CRITICAL REQUIREMENTS:
 5. Return {{'success': True, 'data': ...}} or {{'success': False, 'error': '...'}}
 6. Keep under 25 lines
 7. NO imports, NO class definition
+8. DO NOT call any new self._helper() method unless that helper already exists in the current file context
+9. If you need extra logic, implement it inline inside this handler instead of inventing a helper
 
 Return ONLY the method definition."""
 
@@ -449,6 +451,18 @@ Return ONLY the method definition."""
                 invalid = self._invalid_service_calls(handler)
                 if invalid:
                     feedback = "Invalid self.services calls:\n- " + "\n- ".join(invalid)
+                    continue
+                invalid_helpers = self._find_undefined_private_helper_calls(
+                    handler,
+                    expected_name,
+                    current_file=current_file,
+                )
+                if invalid_helpers:
+                    feedback = (
+                        "Undefined private helper calls detected:\n- "
+                        + "\n- ".join(invalid_helpers)
+                        + "\nDo not invent helper methods. Reuse existing methods from the file or inline the logic."
+                    )
                     continue
 
                 # Verify every code path returns a dict (no implicit None)
@@ -883,7 +897,9 @@ CRITICAL REQUIREMENTS:
 - ALWAYS use self.services.X - NEVER call self.X directly
 - Return plain dict with 'success' key (not ToolResult)
 - Keep under 25 lines
-- DO NOT add imports"""
+- DO NOT add imports
+- DO NOT call any new self._helper() method unless that helper already exists in the current file context
+- If you need extra logic, implement it inline in this method instead of inventing a helper"""
 
         feedback = ""
         for attempt in range(3):
@@ -899,6 +915,18 @@ CRITICAL REQUIREMENTS:
                     invalid = self._invalid_service_calls(improved)
                     if invalid:
                         feedback = "Invalid self.services calls detected:\n- " + "\n- ".join(invalid)
+                        continue
+                    invalid_helpers = self._find_undefined_private_helper_calls(
+                        improved,
+                        handler_name,
+                        current_file=current_file,
+                    )
+                    if invalid_helpers:
+                        feedback = (
+                            "Undefined private helper calls detected:\n- "
+                            + "\n- ".join(invalid_helpers)
+                            + "\nDo not invent helper methods. Reuse existing methods from the file or inline the logic."
+                        )
                         continue
                     missing_return = self._check_missing_return(improved, handler_name)
                     if missing_return:
@@ -1124,6 +1152,49 @@ CRITICAL REQUIREMENTS:
             return True
         except:
             return False
+
+    def _find_undefined_private_helper_calls(
+        self,
+        handler_code: str,
+        handler_name: str,
+        current_file: str = "",
+    ) -> List[str]:
+        """Detect invented self._helper() calls that do not exist in the current file."""
+        try:
+            tree = ast.parse(textwrap.dedent(handler_code))
+        except Exception:
+            return []
+
+        defined_methods = set()
+        if current_file:
+            try:
+                file_tree = ast.parse(current_file)
+                defined_methods = {
+                    node.name
+                    for node in ast.walk(file_tree)
+                    if isinstance(node, ast.FunctionDef)
+                }
+            except Exception:
+                defined_methods = set()
+
+        issues: List[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if not isinstance(func.value, ast.Name) or func.value.id != "self":
+                continue
+            called = func.attr
+            if not called.startswith("_") or called == handler_name:
+                continue
+            if called in defined_methods:
+                continue
+            issues.append(f"self.{called}() is not defined in the current file")
+
+        seen = set()
+        return [issue for issue in issues if not (issue in seen or seen.add(issue))]
     
     def _extract_tool_structure(self, code: str) -> str:
         """Extract registered capabilities, methods, and services used via AST."""

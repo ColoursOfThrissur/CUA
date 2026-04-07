@@ -82,6 +82,13 @@ async def get_pending_tools():
     
     return {"pending_tools": pending_tools_manager.get_pending_list()}
 
+@router.get("/history")
+async def get_tool_history():
+    """Get approved/rejected tool history."""
+    if not pending_tools_manager:
+        return {"history": []}
+    return {"history": pending_tools_manager.get_history()}
+
 @router.get("/{tool_id}")
 async def get_tool_details(tool_id: str):
     """Get detailed info about pending tool"""

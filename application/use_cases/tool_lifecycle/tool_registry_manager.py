@@ -83,11 +83,7 @@ class ToolRegistryManager:
             tool_files += list(exp_dir.glob("*.py"))
         computer_use_dir = self.tools_dir / "computer_use"
         if computer_use_dir.exists():
-            # Exclude agent files - they're helper classes, not standalone tools
-            tool_files += [
-                f for f in computer_use_dir.glob("*.py") 
-                if f.name != "__init__.py" and not f.name.endswith("_agent.py")
-            ]
+            tool_files += list(computer_use_dir.glob("*_tool.py"))
         
         registry = {"tools": {}, "last_sync": results["timestamp"]}
         

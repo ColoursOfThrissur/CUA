@@ -3,7 +3,7 @@ Per-Session Permission Gate
 Each session has isolated permission tracking
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 from domain.policies.immutable_brain_stem import BrainStem, ValidationResult, RiskLevel
@@ -21,6 +21,15 @@ class Permission:
     level: PermissionLevel
     conditions: Dict[str, Any]
 
+
+@dataclass
+class CommandPermission:
+    command: str
+    level: PermissionLevel
+    risk_level: RiskLevel
+    allowed_tools: List[str]
+    requires_confirmation: bool = False
+
 class SessionPermissions:
     """Per-session permission tracking"""
     
@@ -32,6 +41,8 @@ class SessionPermissions:
         self.max_file_size = max_file_size or (config.security.max_file_size_mb * 1024 * 1024)
         self.files_written = 0
         self.operations_log = []
+        self.command_log = []
+        self.blocked_commands = set()
     
     def record_operation(self, tool: str, operation: str, success: bool):
         """Record operation for this session"""
@@ -58,6 +69,8 @@ class SessionPermissions:
         """Reset session limits"""
         self.files_written = 0
         self.operations_log = []
+        self.command_log = []
+        self.blocked_commands = set()
 
 class PermissionGate:
     """Manages permissions with per-session isolation"""
@@ -65,6 +78,7 @@ class PermissionGate:
     def __init__(self):
         self.sessions: Dict[str, SessionPermissions] = {}
         self.default_permissions = self._init_default_permissions()
+        self.command_permissions = self._init_command_permissions()
     
     def _init_default_permissions(self) -> Dict[str, Permission]:
         """Initialize default permission set"""
@@ -91,12 +105,72 @@ class PermissionGate:
                 conditions={}
             )
         }
+
+    def _init_command_permissions(self) -> Dict[str, CommandPermission]:
+        return {
+            "status": CommandPermission("status", PermissionLevel.READ_ONLY, RiskLevel.SAFE, []),
+            "doctor": CommandPermission("doctor", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "session": CommandPermission("session", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "summary": CommandPermission("summary", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "export": CommandPermission("export", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "resume": CommandPermission("resume", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "review": CommandPermission("review", PermissionLevel.READ_ONLY, RiskLevel.LOW, ["FilesystemTool", "GlobTool", "GrepTool"]),
+            "security-review": CommandPermission("security-review", PermissionLevel.READ_ONLY, RiskLevel.MEDIUM, ["FilesystemTool", "GlobTool", "GrepTool"]),
+            "mcp": CommandPermission("mcp", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+            "skills": CommandPermission("skills", PermissionLevel.READ_ONLY, RiskLevel.LOW, []),
+        }
     
     def get_session(self, session_id: str) -> SessionPermissions:
         """Get or create session permissions"""
         if session_id not in self.sessions:
             self.sessions[session_id] = SessionPermissions(session_id)
         return self.sessions[session_id]
+
+    def check_command_permission(
+        self,
+        session_id: str,
+        command_name: str,
+        allowed_tools: List[str] | None = None,
+    ) -> ValidationResult:
+        """Check if a slash command is permitted for this session."""
+        session = self.get_session(session_id)
+        normalized = (command_name or "").strip().lower()
+
+        if normalized in session.blocked_commands:
+            return ValidationResult(
+                is_valid=False,
+                risk_level=RiskLevel.BLOCKED,
+                reason=f"Command '/{normalized}' is blocked for this session",
+            )
+
+        permission = self.command_permissions.get(normalized)
+        if permission is None:
+            return ValidationResult(
+                is_valid=False,
+                risk_level=RiskLevel.HIGH,
+                reason=f"No command permission defined for '/{normalized}'",
+            )
+
+        if permission.level == PermissionLevel.DENIED:
+            return ValidationResult(
+                is_valid=False,
+                risk_level=RiskLevel.BLOCKED,
+                reason=f"Command '/{normalized}' is denied by policy",
+            )
+
+        extra_tools = set(allowed_tools or []) - set(permission.allowed_tools)
+        if extra_tools:
+            return ValidationResult(
+                is_valid=False,
+                risk_level=RiskLevel.HIGH,
+                reason=f"Command '/{normalized}' requested tools outside policy: {sorted(extra_tools)}",
+            )
+
+        return ValidationResult(
+            is_valid=True,
+            risk_level=permission.risk_level,
+            reason=f"Command '/{normalized}' permitted",
+        )
     
     def check_permission(self, session_id: str, tool: str, operation: str, 
                         parameters: Dict[str, Any]) -> ValidationResult:
@@ -151,6 +225,13 @@ class PermissionGate:
         """Record completed operation for session"""
         session = self.get_session(session_id)
         session.record_operation(tool, operation, success)
+
+    def record_command(self, session_id: str, command_name: str, success: bool):
+        session = self.get_session(session_id)
+        session.command_log.append({
+            "command": command_name,
+            "success": success,
+        })
     
     def reset_session(self, session_id: str):
         """Reset session limits"""

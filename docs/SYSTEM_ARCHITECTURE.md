@@ -70,8 +70,8 @@ ToolServices (injected)
 ```
 
 **Key Files**:
-- `core/tool_orchestrator.py` - Execution orchestrator
-- `core/tool_services.py` - Service facade
+- `application/use_cases/tool_lifecycle/tool_orchestrator.py` - Execution orchestrator
+- `infrastructure/services/tool_services.py` - Service facade
 - `tools/tool_interface.py` - Base tool class
 - `tools/capability_registry.py` - Tool registry
 
@@ -187,14 +187,14 @@ Generate natural response from results
 ```
 
 **Key Files**:
-- `core/tool_evolution/flow.py` - Orchestrator
-- `core/tool_evolution/analyzer.py` - Tool analysis
-- `core/tool_evolution/proposal_generator.py` - Context-aware proposals
-- `core/tool_evolution/code_generator.py` - Code generation
-- `core/tool_evolution/validator.py` - Validation
-- `core/tool_evolution/sandbox_runner.py` - Sandbox testing
-- `core/pending_evolutions_manager.py` - Approval queue
-- `core/llm_tool_health_analyzer.py` - LLM-based health analysis
+- `application/use_cases/tool_lifecycle/tool_evolution_flow.py` - Orchestrator
+- `application/use_cases/evolution/tool_analyzer.py` - Tool analysis
+- `application/use_cases/evolution/tool_proposal_generator.py` - Context-aware proposals
+- `infrastructure/code_generation/tool_evolution_generator.py` - Code generation
+- `infrastructure/validation/ast/tool_evolution_validator.py` - Validation
+- `infrastructure/sandbox/evolution_sandbox_runner.py` - Sandbox testing
+- `application/managers/pending_evolutions_manager.py` - Approval queue
+- `infrastructure/analysis/llm_tool_health_analyzer.py` - LLM-based health analysis
 
 ### 5. Dependency Management
 

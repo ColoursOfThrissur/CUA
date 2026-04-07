@@ -26,7 +26,15 @@ class ToolRegistryAdapter:
     
     def get_capabilities(self, preferred_tools: Optional[set] = None) -> Dict[str, List[Dict]]:
         """Get tool capabilities."""
-        _CORE = {"FilesystemTool", "WebAccessTool", "ShellTool", "JSONTool", "ContextSummarizerTool"}
+        _CORE = {
+            "FilesystemTool",
+            "GlobTool",
+            "GrepTool",
+            "WebAccessTool",
+            "ShellTool",
+            "JSONTool",
+            "ContextSummarizerTool",
+        }
         tools_info = {}
         
         if hasattr(self.registry, 'refresh'):

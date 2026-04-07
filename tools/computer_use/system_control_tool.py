@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional
 
 from tools.tool_interface import BaseTool
 from tools.tool_capability import ToolCapability, Parameter, ParameterType, SafetyLevel
+from tools.computer_use.error_taxonomy import classify_desktop_failure
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +504,6 @@ If no good match, return 0."""
         try:
             import subprocess
             import os
-            import time
         except ImportError as e:
             return self._error_response("DEPENDENCY_MISSING", f"Missing dependency: {e}")
 
@@ -513,7 +513,7 @@ If no good match, return 0."""
                 return self._error_response("INVALID_PARAMETER", "name parameter required")
             
             args = kwargs.get("args", [])
-            wait_seconds = int(kwargs.get("wait_seconds", 3))  # Default 3s wait
+            wait_seconds = int(kwargs.get("wait_seconds", 5))  # Default wait for actual app readiness
             
             # Safety check
             if not self._check_safety(SafetyLevel.HIGH, f"launch '{name}'"):
@@ -538,22 +538,23 @@ If no good match, return 0."""
             # Special handling for Steam and other protocol handlers
             if name_lower == "steam":
                 os.startfile("steam://open/main")
-                logger.info(f"Waiting {wait_seconds}s for Steam to open...")
-                time.sleep(wait_seconds)
+                readiness = self._wait_for_window_ready(name, wait_seconds)
                 self._invalidate_screen_cache()
                 return {
                     "success": True,
                     "pid": 0,
                     "name": name,
                     "method": "protocol_handler",
-                    "waited": wait_seconds,
+                    "waited": readiness["waited"],
+                    "window_ready": readiness["window_ready"],
+                    "window_active": readiness["window_active"],
+                    "active_window": readiness.get("active_window"),
                 }
             
             # Try direct launch first (for .exe files)
             try:
                 proc = subprocess.Popen([executable] + (args if isinstance(args, list) else []))
-                logger.info(f"Waiting {wait_seconds}s for {name} to open...")
-                time.sleep(wait_seconds)
+                readiness = self._wait_for_window_ready(name, wait_seconds)
                 self._invalidate_screen_cache()
                 return {
                     "success": True,
@@ -561,21 +562,26 @@ If no good match, return 0."""
                     "name": name,
                     "args": args,
                     "method": "direct",
-                    "waited": wait_seconds,
+                    "waited": readiness["waited"],
+                    "window_ready": readiness["window_ready"],
+                    "window_active": readiness["window_active"],
+                    "active_window": readiness.get("active_window"),
                 }
             except FileNotFoundError:
                 # Fallback: Use Windows 'start' command (searches PATH and Start Menu)
                 logger.info(f"Direct launch failed, trying 'start' command for: {name}")
                 subprocess.Popen(["cmd", "/c", "start", "", name], shell=False)
-                logger.info(f"Waiting {wait_seconds}s for {name} to open...")
-                time.sleep(wait_seconds)
+                readiness = self._wait_for_window_ready(name, wait_seconds)
                 self._invalidate_screen_cache()
                 return {
                     "success": True,
                     "pid": 0,  # 'start' doesn't return PID
                     "name": name,
                     "method": "start_command",
-                    "waited": wait_seconds,
+                    "waited": readiness["waited"],
+                    "window_ready": readiness["window_ready"],
+                    "window_active": readiness["window_active"],
+                    "active_window": readiness.get("active_window"),
                 }
 
         except Exception as e:
@@ -665,6 +671,94 @@ If no good match, return 0."""
         matches.sort(key=lambda x: x[1], reverse=True)
         return [m[0] for m in matches]
 
+    def _wait_for_window_ready(self, query: str, timeout_seconds: int) -> Dict[str, Any]:
+        """Wait for an app window to appear and preferably become active."""
+        import time
+
+        waited = 0.0
+        timeout = max(1, int(timeout_seconds or 0))
+        poll_interval = 0.5
+
+        try:
+            import pygetwindow as gw
+        except ImportError:
+            logger.info(f"pygetwindow unavailable, falling back to fixed wait for '{query}'")
+            time.sleep(timeout)
+            return {
+                "window_ready": False,
+                "window_active": False,
+                "active_window": None,
+                "waited": timeout,
+            }
+
+        last_match = None
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            all_windows = gw.getAllWindows()
+            matching = self._fuzzy_match_windows(query, all_windows)
+            if matching:
+                window = matching[0]
+                last_match = window
+                try:
+                    if getattr(window, "isMinimized", False):
+                        window.restore()
+                    window.activate()
+                except Exception:
+                    pass
+
+                active_window = None
+                try:
+                    active_window = gw.getActiveWindow()
+                except Exception:
+                    active_window = None
+
+                if active_window and self._titles_match(query, getattr(active_window, "title", "")):
+                    return {
+                        "window_ready": True,
+                        "window_active": True,
+                        "active_window": self._serialize_window(active_window),
+                        "waited": round(time.time() - (end_time - timeout), 2),
+                    }
+
+            time.sleep(poll_interval)
+            waited = round(time.time() - (end_time - timeout), 2)
+
+        if last_match is not None:
+            return {
+                "window_ready": True,
+                "window_active": False,
+                "active_window": self._serialize_window(last_match),
+                "waited": waited or timeout,
+            }
+
+        logger.info(f"No window matched '{query}' within {timeout}s")
+        return {
+            "window_ready": False,
+            "window_active": False,
+            "active_window": None,
+            "waited": waited or timeout,
+        }
+
+    def _titles_match(self, query: str, title: str) -> bool:
+        query_lower = str(query or "").strip().lower()
+        title_lower = str(title or "").strip().lower()
+        return bool(query_lower and title_lower and (query_lower in title_lower or title_lower in query_lower))
+
+    def _serialize_window(self, window: Any) -> Dict[str, Any]:
+        return {
+            "title": str(getattr(window, "title", "") or ""),
+            "position": {
+                "x": int(getattr(window, "left", 0) or 0),
+                "y": int(getattr(window, "top", 0) or 0),
+            },
+            "size": {
+                "width": int(getattr(window, "width", 0) or 0),
+                "height": int(getattr(window, "height", 0) or 0),
+            },
+            "is_minimized": bool(getattr(window, "isMinimized", False)),
+            "is_maximized": bool(getattr(window, "isMaximized", False)),
+        }
+
     def _invalidate_screen_cache(self) -> None:
         """Force a fresh screenshot after window-changing operations."""
         if not self.services:
@@ -682,6 +776,7 @@ If no good match, return 0."""
 
     def _error_response(self, error_type: str, message: str, recoverable: bool = False, **extra) -> dict:
         """Structured error response."""
+        extra.setdefault("failure_category", classify_desktop_failure(error_type, message))
         return {
             "success": False,
             "error_type": error_type,

@@ -47,6 +47,42 @@ class EvolutionConstraintMemory:
         if constraint:
             self._upsert(tool_name, constraint)
 
+    def add_constraint(
+        self,
+        tool_name: str,
+        constraint_type: str,
+        value: str,
+        reason: str | None = None,
+    ) -> None:
+        """Backward-compatible explicit constraint insert."""
+        _ = reason
+        self._upsert(tool_name, {"type": constraint_type, "value": value})
+
+    def get_constraints(self, tool_name: str) -> dict:
+        """Backward-compatible structured constraint summary."""
+        constraints = self._load(tool_name)
+        result = {
+            "blocked_libs": [],
+            "blocked_patterns": [],
+            "forbidden_capabilities": [],
+            "require_target_scope": False,
+            "no_hardcoded_urls": False,
+        }
+        for constraint in constraints:
+            ctype = constraint["type"]
+            value = constraint["value"]
+            if ctype == "blocked_lib":
+                result["blocked_libs"].append(value)
+            elif ctype == "blocked_pattern":
+                result["blocked_patterns"].append(value)
+            elif ctype == "forbidden_capability":
+                result["forbidden_capabilities"].append(value)
+            elif ctype == "require_target_scope":
+                result["require_target_scope"] = True
+            elif ctype == "no_hardcoded_urls":
+                result["no_hardcoded_urls"] = True
+        return result
+
     def build_constraint_block(self, tool_name: str) -> str:
         """Return a formatted block to inject into every LLM prompt for this tool."""
         self.prune_constraints(tool_name)

@@ -242,6 +242,26 @@ class StrategicMemory:
             "top_skills": self._top_skills(5),
         }
 
+    def run_maintenance(self, stale_days: int = 120) -> Dict[str, int]:
+        """Prune stale fail-only records and return a maintenance summary."""
+        now = datetime.now(timezone.utc)
+        removed = 0
+        for key, record in list(self._records.items()):
+            try:
+                last_used = datetime.fromisoformat(record.last_used)
+                if last_used.tzinfo is None:
+                    last_used = last_used.replace(tzinfo=timezone.utc)
+            except Exception:
+                last_used = now
+            age_days = (now - last_used).total_seconds() / 86400.0
+            if record.success_count == 0 and age_days > stale_days:
+                del self._records[key]
+                removed += 1
+        if removed:
+            self._dirty = True
+            self._flush()
+        return {"removed_records": removed, "remaining_records": len(self._records)}
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

@@ -76,16 +76,47 @@ class ToolEvolutionOrchestrator:
             
         evolution_id = None
         health_before = 0
+
+        def record_run(
+            status: str,
+            step: str,
+            error_message: Optional[str] = None,
+            confidence_value: Optional[float] = None,
+            health_after: Optional[float] = None,
+        ) -> int:
+            nonlocal evolution_id
+            if evolution_id and evolution_id > 0:
+                evo_logger.update_run(
+                    evolution_id,
+                    status=status,
+                    step=step,
+                    error_message=error_message,
+                    confidence=confidence_value,
+                    health_before=health_before,
+                    health_after=health_after,
+                )
+                return evolution_id
+            evolution_id = evo_logger.log_run(
+                tool_name,
+                user_prompt,
+                status,
+                step,
+                error_message,
+                confidence_value,
+                health_before,
+                health_after,
+            )
+            return evolution_id
         
         try:
             # Pass execution context to analyzer for context-aware analysis
             analysis = analyzer.analyze_tool(tool_name, user_prompt, execution_context=execution_context)
             if not analysis:
-                evolution_id = evo_logger.log_run(tool_name, user_prompt, "failed", "analysis", "Could not analyze tool")
+                record_run("failed", "analysis", "Could not analyze tool")
                 return False, f"Could not analyze tool: {tool_name}"
             
             health_before = analysis.get('health_score', 0)
-            evolution_id = evo_logger.log_run(tool_name, user_prompt, "in_progress", "analysis", None, health_before=health_before)
+            record_run("in_progress", "analysis")
             
             # Store analysis artifact with original code and execution context
             evo_logger.log_artifact(evolution_id, "analysis", "analyze", analysis)
@@ -108,7 +139,7 @@ class ToolEvolutionOrchestrator:
             if evolution_id:
                 evo_logger.log_artifact(evolution_id, "error", "analysis", {"error": str(e)})
             else:
-                evolution_id = evo_logger.log_run(tool_name, user_prompt, "failed", "analysis", str(e))
+                record_run("failed", "analysis", str(e))
             return False, f"Analysis failed: {str(e)}"
         
         # Step 2: LLM proposes changes
@@ -126,7 +157,7 @@ class ToolEvolutionOrchestrator:
         try:
             proposal = proposal_gen.generate_proposal(analysis)
             if not proposal:
-                evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", "Failed to generate proposal", health_before=health_before)
+                record_run("failed", "proposal", "Failed to generate proposal")
                 return False, "Failed to generate improvement proposal"
             
             # Store proposal artifact
@@ -140,11 +171,11 @@ class ToolEvolutionOrchestrator:
             _provider = getattr(get_config().llm, 'provider', 'ollama')
             _min_confidence = 0.35 if _provider == 'ollama' else 0.5
             if confidence < _min_confidence:
-                evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", f"Low confidence: {confidence:.2f}", confidence, health_before)
+                record_run("failed", "proposal", f"Low confidence: {confidence:.2f}", confidence)
                 return False, f"Low confidence proposal ({confidence:.2f})"
         except Exception as e:
             evo_logger.log_artifact(evolution_id, "error", "proposal", {"error": str(e)})
-            evo_logger.log_run(tool_name, user_prompt, "failed", "proposal", str(e), health_before=health_before)
+            record_run("failed", "proposal", str(e))
             return False, f"Proposal generation failed: {str(e)}"
         
         # Step 3-5: Generate, validate, and test with retry on sandbox failure
@@ -171,12 +202,10 @@ class ToolEvolutionOrchestrator:
                             sandbox_error=sandbox_error, validation_error=validation_error
                         )
                         if not improved_code:
-                            evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation",
-                                               "Chunk strategy returned empty", confidence, health_before)
+                            record_run("failed", "code_generation", "Chunk strategy returned empty", confidence)
                             return False, "Chunk evolution failed: empty output"
                     elif evo_ctx.failure_type == "DEP_BLOCKED":
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation",
-                                           f"Dependency blocked: {last_error[:100]}", confidence, health_before)
+                        record_run("failed", "code_generation", f"Dependency blocked: {last_error[:100]}", confidence)
                         return False, f"Blocked dependency — cannot evolve: {last_error[:100]}"
                     else:
                         # PATTERN_LOOP or UNKNOWN — refresh constraint block and retry
@@ -204,21 +233,21 @@ class ToolEvolutionOrchestrator:
                 if not improved_code or not improved_code.strip():
                     evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": "Empty code"})
                     if attempt == 2:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "Empty code", confidence, health_before)
+                        record_run("failed", "code_generation", "Empty code", confidence)
                         return False, "Failed to generate improved code: empty output"
                     continue
                 
                 if len(improved_code) < 100:
                     evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": f"Code too short: {len(improved_code)}"})
                     if attempt == 2:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", f"Code too short: {len(improved_code)}", confidence, health_before)
+                        record_run("failed", "code_generation", f"Code too short: {len(improved_code)}", confidence)
                         return False, "Failed to generate improved code: too short"
                     continue
                 
                 if 'class ' not in improved_code:
                     evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": "No class definition"})
                     if attempt == 2:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", "No class definition", confidence, health_before)
+                        record_run("failed", "code_generation", "No class definition", confidence)
                         return False, "Failed to generate improved code: no class"
                     continue
                 
@@ -243,7 +272,7 @@ class ToolEvolutionOrchestrator:
                     validation_error = syntax_msg
                     if attempt < 2:
                         continue
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "code_generation", str(syn_err), confidence, health_before)
+                    record_run("failed", "code_generation", str(syn_err), confidence)
                     return False, f"Generated code has syntax errors after all retries: {syn_err}"
                 
                 evo_logger.log_artifact(evolution_id, "improved_code", f"attempt_{attempt+1}", improved_code)
@@ -276,19 +305,11 @@ class ToolEvolutionOrchestrator:
                             )
                             evo_logger.log_artifact(evolution_id, "pending_services", f"attempt_{attempt+1}", svc_result)
                             if svc_result.get("pending_approval"):
-                                evo_logger.log_run(
-                                    tool_name,
-                                    user_prompt,
-                                    "blocked",
-                                    "services_pending",
-                                    svc_result.get("error"),
-                                    confidence,
-                                    health_before,
-                                )
+                                record_run("blocked", "services_pending", svc_result.get("error"), confidence)
                                 return False, f"Missing services detected; generated pending service proposals for approval. {svc_result.get('error')}"
                         except Exception as e:
                             evo_logger.log_artifact(evolution_id, "service_generation_error", f"attempt_{attempt+1}", {"error": str(e)})
-                            evo_logger.log_run(tool_name, user_prompt, "failed", "services", str(e), confidence, health_before)
+                            record_run("failed", "services", str(e), confidence)
                             return False, f"Missing services detected but service generation failed: {e}"
                 
                 # Validate (BEFORE sandbox test)
@@ -310,7 +331,7 @@ class ToolEvolutionOrchestrator:
                         continue
                     else:
                         # All attempts exhausted
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "validation", error, confidence, health_before)
+                        record_run("failed", "validation", error, confidence)
                         return False, f"Validation failed after all retries: {error}"
                 
                 self._log_conversation("VALIDATION", "Code validated")
@@ -340,14 +361,14 @@ class ToolEvolutionOrchestrator:
                     if attempt < 2:
                         continue
                     else:
-                        evo_logger.log_run(tool_name, user_prompt, "failed", "sandbox", "Failed after retry", confidence, health_before)
+                        record_run("failed", "sandbox", "Failed after retry", confidence)
                         return False, f"Sandbox failed after retry: {sandbox_output}"
             
             except Exception as e:
                 evo_logger.log_artifact(evolution_id, "error", f"attempt_{attempt+1}", {"error": str(e)})
                 logger.error(f"[Evolution {evolution_id}] Generation error (attempt {attempt+1}): {e}")
                 if attempt == 2:
-                    evo_logger.log_run(tool_name, user_prompt, "failed", "generation", str(e), confidence, health_before)
+                    record_run("failed", "generation", str(e), confidence)
                     return False, f"Generation failed: {str(e)}"
                 continue
         
@@ -363,16 +384,16 @@ class ToolEvolutionOrchestrator:
             
             if success:
                 self._log_conversation("COMPLETE", f"Evolution ready for approval: {tool_name}")
-                evo_logger.log_run(tool_name, user_prompt, "success", "complete", None, confidence, health_before)
+                record_run("success", "complete", None, confidence)
                 logger.info(f"[Evolution {evolution_id}] Complete - pending approval")
             else:
-                evo_logger.log_run(tool_name, user_prompt, "failed", "pending", msg, confidence, health_before)
+                record_run("failed", "pending", msg, confidence)
                 logger.error(f"[Evolution {evolution_id}] Failed to create pending: {msg}")
             
             return success, msg
         except Exception as e:
             evo_logger.log_artifact(evolution_id, "error", "pending", {"error": str(e)})
-            evo_logger.log_run(tool_name, user_prompt, "failed", "pending", str(e), confidence, health_before)
+            record_run("failed", "pending", str(e), confidence)
             return False, f"Failed to create pending evolution: {str(e)}"
     
     def _chunk_evolve(

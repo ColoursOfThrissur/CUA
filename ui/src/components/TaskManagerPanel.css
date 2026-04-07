@@ -44,6 +44,41 @@
   font-size: 14px;
 }
 
+.task-workflow-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.task-mode-chip,
+.task-worktree-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(74, 158, 255, 0.12);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.task-worktree-path {
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.task-policy-note {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .task-file {
   color: var(--text-secondary);
 }
@@ -210,4 +245,67 @@
   background: rgba(239, 68, 68, 0.5);
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.task-history-card {
+  margin-top: 18px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-amount));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  box-shadow: var(--glass-shadow);
+}
+
+.task-history-header h4 {
+  margin: 0 0 12px;
+  color: var(--text-primary);
+}
+
+.task-history-empty {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.task-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-history-item {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: rgba(26, 31, 58, 0.28);
+  border: 1px solid var(--glass-border);
+}
+
+.task-history-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.task-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.task-history-path {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.task-history-status {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
 }

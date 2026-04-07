@@ -1,5 +1,6 @@
 """Create Plan Use Case - Orchestrates plan creation."""
 import logging
+import re
 from typing import Optional, Dict
 from domain.entities.task import ExecutionPlan
 from domain.repositories.repositories import ToolRepository, MemoryRepository
@@ -34,8 +35,11 @@ class CreatePlanUseCase:
         # Get skill context
         skill_context = (context or {}).get("skill_context", {})
         skill_name = skill_context.get("skill_name", "")
+        planning_mode = str(skill_context.get("planning_mode", "") or "").strip().lower()
         preferred_tools = set(skill_context.get("preferred_tools", []))
         excluded_tools = set((context or {}).get("excluded_tools", []))
+        include_past_plans = bool(skill_context.get("include_past_plans", True))
+        include_memory_context = bool(skill_context.get("include_memory_context", True))
         
         # Get available tools
         available_tools = self._tools.get_capabilities(preferred_tools or None)
@@ -47,10 +51,11 @@ class CreatePlanUseCase:
             }
         
         # Retrieve similar past plans
-        past_plans = self._memory.find_similar_plans(user_goal, skill_name, top_k=3)
+        plan_top_k = 5 if planning_mode == "deep" else 3
+        past_plans = self._memory.find_similar_plans(user_goal, skill_name, top_k=plan_top_k) if include_past_plans else []
         
         # Get unified memory context
-        unified_context = self._memory.search_context(user_goal, skill_name)
+        unified_context = self._memory.search_context(user_goal, skill_name) if include_memory_context else ""
         planning_feedback = (context or {}).get("planning_failure_feedback")
         if planning_feedback:
             unified_context = f"{unified_context}\n\nPlanner feedback: {planning_feedback}".strip()
@@ -96,6 +101,7 @@ class CreatePlanUseCase:
         if (skill_context or {}).get("skill_name") != "computer_automation":
             return
 
+        planning_profile = str((skill_context or {}).get("planning_profile", "") or "").strip().lower()
         current_app_hint = self._infer_app_hint(user_goal, plan)
         for step in plan.steps:
             if step.tool_name == "SystemControlTool":
@@ -124,6 +130,18 @@ class CreatePlanUseCase:
                 step.operation = "extract_text"
                 step.parameters.setdefault("target_app", current_app_hint)
 
+            if (
+                planning_profile == "desktop_ui_detail_lookup"
+                and step.tool_name == "ScreenPerceptionTool"
+                and step.operation in {"extract_text", "get_visible_text", "get_ui_text", "analyze_screen"}
+            ):
+                step.operation = "extract_text"
+                step.parameters["prompt"] = self._build_goal_focused_extraction_prompt(user_goal)
+                if current_app_hint:
+                    step.parameters.setdefault("target_app", current_app_hint)
+                step.expected_output = "The requested on-screen detail is extracted for the named target item."
+                step.description = "Extract only the specific on-screen detail needed to answer the user's request."
+
         removable_ids = set()
         dependency_counts = self._count_dependencies(plan)
         steps = plan.steps
@@ -149,6 +167,72 @@ class CreatePlanUseCase:
 
         if removable_ids:
             self._remove_steps(plan, removable_ids)
+
+    def _build_goal_focused_extraction_prompt(self, user_goal: str) -> str:
+        """Convert a broad planner extraction step into a goal-shaped prompt."""
+        request = str(user_goal or "").strip()
+        lines = [
+            f"Extract only the specific detail needed to answer this request: {request}",
+            "Prefer the named item and its explicitly labeled value or field.",
+        ]
+        target_hint = self._infer_named_target_hint(request)
+        if target_hint:
+            lines.append(f'Named target item: "{target_hint}"')
+        field_hint = self._infer_requested_field_hint(request)
+        if field_hint:
+            lines.append(f"Requested field hint: {field_hint}")
+        lines.append("Do not return unrelated visible items unless they are needed to disambiguate the answer.")
+        return "\n".join(lines)
+
+    def _infer_requested_field_hint(self, user_goal: str) -> str:
+        """Infer the requested field so extractors can stay structured and label-bound."""
+        goal_lower = str(user_goal or "").strip().lower()
+        if any(word in goal_lower for word in ("playtime", "hours played", "hours of game", "hrs", "hours")):
+            return "playtime in hours"
+        if "status" in goal_lower:
+            return "current status"
+        if any(phrase in goal_lower for phrase in ("how many", "count")):
+            return "count"
+        if any(word in goal_lower for word in ("find", "read", "show", "extract")):
+            return "specific requested detail"
+        return ""
+
+    def _infer_named_target_hint(self, user_goal: str) -> str:
+        """Extract a likely target item name from the goal without app-specific hardcoding."""
+        text = str(user_goal or "").strip()
+        if not text:
+            return ""
+
+        for pattern in (
+            r'["\']([^"\']{3,})["\']',
+            r"\bnamed target item:\s*['\"]?([^\"\n]+?)['\"]?(?:\n|$)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                candidate = self._clean_named_target_hint(match.group(1))
+                if candidate:
+                    return candidate
+
+        lower_text = text.lower()
+        for pattern in (
+            r"\b(?:for|in)\s+([a-z0-9' :\-]{3,}?)(?:\.\.|[.?!]|,\s| in library\b| on steam\b| from\b|$)",
+            r"\bgame\s+([a-z0-9' :\-]{3,}?)(?:\.\.|[.?!]|,\s| in library\b| on steam\b| from\b|$)",
+        ):
+            match = re.search(pattern, lower_text, flags=re.IGNORECASE)
+            if match:
+                candidate = self._clean_named_target_hint(match.group(1))
+                if candidate:
+                    return candidate
+        return ""
+
+    def _clean_named_target_hint(self, candidate: str) -> str:
+        """Trim filler words and punctuation from inferred target hints."""
+        cleaned = str(candidate or "").strip(" \t\r\n.,:;!?\"'")
+        cleaned = re.sub(r"^(the\s+)?(game|title)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) < 3:
+            return ""
+        return cleaned
 
     def _is_extraction_prompt(self, prompt: Optional[str]) -> bool:
         """Detect analyze_screen prompts that are really extraction requests."""

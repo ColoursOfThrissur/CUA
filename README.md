@@ -1,6 +1,6 @@
 # Forge — Autonomous Agent Platform
 
-> **A local-first, self-evolving AI agent built for Qwen models via Ollama.**
+> **A local-first, self-evolving autonomous agent platform with an Ollama-first runtime and optional cloud LLM providers.**
 > Plans tasks, calls tools, detects capability gaps, generates new tools, and improves itself — all on your own hardware, with human approval gates at every critical step.
 > **Now supports Qwen3.5 reasoning models with real-time thinking traces.**
 
@@ -10,6 +10,7 @@
 
 - [What Forge does](#what-forge-does)
 - [Quick start](#quick-start)
+- [Roadmap progress](#roadmap-progress)
 - [System architecture](#system-architecture)
 - [Request execution flow](#request-execution-flow)
 - [Skill system](#skill-system)
@@ -36,8 +37,12 @@
 Forge is an autonomous agent platform designed to run entirely offline on a local LLM. Desktop automation is one subsystem inside the platform, not the platform itself. It:
 
 - **Plans and executes** multi-step tasks as parallel DAG waves
-- **Routes intelligently** via a 7-skill system with 3-signal scoring and LLM fallback
+- **Supports slash-command operations** for runtime controls like `/status` and `/doctor`
+- **Tracks workflow state persistently** so plans, approvals, and session work can be resumed
+- **Gates commands through explicit session permissions** and supports review flows like `/review` and `/security-review`
+- **Routes intelligently** via a 10-skill system with 3-signal scoring and LLM fallback
 - **Calls tools natively** using function calling across 20+ tools
+- **Searches codebases safely** with dedicated `GlobTool` and `GrepTool`
 - **Perceives visually** through a layered vision and planning pipeline tuned for local execution
 - **Detects capability gaps** when tools fail repeatedly and resolves them automatically
 - **Generates and evolves tools** through LLM-driven pipelines with 20-gate AST validation
@@ -76,6 +81,81 @@ cd ui && npm install && npm start
 **Windows:** Use `setup.bat` for first-time setup, then `start.bat` to run.
 
 **Model Selection:** Qwen3.5:9b is the recommended local chat/planning model for vision-heavy tasks.
+
+---
+
+## Roadmap progress
+
+### Claude Code adoption plan
+
+Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7, Phase 8, Phase 9, Phase 10, and Phase 11 are complete.
+
+Delivered:
+
+- command registry skeleton in `application/commands/`
+- `/status` and `/doctor` slash commands through the chat entry path
+- `GlobTool` and `GrepTool` registered in the runtime and exposed to the planner
+- persistent task artifacts for tracked workflow state and approval flows
+- `/session`, `/summary`, `/export`, and `/resume` commands
+- session summary/export/resume endpoints in the session router
+- command-level permission checks at slash-command dispatch
+- `/review`, `/security-review`, `/mcp`, and `/skills` commands
+- read-only Forge MCP server mode with inspection tools for health, sessions, tasks, skills, executions, and observability
+- explicit scoped memory notes for user and project context
+- `/memory` and `/compact` slash commands for memory management and deterministic session compaction
+- normalized diff payload generation for review flows and future approval/staging UI reuse
+- session compaction endpoint in the session router
+- shared diff viewer reuse across review chat output, approval diff modal, plan history detail, code preview, and staging preview
+- `/worktree` slash command and worktree readiness service for future isolated git execution
+- `/plan` and `/ultraplan` deep-planning commands that stage approval-gated execution plans
+- `/memory maintain` plus a background memory maintenance loop for explicit note consolidation
+- readiness-gated `/worktree create <label>` for bounded isolated git worktree provisioning
+- `/worktree list` and `/worktree remove <label>` lifecycle commands plus worktree lifecycle API endpoints
+- `/plan isolated <goal>` for approval-gated plans that prepare and persist a managed worktree profile
+- session overlay controls for doctor, memory maintenance, session workflows, and worktree management
+- chat welcome shortcuts for the highest-value planning and maintenance commands
+- worktree-aware execution routing for bounded repo tools in isolated plans
+- active task and approval UI visibility for isolated execution mode and worktree target
+- persisted worktree lifecycle metadata plus cleanup recommendations for managed isolated worktrees
+- isolation policy guidance that marks when worktree use is optional, suggested, or required during deep planning
+- recent task history visibility for isolated execution context beyond the live task card
+- reviewed worktree cleanup preview/apply flows for clean stale Forge-managed worktrees
+- stronger `/plan` guidance that recommends `/plan isolated <goal>` when isolation is required and worktree preparation is available
+- durable worktree lifecycle events in observability, session export payloads, and MCP summary counts
+- bounded worktree handoff prototype with explicit owner, purpose, lease timing, and cleanup expectation
+- worktree handoff API and slash-command flows for assign, release, and listing active handoffs
+- unit coverage for command dispatch, search tools, task/session workflow services, review/runtime management commands, MCP server behavior, memory compaction, diff payload formatting, worktree readiness, deep planning, isolated planning, isolated execution routing, and maintenance flows
+
+How this helps:
+
+- diagnostics are faster and more predictable
+- file discovery and content search are safer for the planner than shell-heavy fallback
+- long-running work can now be inspected, exported, and resumed with its workflow state intact
+- review and security inspection now have dedicated workflows instead of relying on ad-hoc prompts
+- command execution now has a clearer safety boundary for future permission UX and governance
+- Forge can now be inspected by other MCP-capable agents through a stable read-only server surface
+- the extension story is cleaner because we now have an inspect-first integration seam before considering a broader plugin surface
+- memory is now a first-class workflow surface instead of only internal session state
+- long sessions can be compacted without losing the recent working set, which makes continuation safer
+- diff-heavy workflows now have a reusable backend payload contract for future shared UI rendering
+- diff-heavy workflows now also share a reusable frontend viewer, so review and approval surfaces stay aligned
+- Forge can now report whether git worktree isolation is safe before we automate isolated coding flows
+- operators can now explicitly request a deeper plan before execution instead of waiting for fallback planning
+- explicit memory stores now have both manual and background consolidation paths
+- isolated git work is now provisionable in a bounded way when the repository is ready
+- prepared isolated plans now carry their worktree context through approval and task tracking
+- runtime operations and worktree governance are now directly visible in the UI instead of being chat-only
+- prepared isolated plans now execute bounded repo-facing tool steps inside their targeted worktree instead of only tracking that workspace as metadata
+- operators can now see active isolated execution context directly in the task panel and approval surface
+- managed worktrees now carry age, activity, and cleanup guidance so operators can review stale isolation assets safely
+- deep plans now surface when isolation is recommended or required before execution begins
+- recent task history now preserves and displays isolated execution context beyond the currently running task
+- operators can now review cleanup candidates before removal and then apply cleanup through a bounded stale-worktree flow
+- high-risk repo-wide plans now point directly at the safer isolated-plan follow-up command instead of only warning abstractly
+- isolated worktree creation, routing, cleanup, and preparation now leave a durable event trail that can be inspected and exported with session history
+- isolated work can now be explicitly handed off with a bounded ownership record instead of relying on informal operator memory
+
+See `docs/CLAUDE_CODE_ADOPTION_PLAN.md` for the tracked roadmap.
 
 ---
 
@@ -189,41 +269,43 @@ flowchart TD
 
 ## Computer use orchestration
 
-For desktop automation requests, the `ComputerUseController` manages a specialised Observe→Act→Evaluate→Adapt loop using four internal sub-agents:
+Desktop automation now stays on the same planner and execution path as the rest of the platform. The main planner composes the direct desktop tools into Observe -> Act -> Verify waves, so memory, gap tracking, circuit breaking, and `cua.db` persistence all remain shared.
 
 ```mermaid
 flowchart TD
-    A([Desktop Goal]) --> B[PlannerAgent\nGenerates execution chunk\nVision policy hints]
-    B --> C[ExecutorAgent\nExecutes steps with smart-retry\nState capture before & after]
-    C --> D[VerifierAgent\nObjective success evaluation\nLLM verification on interactions]
-    D --> E{Goal fully\ncomplete?}
-    E -->|No| F{Failure\noccurred?}
-    E -->|Yes| End([Task complete])
-    F -->|No| B
-    F -->|Yes| G[CriticAgent\nRoot cause determination\nGenerates structured adaptation strategy]
-    G --> B
+    A([Desktop Goal]) --> B[TaskPlanner\nBuilds direct-tool DAG\nwith desktop hints]
+    B --> C[SystemControlTool\nLaunch/focus/manage app state]
+    B --> D[InputAutomationTool\nClick/type/keys]
+    B --> E[ScreenPerceptionTool\nObserve OCR and verify]
+    C --> F[Execution Engine\nMain retry and replan loop]
+    D --> F
+    E --> F
+    F --> G[Unified memory + gap tracker + circuit breaker + cua.db]
 ```
 
 **Key mechanisms:**
-- **Explicit Goal Checking:** The controller uses a final LLM confirmation reflection to determine if the overarching task intent is genuinely achieved instead of trusting raw task chunk completion.
-- **Robust Execution:** `ExecutorAgent` implements adaptive retries mapped explicitly to failure signatures (e.g. refocusing on `window_not_active`, waiting longer on `element_not_found`).
-- **Deductive Adaptation:** `CriticAgent` categorizes interactive errors (`TIMING_ISSUE`, `ENVIRONMENT_CHANGED`, `NO_EFFECT`) to directly instruct the Planner how to regenerate its visual approach.
+- **Direct-tool planning:** Desktop tasks are decomposed into normal planner steps instead of being handed to a nested controller.
+- **State-aware verification:** `ScreenPerceptionTool` handles OCR and visual state checks so the executor can validate UI transitions like any other workflow.
+- **Shared failure taxonomy:** Interactive failures surface structured categories such as `TIMING_ISSUE`, `ENVIRONMENT_CHANGED`, and `NO_EFFECT` for replanning.
 
 ---
 
 ## Skill system
 
-Seven skills in `skills/`, each with a `skill.json` and `SKILL.md`:
+Ten skills live in `skills/`, each with a `skill.json` and `SKILL.md`:
 
 | Skill | Category | Preferred tools | Verification |
 |-------|----------|-----------------|--------------|
 | `web_research` | web | WebAccessTool, ContextSummarizerTool | source_backed |
-| `computer_automation` | computer | FilesystemTool, ShellTool | side_effect_observed |
-| `code_workspace` | development | CodeEditorTool, TestRunnerTool | output_validation |
-| `conversation` | conversation | — | none |
-| `browser_automation` | automation | BrowserAutomationTool | side_effect_observed |
+| `computer_automation` | computer | FilesystemTool, ShellTool, SystemControlTool, InputAutomationTool, ScreenPerceptionTool | side_effect_observed |
+| `code_analysis` | development | CodeAnalysisTool | output_validation |
+| `code_workspace` | development | FilesystemTool, ShellTool | validation_and_tests |
+| `conversation` | conversation | none | none |
+| `browser_automation` | automation | BrowserAutomationTool, WebAccessTool | side_effect_observed |
 | `data_operations` | data | HTTPTool, JSONTool, DatabaseQueryTool | output_validation |
+| `finance_analysis` | finance | FinancialAnalysisTool | output_validation |
 | `knowledge_management` | productivity | LocalCodeSnippetLibraryTool, LocalRunNoteTool | output_validation |
+| `system_health` | system | SystemHealthTool | output_validation |
 
 **Selection scoring (3 signals):**
 1. Keyword overlap between request and skill keywords
@@ -555,6 +637,8 @@ self.services.has_capability(capability_name)
 | Tool | Capabilities |
 |------|-------------|
 | `FilesystemTool` | read, write, list files and directories |
+| `GlobTool` | sandboxed file discovery with glob patterns |
+| `GrepTool` | sandboxed content search across files |
 | `WebAccessTool` | fetch URLs, search the web, crawl, extract links |
 | `HTTPTool` | GET, POST, PUT, DELETE with domain allowlist |
 | `JSONTool` | parse, stringify, query |
@@ -598,7 +682,7 @@ Forge/
 │   ├── chat_helpers.py               # Chat handler, gap recording, tool execution
 │   └── *_api.py                      # Feature routers
 │
-├── core/                             # Core logic (80+ modules)
+├── application/                      # Main use cases and services (see also domain/ and infrastructure/)
 │   ├── skills/                       # Skill system
 │   │   ├── selector.py               # 3-signal scoring + LLM fallback
 │   │   ├── execution_context.py      # SkillExecutionContext (32 fields)
@@ -654,7 +738,7 @@ Forge/
 │   ├── shell_tool.py
 │   └── experimental/                 # Runtime-loaded auto-generated tools
 │
-├── skills/                           # 7 skill definitions (skill.json + SKILL.md each)
+├── skills/                           # 10 skill definitions (skill.json + SKILL.md each)
 │
 ├── planner/
 │   ├── llm_client.py                 # LLM interface, timeout + retry
@@ -766,11 +850,11 @@ pytest -q
 
 1. Pass `SkillExecutionContext` wherever execution happens
 2. Track steps with `execution_context.add_step()` and errors with `execution_context.add_error()`
-3. New services → add to `core/tool_services.py` and `AVAILABLE_SERVICES` in `core/dependency_checker.py`
-4. New DB tables → add schema to `core/cua_db.py` and update `DatabaseQueryTool`
-5. New MCP servers → add entry to `config.yaml` under `mcp_servers`
-6. New evolution failure types → add to `failure_classifier.py` and create strategy in `strategies/`
-7. Parallel-safe tools → no shared mutable state
+3. New runtime services usually start in `infrastructure/services/` and then get wired into the tool service facade.
+4. New DB tables belong under `infrastructure/persistence/sqlite/` and any affected tools or APIs should be updated in the same change.
+5. New MCP servers go in `config.yaml` under `mcp_servers`.
+6. New evolution failure types should update the classifier and the matching strategy implementation together.
+7. Keep tools parallel-safe: avoid shared mutable state unless it is explicitly coordinated.
 
 ---
 

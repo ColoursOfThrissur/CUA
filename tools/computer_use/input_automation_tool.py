@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 
 from tools.tool_interface import BaseTool
 from tools.tool_capability import ToolCapability, Parameter, ParameterType, SafetyLevel
+from tools.computer_use.error_taxonomy import classify_desktop_failure
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +294,7 @@ class InputAutomationTool(BaseTool):
 
             # Retry loop
             for attempt in range(1, max_attempts + 1):
-                self._ensure_target_app_focused(target_app)
+                target_app_ready = self._ensure_target_app_focused(target_app)
                 self._invalidate_screen_cache()
 
                 matched = None
@@ -302,7 +303,12 @@ class InputAutomationTool(BaseTool):
                 original_size = {}
                 locator_source = "ocr"
 
-                ocr_match, image_size, original_size = self._try_ocr_match(target)
+                ocr_match = None
+                if not target_app or target_app_ready:
+                    ocr_match, image_size, original_size = self._try_ocr_match(
+                        target,
+                        target_app=target_app if target_app_ready else "",
+                    )
                 if ocr_match:
                     matched = ocr_match
                     candidates = [matched]
@@ -436,7 +442,7 @@ class InputAutomationTool(BaseTool):
                     image_height=image_height,
                     original_width=original_width,
                     original_height=original_height,
-                    use_empirical_correction=not bool(matched.get("used_bbox_center")),
+                    use_empirical_correction=bool(matched.get("apply_empirical_correction", True)),
                 )
                 if (scaled_x, scaled_y) != (x, y):
                     logger.info(
@@ -474,7 +480,7 @@ class InputAutomationTool(BaseTool):
             logger.error(f"smart_click failed: {e}")
             return self._error_response("SMART_CLICK_FAILED", str(e), recoverable=True)
 
-    def _try_ocr_match(self, target: str) -> tuple[Optional[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
+    def _try_ocr_match(self, target: str, *, target_app: str = "") -> tuple[Optional[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
         """Try OCR-based matching first for short visible text labels."""
         if not self.services:
             return None, {}, {}
@@ -495,7 +501,7 @@ class InputAutomationTool(BaseTool):
                 return None, {}, {}
 
             clicker = OCRClicker(orchestrator=self.orchestrator)
-            ocr_results = clicker._run_ocr(capture_result["image_path"])
+            ocr_results = clicker._run_ocr(capture_result["image_path"], target_text=target)
             match = clicker._find_text_match(target, ocr_results, fuzzy=True)
             if not match:
                 preview = [str(r.get("text", "")) for r in ocr_results[:12]]
@@ -519,7 +525,23 @@ class InputAutomationTool(BaseTool):
                 },
                 "confidence": float(match.get("confidence", 0.0) or 0.0),
                 "used_bbox_center": True,
+                "apply_empirical_correction": False,
             }
+            if target_app:
+                matched = self._filter_match_to_active_app_window(
+                    matched,
+                    image_size={
+                        "width": int(capture_result.get("width", 0) or 0),
+                        "height": int(capture_result.get("height", 0) or 0),
+                    },
+                    original_size=capture_result.get("original_size", {}) or {},
+                    target_app=target_app,
+                )
+                if not matched:
+                    logger.info(
+                        f"smart_click rejected OCR match for '{target}' because it was outside the active '{target_app}' window"
+                    )
+                    return None, {}, {}
             logger.info(
                 f"smart_click OCR match target='{target}' text='{match['text']}' center={match['center']}"
             )
@@ -535,23 +557,75 @@ class InputAutomationTool(BaseTool):
             logger.info(f"smart_click OCR assist unavailable for '{target}': {exc}")
             return None, {}, {}
 
-    def _ensure_target_app_focused(self, target_app: str) -> None:
+    def _ensure_target_app_focused(self, target_app: str) -> bool:
         """Refocus the intended app before a vision-guided click when possible."""
         if not target_app or not self.services:
-            return
+            return True
         try:
-            active_result = self.services.call_tool("SystemControlTool", "get_active_window")
-            active_title = ""
-            if isinstance(active_result, dict):
-                active_title = str(active_result.get("title", "") or "").lower()
+            active_result = self._get_active_window_info()
+            active_title = str((active_result or {}).get("title", "") or "").lower()
             if target_app.lower() in active_title:
-                return
+                return True
             focus_result = self.services.call_tool("SystemControlTool", "focus_window", title=target_app)
             if isinstance(focus_result, dict) and focus_result.get("success"):
                 self._invalidate_screen_cache()
-                time.sleep(0.3)
+                for _ in range(4):
+                    time.sleep(0.3)
+                    active_result = self._get_active_window_info()
+                    active_title = str((active_result or {}).get("title", "") or "").lower()
+                    if target_app.lower() in active_title:
+                        return True
         except Exception as exc:
             logger.info(f"smart_click focus assist skipped for '{target_app}': {exc}")
+        return False
+
+    def _get_active_window_info(self) -> Dict[str, Any]:
+        if not self.services:
+            return {}
+        try:
+            result = self.services.call_tool("SystemControlTool", "get_active_window")
+            if isinstance(result, dict) and result.get("success"):
+                return result
+        except Exception:
+            pass
+        return {}
+
+    def _filter_match_to_active_app_window(
+        self,
+        matched: Dict[str, Any],
+        *,
+        image_size: Dict[str, Any],
+        original_size: Dict[str, Any],
+        target_app: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Reject OCR matches that land outside the active target app window."""
+        active_window = self._get_active_window_info()
+        active_title = str(active_window.get("title", "") or "").lower()
+        if target_app.lower() not in active_title:
+            return None
+
+        position = active_window.get("position") or {}
+        size = active_window.get("size") or {}
+        left = int(position.get("x", 0) or 0)
+        top = int(position.get("y", 0) or 0)
+        width = int(size.get("width", 0) or 0)
+        height = int(size.get("height", 0) or 0)
+        if width <= 0 or height <= 0:
+            return matched
+
+        desktop_x, desktop_y = self._scale_coordinates(
+            int(matched.get("x", 0) or 0),
+            int(matched.get("y", 0) or 0),
+            image_width=int(image_size.get("width", 0) or 0),
+            image_height=int(image_size.get("height", 0) or 0),
+            original_width=int(original_size.get("width", 0) or 0),
+            original_height=int(original_size.get("height", 0) or 0),
+            use_empirical_correction=bool(matched.get("apply_empirical_correction", False)),
+        )
+        inside = left <= desktop_x <= (left + width) and top <= desktop_y <= (top + height)
+        if not inside:
+            return None
+        return matched
 
     def _handle_move_mouse(self, **kwargs) -> dict:
         """Move mouse smoothly."""
@@ -880,6 +954,7 @@ class InputAutomationTool(BaseTool):
 
     def _error_response(self, error_type: str, message: str, recoverable: bool = False, **extra) -> dict:
         """Structured error response."""
+        extra.setdefault("failure_category", classify_desktop_failure(error_type, message))
         return {
             "success": False,
             "error_type": error_type,

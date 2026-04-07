@@ -685,7 +685,40 @@ class LLMClient:
         for msg in messages:
             prompt += f"{msg.get('role','user').title()}: {msg.get('content','')}\n"
         return prompt
-    
+
+    def vision(
+        self,
+        prompt: str,
+        *,
+        image_path: str,
+        temperature: float = 0.1,
+        max_tokens: int = None,
+        expect_json: bool = False,
+        timeout_override: int = None,
+    ) -> Optional[str]:
+        """Dedicated vision path with stable prompt shaping for screenshot analysis."""
+        if not image_path:
+            return self._call_llm(
+                prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                expect_json=expect_json,
+                timeout_override=timeout_override,
+            )
+
+        prepared_prompt = (prompt or "").rstrip()
+        if not prepared_prompt.endswith("/no_think"):
+            prepared_prompt = f"{prepared_prompt}\n\n/no_think"
+
+        return self._call_llm(
+            prepared_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            expect_json=expect_json,
+            timeout_override=timeout_override,
+            image_path=image_path,
+        )
+
     def _call_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = None, expect_json: bool = False, timeout_override: int = None, image_path: str = None, stream: bool = False, stream_callback = None) -> Optional[str]:
         """Call LLM — routes to API provider (OpenAI/Gemini) or Ollama based on config. Supports vision via image_path and streaming via stream_callback.
         

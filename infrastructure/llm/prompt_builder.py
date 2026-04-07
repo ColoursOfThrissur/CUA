@@ -39,8 +39,17 @@ class PlanningPromptBuilder:
         """Build main planning prompt."""
         skill_context = skill_context or {}
         skill_name = skill_context.get("skill_name", "")
+        planning_profile = skill_context.get("planning_profile", "")
+        planning_mode = skill_context.get("planning_mode", "")
         preferred = set(skill_context.get("preferred_tools", []))
-        preferred.add("ContextSummarizerTool")
+        if skill_context.get("include_context_summarizer"):
+            preferred.add("ContextSummarizerTool")
+
+        include_past_plans = bool(skill_context.get("include_past_plans", True))
+        include_memory_context = bool(skill_context.get("include_memory_context", True))
+        include_previous_context = bool(skill_context.get("include_previous_context", True))
+        include_adaptive_rules = bool(skill_context.get("include_adaptive_rules", True))
+        use_compact_schema = bool(skill_context.get("use_compact_schema", False))
 
         filtered = {k: v for k, v in tools.items() if k in preferred} if preferred else tools
         if not filtered:
@@ -50,10 +59,19 @@ class PlanningPromptBuilder:
         skill_guidance = self._build_skill_guidance(skill_name, skill_context, preferred)
         parallelism_rules = self._build_parallelism_rules(skill_name)
         example = self._build_skill_example(skill_name)
-        past_str = self._build_past_plans_guidance(past_plans or [], preferred)
-        mem_str = self._build_memory_context(unified_context, skill_context.get("previous_context"))
+        past_str = self._build_past_plans_guidance(past_plans or [], preferred) if include_past_plans else ""
+        mem_str = self._build_memory_context(
+            unified_context if include_memory_context else "",
+            skill_context.get("previous_context") if include_previous_context else None,
+        )
         viz_hint = self._build_viz_hint(tools)
         goal_guidance = self._build_goal_guidance(goal, skill_name)
+        workflow_guidance = self._build_workflow_guidance(skill_name, skill_context)
+        planning_mode_guidance = self._build_planning_mode_guidance(planning_mode)
+        adaptive_rules = self._build_adaptive_execution_rules(include_adaptive_rules, planning_profile)
+        past_section = f"\nPAST APPROACHES (reference only):\n{past_str}\n" if include_past_plans else ""
+        memory_section = f"\nMEMORY: {mem_str}{viz_hint}\n" if (include_memory_context or include_previous_context or viz_hint) else ""
+        schema = self._build_plan_schema(goal, compact=use_compact_schema)
 
         return f"""Plan executable steps for this goal.
 
@@ -62,6 +80,8 @@ GOAL: {goal}
 SKILL CONTEXT:
 {skill_guidance}
 {goal_guidance}
+{workflow_guidance}
+{planning_mode_guidance}
 
 AVAILABLE TOOLS:
 {tools_desc}
@@ -72,45 +92,16 @@ PARALLELISM RULES:
 {parallelism_rules}
 
 ADAPTIVE EXECUTION RULES:
-- When a step depends on external state, loading, eventual consistency, or a UI/page/app being ready, add `preconditions` and `postconditions`.
-- Use `checkpoint_policy` to tell the executor how cautious to be: `on_failure` by default, `always` for fragile state transitions, `never` only for deterministic local work.
-- Use `retry_policy` when brief waiting or retrying is better than replanning, for example `{{"strategy": "wait_retry", "max_attempts": 3, "backoff_seconds": 2}}`.
-- Keep these fields concise and only add them when they materially help execution adapt.
+{adaptive_rules}
 
 EXAMPLE:
 {example}
-
-PAST APPROACHES (reference only):
-{past_str}
-
-MEMORY: {mem_str}{viz_hint}
+{past_section}{memory_section}
 
 /no_think
 
 Return ONLY this JSON, no explanation:
-{{
-  "goal": "{goal}",
-  "complexity": "simple|moderate|complex",
-  "estimated_duration": <seconds>,
-  "requires_approval": false,
-  "steps": [
-    {{
-      "step_id": "step_1",
-      "tool_name": "ToolName",
-      "operation": "op",
-      "parameters": {{}},
-      "dependencies": [],
-      "expected_output": "...",
-      "description": "...",
-      "domain": "web|computer|development|other",
-      "retry_on_failure": true,
-      "preconditions": [],
-      "postconditions": [],
-      "checkpoint_policy": "on_failure",
-      "retry_policy": {{}}
-    }}
-  ]
-}}"""
+{schema}"""
 
     def _build_goal_guidance(self, goal: str, skill_name: str) -> str:
         """Add goal-specific planning rules for tricky domains."""
@@ -139,6 +130,7 @@ Return ONLY this JSON, no explanation:
             "- Avoid redundant perception steps. InputAutomationTool.smart_click already performs screen understanding and target localization.",
             "- Do not add capture_screen immediately before infer_visual_state, get_comprehensive_state, or analyze_screen unless a saved screenshot artifact is explicitly needed by a later step.",
             "- When using app-specific UI actions, include a target_app hint when the tool supports it.",
+            "- Keep desktop automation inside the main planner DAG. Do not wrap the workflow inside a secondary controller or planner.",
         ])
 
         return "\n".join(lines)
@@ -234,19 +226,97 @@ Return ONLY valid JSON array, no explanation."""
         lines = []
         if skill_name:
             lines.append(f"Skill: {skill_name} ({skill_context.get('category', '')})")
+        if skill_context.get("domain_hint"):
+            lines.append(f"User domain hint: {skill_context.get('domain_hint')}")
+        if skill_context.get("planning_profile"):
+            lines.append(f"Planning profile: {skill_context.get('planning_profile')}")
         if preferred:
             lines.append(f"ONLY USE THESE TOOLS: {', '.join(sorted(preferred))} - do NOT use any other tool")
         if skill_context.get("instructions_summary"):
             lines.append(f"Instructions: {skill_context['instructions_summary'][:200]}")
         if skill_context.get("verification_mode"):
             lines.append(f"Verification: {skill_context['verification_mode']}")
+        skill_constraints = [str(item).strip() for item in (skill_context.get("skill_constraints") or []) if str(item).strip()]
+        if skill_constraints:
+            lines.append("Constraints:")
+            for item in skill_constraints[:6]:
+                lines.append(f"- {item}")
         return "\n".join(lines) if lines else "No skill selected - use best available tools."
+
+    def _build_workflow_guidance(self, skill_name: str, skill_context: Dict) -> str:
+        """Optional workflow hints propagated from skill metadata."""
+        hints = skill_context.get("planning_hints") or {}
+        workflow_guidance = [
+            str(item).strip()
+            for item in (skill_context.get("workflow_guidance") or hints.get("workflow_guidance") or [])
+            if str(item).strip()
+        ]
+
+        lines: List[str] = []
+        if skill_name == "computer_automation" and hints.get("observe_act_verify_loop"):
+            lines.extend([
+                "",
+                "DESKTOP WORKFLOW HINTS:",
+                "- Build risky desktop flows as Observe -> Act -> Verify waves within the main plan.",
+                "- Use ScreenPerceptionTool to ground the next action when the UI state is uncertain.",
+                "- After each state-changing action, add either a verification step or strong postconditions before continuing.",
+            ])
+
+        if skill_context.get("planning_profile") == "desktop_ui_detail_lookup":
+            lines.extend([
+                "- This is a named-item detail lookup. Do not plan a broad scan of all visible items if the request only needs one target detail.",
+                "- Shape extraction around the user's goal text so the extractor returns the specific named item and requested field/value.",
+                "- If the first detail extraction is weak, re-focus the target item or details area instead of scanning the whole screen repeatedly.",
+            ])
+
+        if hints.get("vision_mode"):
+            lines.append("- Vision mode is enabled for this skill. Prefer visually grounded state checks over assumptions.")
+        if hints.get("screenshot_at_each_step"):
+            lines.append("- Capture or verify the screen after each meaningful UI transition unless the step already returns grounded visual state.")
+
+        failure_categories = [
+            str(item).strip()
+            for item in (hints.get("failure_categories") or [])
+            if str(item).strip()
+        ]
+        if failure_categories:
+            lines.append(
+                f"- When an interaction fails, surface one of these failure categories in replanning context: {', '.join(failure_categories)}."
+            )
+
+        for item in (skill_context.get("profile_guidance") or [])[:4]:
+            if not item.startswith("- "):
+                lines.append(f"- {item}")
+            else:
+                lines.append(item)
+
+        for item in workflow_guidance[:6]:
+            if not item.startswith("- "):
+                lines.append(f"- {item}")
+            else:
+                lines.append(item)
+
+        return "\n".join(lines)
+
+    def _build_planning_mode_guidance(self, planning_mode: str) -> str:
+        """Optional deeper-planning guidance for explicit plan-first workflows."""
+        mode = str(planning_mode or "").strip().lower()
+        if mode != "deep":
+            return ""
+        return "\n".join([
+            "",
+            "DEEP PLANNING MODE:",
+            "- Decompose the task carefully before choosing tools.",
+            "- Surface assumptions through explicit preconditions or verification-oriented steps.",
+            "- Prefer plans that are robust to partial failure and easy to resume after approval.",
+            "- When multiple approaches exist, choose the one with clearer checkpoints and lower rollback risk.",
+        ])
 
     def _build_parallelism_rules(self, skill_name: str) -> str:
         """Skill-specific parallelism rules."""
         rules = {
             "browser_automation": "- Never run two navigate steps in parallel (shared browser instance)\n- get_page_content MUST depend on the navigate step that loaded the page",
-            "computer_automation": "- Prefer direct desktop tools: SystemControlTool, InputAutomationTool, ScreenPerceptionTool\n- Only use ComputerUseController as a compatibility fallback if direct tools cannot express the task\n- File read/write steps on the same path must be sequential",
+            "computer_automation": "- Prefer direct desktop tools: SystemControlTool, InputAutomationTool, ScreenPerceptionTool\n- Represent retries and verification as normal planner steps or retry policies, not as a nested controller\n- File read/write steps on the same path must be sequential",
             "finance_analysis": "- FinancialAnalysisTool handles everything internally - always use a SINGLE step\n- NEVER use LocalRunNoteTool or LocalCodeSnippetLibraryTool for financial tasks",
         }
         return rules.get(skill_name, "- Steps with no shared outputs can run in parallel")
@@ -291,6 +361,70 @@ Return ONLY valid JSON array, no explanation."""
             mem = mem[:400] + "..."
         prev = f"Previous reply: {previous_context[:200]}\n" if previous_context else ""
         return prev + (mem or "none")
+
+    def _build_adaptive_execution_rules(self, include_full_rules: bool, planning_profile: str) -> str:
+        """Build adaptive execution guidance, with a compact variant for simple plans."""
+        if include_full_rules:
+            return (
+                "- When a step depends on external state, loading, eventual consistency, or a UI/page/app being ready, add `preconditions` and `postconditions`.\n"
+                "- Use `checkpoint_policy` to tell the executor how cautious to be: `on_failure` by default, `always` for fragile state transitions, `never` only for deterministic local work.\n"
+                "- Use `retry_policy` when brief waiting or retrying is better than replanning, for example `{\"strategy\": \"wait_retry\", \"max_attempts\": 3, \"backoff_seconds\": 2}`.\n"
+                "- Keep these fields concise and only add them when they materially help execution adapt."
+            )
+
+        profile_hint = f" for profile `{planning_profile}`" if planning_profile else ""
+        return (
+            f"- Keep the plan lean{profile_hint}; only add readiness checks or retry hints when they materially improve execution.\n"
+            "- Prefer direct action and extraction steps over defensive boilerplate."
+        )
+
+    def _build_plan_schema(self, goal: str, *, compact: bool) -> str:
+        """Build the requested planner JSON schema."""
+        if compact:
+            return f"""{{
+  "goal": "{goal}",
+  "complexity": "simple|moderate|complex",
+  "estimated_duration": <seconds>,
+  "requires_approval": false,
+  "steps": [
+    {{
+      "step_id": "step_1",
+      "tool_name": "ToolName",
+      "operation": "op",
+      "parameters": {{}},
+      "dependencies": [],
+      "expected_output": "...",
+      "description": "..."
+    }}
+  ]
+}}
+
+Optional step fields: "domain", "retry_on_failure", "preconditions", "postconditions", "checkpoint_policy", "retry_policy", "max_retries".
+Only include optional step fields when they materially help execution."""
+
+        return f"""{{
+  "goal": "{goal}",
+  "complexity": "simple|moderate|complex",
+  "estimated_duration": <seconds>,
+  "requires_approval": false,
+  "steps": [
+    {{
+      "step_id": "step_1",
+      "tool_name": "ToolName",
+      "operation": "op",
+      "parameters": {{}},
+      "dependencies": [],
+      "expected_output": "...",
+      "description": "...",
+      "domain": "web|computer|development|other",
+      "retry_on_failure": true,
+      "preconditions": [],
+      "postconditions": [],
+      "checkpoint_policy": "on_failure",
+      "retry_policy": {{}}
+    }}
+  ]
+}}"""
 
     def _build_viz_hint(self, tools: Dict) -> str:
         """Build visualization hint if tool available."""

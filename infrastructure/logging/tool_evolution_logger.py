@@ -1,4 +1,5 @@
 """Tool evolution execution logging."""
+import logging
 import sqlite3
 import json
 from datetime import datetime
@@ -6,6 +7,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from shared.utils.correlation_context import CorrelationContext
 from infrastructure.persistence.sqlite.cua_database import get_conn
+
+logger = logging.getLogger(__name__)
 
 
 class ToolEvolutionLogger:
@@ -37,9 +40,44 @@ class ToolEvolutionLogger:
                     (correlation_id, tool_name, user_prompt, status, step, error_message, confidence, health_before, health_after, timestamp)
                 )
                 return cursor.lastrowid
-        except Exception:
-            self.enabled = False
+        except Exception as exc:
+            logger.warning("Failed to log evolution run for %s: %s", tool_name, exc)
             return -1
+
+    def update_run(
+        self,
+        evolution_id: int,
+        *,
+        status: Optional[str] = None,
+        step: Optional[str] = None,
+        error_message: Optional[str] = None,
+        confidence: Optional[float] = None,
+        health_before: Optional[float] = None,
+        health_after: Optional[float] = None,
+    ) -> None:
+        """Update an existing evolution run in place."""
+        if not self.enabled or evolution_id <= 0:
+            return
+        updates, values = [], []
+        for col, val in [
+            ("status", status),
+            ("step", step),
+            ("error_message", error_message),
+            ("confidence", confidence),
+            ("health_before", health_before),
+            ("health_after", health_after),
+        ]:
+            if val is not None:
+                updates.append(f"{col}=?")
+                values.append(val)
+        updates.append("timestamp=?")
+        values.append(datetime.now().isoformat())
+        values.append(evolution_id)
+        try:
+            with get_conn() as conn:
+                conn.execute(f"UPDATE evolution_runs SET {', '.join(updates)} WHERE id=?", tuple(values))
+        except Exception as exc:
+            logger.warning("Failed to update evolution run %s: %s", evolution_id, exc)
     
     def log_artifact(self, evolution_id: int, artifact_type: str, step: str, content: Any):
         """Store evolution artifact."""
@@ -56,8 +94,8 @@ class ToolEvolutionLogger:
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     (evolution_id, correlation_id, artifact_type, step, content_str, timestamp)
                 )
-        except Exception:
-            self.enabled = False
+        except Exception as exc:
+            logger.warning("Failed to log evolution artifact %s for run %s: %s", artifact_type, evolution_id, exc)
     
     def get_artifacts(self, evolution_id: int) -> list:
         """Get all artifacts for an evolution run."""

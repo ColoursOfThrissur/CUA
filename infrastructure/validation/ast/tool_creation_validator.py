@@ -4,7 +4,7 @@ Tool code validator - Comprehensive AST-based validation with service pattern va
 import ast
 import logging
 from typing import Optional, Tuple, Dict, List, Set
-from domain.services.architecture_contract import validate_architecture_contract
+from infrastructure.validation.ast.architecture_validator import validate_skill_aware_architecture_contract
 from infrastructure.validation.enhanced_code_validator import EnhancedCodeValidator
 from infrastructure.external.service_validation import validate_tool_service_patterns
 from domain.entities.skill_models import SkillDefinition
@@ -25,15 +25,16 @@ class ToolValidator:
     
     def validate(self, code: str, tool_spec: dict, skill_definition: Optional[SkillDefinition] = None) -> Tuple[bool, str]:
         """Validate generated tool code with comprehensive checks including service patterns"""
-        contract_ok, contract_error = validate_architecture_contract(tool_spec or {})
+        contract_ok, contract_error = validate_skill_aware_architecture_contract(tool_spec or {})
         if not contract_ok:
             return False, self._format_error("Architecture contract", contract_error, code)
 
         expected_class = self._class_name(tool_spec['name'])
         
         # 0. Enhanced validation (truncation, undefined methods, uninitialized attrs)
-        is_valid, error = self.enhanced_validator.validate(code, expected_class)
-        if not is_valid:
+        validation = self.enhanced_validator.validate(code, expected_class)
+        if not validation.get("valid", False):
+            error = "; ".join(validation.get("errors", [])) or "unknown validation error"
             return False, self._format_error("Enhanced validation", error, code)
 
         # 0.4. CUA architecture analysis — block CRITICAL/HIGH issues

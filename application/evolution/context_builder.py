@@ -5,7 +5,7 @@ from typing import Optional
 from infrastructure.persistence.sqlite.logging import SQLiteLogger
 from application.use_cases.evolution.evolution_queue import QueuedEvolution
 from domain.value_objects.execution_context import SkillExecutionContext
-from domain.services.architecture_contract import derive_skill_contract_for_tool
+from infrastructure.validation.ast.architecture_validator import infer_skill_contract_for_tool
 from application.services.skill_registry import SkillRegistry
 
 class ContextBuilder:
@@ -16,7 +16,7 @@ class ContextBuilder:
         """Build SkillExecutionContext for auto-triggered tool evolutions."""
         try:
             # Step 1: Infer skill from tool name
-            skill_contract = derive_skill_contract_for_tool(tool_name)
+            skill_contract = infer_skill_contract_for_tool(tool_name)
             
             if not skill_contract:
                 self.logger.debug(f"No skill contract found for {tool_name}, using defaults")

@@ -72,9 +72,19 @@ class ResultInterpreter:
             "confidence": None,
             "blocking_reason": None,
             "world_state": None,
+            "error_type": None,
+            "failure_category": None,
         }
 
-        for attr in ("action_status", "recommended_action", "confidence", "blocking_reason", "world_state"):
+        for attr in (
+            "action_status",
+            "recommended_action",
+            "confidence",
+            "blocking_reason",
+            "world_state",
+            "error_type",
+            "failure_category",
+        ):
             if hasattr(raw_result, attr):
                 value = getattr(raw_result, attr)
                 if value is not None:
@@ -84,13 +94,37 @@ class ResultInterpreter:
             if data.get("success") is False and feedback["action_status"] == "success":
                 feedback["action_status"] = "failure"
 
-            for key in ("action_status", "recommended_action", "confidence", "blocking_reason", "world_state"):
+            for key in (
+                "action_status",
+                "recommended_action",
+                "confidence",
+                "blocking_reason",
+                "world_state",
+                "error_type",
+                "failure_category",
+            ):
                 if key in data and data.get(key) is not None:
                     feedback[key] = data.get(key)
 
             if feedback["world_state"] is None:
                 world_state = {}
-                for key in ("observed_before", "observed_after", "readiness", "validation", "state", "state_check"):
+                for key in (
+                    "observed_before",
+                    "observed_after",
+                    "readiness",
+                    "validation",
+                    "state",
+                    "state_check",
+                    "grounded",
+                    "grounding",
+                    "visual_state",
+                    "active_window_title",
+                    "target",
+                    "requested_field",
+                    "field_value",
+                    "answer_ready",
+                    "ambiguous",
+                ):
                     if key in data:
                         world_state[key] = data.get(key)
                 if world_state:
@@ -128,6 +162,8 @@ class ResultInterpreter:
             "action_status": feedback.get("action_status"),
             "recommended_action": feedback.get("recommended_action"),
             "world_state": feedback.get("world_state"),
+            "error_type": feedback.get("error_type"),
+            "failure_category": feedback.get("failure_category"),
             "artifacts": artifacts,
             "output_summary": self._summarize_output(data),
         }

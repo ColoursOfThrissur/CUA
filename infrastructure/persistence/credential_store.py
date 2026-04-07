@@ -1,5 +1,5 @@
 """
-CredentialStore — encrypted at-rest credential storage for CUA.
+CredentialStore - encrypted at-rest credential storage for CUA.
 
 Design:
   - Fernet symmetric encryption (cryptography package).
@@ -8,7 +8,7 @@ Design:
   - Credentials stored in data/credentials.enc as an encrypted JSON blob.
   - Each credential entry has an optional `allowed_tools` list.
     When set, only those tool names can call get().
-  - Raw values are NEVER returned by the API — only metadata.
+  - Raw values are NEVER returned by the API - only metadata.
 
 Usage from tool code:
     api_key = self.services.credentials.get("openai_api_key")
@@ -34,7 +34,7 @@ def _load_or_create_key() -> bytes:
         from cryptography.fernet import Fernet
         key = Fernet.generate_key()
     except ImportError:
-        # cryptography not installed — fall back to base64-encoded os.urandom
+        # cryptography not installed - fall back to base64-encoded os.urandom
         import base64
         key = base64.urlsafe_b64encode(os.urandom(32))
     _KEYFILE.write_bytes(key)
@@ -113,7 +113,7 @@ class CredentialStore:
                 if exp.tzinfo is None:
                     exp = exp.replace(tzinfo=timezone.utc)
                 if datetime.now(timezone.utc) > exp:
-                    _log.warning(f"Credential '{key}' expired at {expires_at} — returning None")
+                    _log.warning(f"Credential '{key}' expired at {expires_at} - returning None")
                     return None
             except Exception:
                 pass
@@ -133,7 +133,7 @@ class CredentialStore:
         return False
 
     def list_keys(self) -> List[dict]:
-        """Return metadata for all credentials — values are never included."""
+        """Return metadata for all credentials - values are never included."""
         return [
             {
                 "key": k,
@@ -189,8 +189,8 @@ class CredentialStore:
                 raw = base64.b64decode(payload)
             self._data = json.loads(raw.decode())
         except Exception as e:
-            # Log visibly — silent reset means lost credentials with no trace
-            _log.error(f"CredentialStore failed to load '{_STORE_FILE}': {e} — starting with empty store")
+            # Log visibly - silent reset means lost credentials with no trace
+            _log.error(f"CredentialStore failed to load '{_STORE_FILE}': {e} - starting with empty store")
             self._data = {}
 
 

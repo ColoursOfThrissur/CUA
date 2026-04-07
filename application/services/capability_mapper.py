@@ -26,12 +26,20 @@ class CapabilityMapper:
             'critic_agent.py',     # Agent, not a tool
         }
 
-        dirs_to_scan = [self.tools_dir, self.tools_dir / "experimental", self.tools_dir / "computer_use"]
+        dirs_to_scan = [self.tools_dir, self.tools_dir / "experimental"]
         for scan_dir in dirs_to_scan:
             if not scan_dir.exists():
                 continue
             for tool_file in scan_dir.glob("*.py"):
                 if tool_file.name.startswith('_') or tool_file.name in EXCLUDED_FILES:
+                    continue
+                tool_caps = self._extract_tool_capabilities(tool_file)
+                capabilities.update(tool_caps)
+
+        computer_use_dir = self.tools_dir / "computer_use"
+        if computer_use_dir.exists():
+            for tool_file in computer_use_dir.glob("*_tool.py"):
+                if tool_file.name.startswith('_'):
                     continue
                 tool_caps = self._extract_tool_capabilities(tool_file)
                 capabilities.update(tool_caps)

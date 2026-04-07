@@ -46,20 +46,29 @@ class SQLiteLogger:
         corr_str = f" [{correlation_id[:8]}]" if correlation_id else ""
         print(f"[{level.value.upper()}]{corr_str} {self.service_name}: {message}")
     
-    def debug(self, message: str, **context):
-        self._log(LogLevel.DEBUG, message, **context)
+    def _coerce_message(self, message: str, args: tuple[Any, ...]) -> str:
+        if not args:
+            return message
+        try:
+            return message % args
+        except Exception:
+            rendered = " ".join(str(arg) for arg in args)
+            return f"{message} {rendered}".strip()
+
+    def debug(self, message: str, *args: Any, **context):
+        self._log(LogLevel.DEBUG, self._coerce_message(message, args), **context)
     
-    def info(self, message: str, **context):
-        self._log(LogLevel.INFO, message, **context)
+    def info(self, message: str, *args: Any, **context):
+        self._log(LogLevel.INFO, self._coerce_message(message, args), **context)
     
-    def warning(self, message: str, **context):
-        self._log(LogLevel.WARNING, message, **context)
+    def warning(self, message: str, *args: Any, **context):
+        self._log(LogLevel.WARNING, self._coerce_message(message, args), **context)
     
-    def error(self, message: str, **context):
-        self._log(LogLevel.ERROR, message, **context)
+    def error(self, message: str, *args: Any, **context):
+        self._log(LogLevel.ERROR, self._coerce_message(message, args), **context)
     
-    def critical(self, message: str, **context):
-        self._log(LogLevel.CRITICAL, message, **context)
+    def critical(self, message: str, *args: Any, **context):
+        self._log(LogLevel.CRITICAL, self._coerce_message(message, args), **context)
     
     def log_request(self, session_id: str, user_message: str, **context):
         self.info("user_request", session_id=session_id, user_message=user_message, **context)

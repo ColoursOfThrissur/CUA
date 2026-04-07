@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+from contextlib import asynccontextmanager
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 if 'core.permission_gate' in sys.modules:
@@ -16,14 +17,15 @@ logging.basicConfig(
 for _noisy in ("httpx", "httpcore", "urllib3", "requests", "uvicorn.access", "multipart"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-from fastapi import FastAPI, WebSocket, Request
+from fastapi import FastAPI, WebSocket, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 import asyncio
 import json
 import time
+from types import MethodType
 
-from api.bootstrap import build_runtime, include_router_bundle, load_router_bundle
+from api.bootstrap import RuntimeState, build_runtime, include_router_bundle, load_router_bundle, shutdown_runtime
 from api.chat_handler import ChatRequest, ChatResponse, create_chat_handler
 from shared.config.branding import get_platform_name
 
@@ -31,7 +33,92 @@ from shared.config.branding import get_platform_name
 router_bundle = load_router_bundle()
 ROUTERS_AVAILABLE = router_bundle.routers_available
 
-app = FastAPI(title=f"{get_platform_name()} API")
+runtime = RuntimeState(system_available=False, init_error="Runtime not initialized")
+SYSTEM_AVAILABLE = runtime.system_available
+registry = None
+llm_client = None
+improvement_loop = None
+skill_registry = None
+refresh_runtime_registry_from_files = router_bundle.refresh_runtime_registry_from_files or (lambda: None)
+
+
+def _runtime_status_payload():
+    system_available = bool(runtime and runtime.system_available)
+    routers_available = bool(router_bundle and router_bundle.routers_available)
+    runtime_init_error = getattr(runtime, "init_error", None)
+    router_import_error = getattr(router_bundle, "import_error", None)
+
+    if system_available and routers_available and not runtime_init_error and not router_import_error:
+        status = "healthy"
+    elif system_available:
+        status = "degraded"
+    else:
+        status = "unhealthy"
+
+    return {
+        "status": status,
+        "system_available": system_available,
+        "routers_available": routers_available,
+        "runtime_init_error": runtime_init_error,
+        "router_import_error": router_import_error,
+    }
+
+# Session storage
+sessions = {}
+connections = []
+
+async def _runtime_not_ready_stop():
+    return {"success": False, "message": runtime.init_error or "Runtime not initialized"}
+
+
+async def _runtime_not_ready_chat(request: ChatRequest):
+    return ChatResponse(
+        response=f"System not available. Echo: {request.message}",
+        session_id=request.session_id or "uninitialized",
+        success=False,
+        execution_result={"success": False, "error": runtime.init_error or "Runtime not initialized"},
+    )
+
+
+stop_chat_handler = _runtime_not_ready_stop
+chat_handler = _runtime_not_ready_chat
+
+
+def _assign_runtime(new_runtime: RuntimeState) -> None:
+    global runtime, SYSTEM_AVAILABLE, registry, llm_client, improvement_loop, skill_registry
+
+    runtime = new_runtime
+    SYSTEM_AVAILABLE = new_runtime.system_available
+    registry = new_runtime.registry
+    llm_client = new_runtime.llm_client
+    improvement_loop = new_runtime.improvement_loop
+    skill_registry = new_runtime.skill_registry
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global stop_chat_handler, chat_handler
+
+    built_runtime = build_runtime(router_bundle)
+    _assign_runtime(built_runtime)
+    stop_chat_handler, chat_handler = create_chat_handler(
+        built_runtime,
+        sessions,
+        refresh_runtime_registry_from_files,
+    )
+    app.state.runtime = built_runtime
+
+    try:
+        yield
+    finally:
+        shutdown_runtime(built_runtime)
+        stop_chat_handler = _runtime_not_ready_stop
+        chat_handler = _runtime_not_ready_chat
+        _assign_runtime(RuntimeState(system_available=False, init_error="Runtime shut down"))
+        app.state.runtime = runtime
+
+
+app = FastAPI(title=f"{get_platform_name()} API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,43 +144,73 @@ async def correlation_middleware(request: Request, call_next):
         return response
 
 
-runtime = build_runtime(router_bundle)
-SYSTEM_AVAILABLE = runtime.system_available
-registry = runtime.registry
-llm_client = runtime.llm_client
-improvement_loop = runtime.improvement_loop
-skill_registry = runtime.skill_registry
-refresh_runtime_registry_from_files = router_bundle.refresh_runtime_registry_from_files or (lambda: None)
+@app.post("/chat/stop")
+async def stop_chat():
+    return await stop_chat_handler()
 
-# Session storage
-sessions = {}
-connections = []
 
-# Wire chat endpoints
-stop_chat, chat = create_chat_handler(runtime, sessions, refresh_runtime_registry_from_files)
-app.post("/chat/stop")(stop_chat)
-app.post("/chat", response_model=ChatResponse)(chat)
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    return await chat_handler(request)
+
+
+def _build_middleware_stack_compat(self):
+    """Bridge FastAPI/Starlette middleware shape differences in this environment."""
+    from fastapi.middleware.asyncexitstack import AsyncExitStackMiddleware
+    from starlette.middleware import Middleware
+    from starlette.middleware.errors import ServerErrorMiddleware
+    from starlette.middleware.exceptions import ExceptionMiddleware
+
+    debug = self.debug
+    error_handler = None
+    exception_handlers = {}
+
+    for key, value in self.exception_handlers.items():
+        if key in (500, Exception):
+            error_handler = value
+        else:
+            exception_handlers[key] = value
+
+    middleware = (
+        [Middleware(ServerErrorMiddleware, handler=error_handler, debug=debug)]
+        + [
+            Middleware(cls, **options) if isinstance(item, tuple) else item
+            for item in self.user_middleware
+            for cls, options in [
+                item if isinstance(item, tuple) else (item.cls, getattr(item, "options", getattr(item, "kwargs", {})))
+            ]
+        ]
+        + [
+            Middleware(ExceptionMiddleware, handlers=exception_handlers, debug=debug),
+            Middleware(AsyncExitStackMiddleware),
+        ]
+    )
+
+    asgi = self.router
+    for item in reversed(middleware):
+        cls = item.cls
+        args = getattr(item, "args", ())
+        kwargs = getattr(item, "options", getattr(item, "kwargs", {}))
+        asgi = cls(asgi, *args, **kwargs)
+    return asgi
+
+
+app.build_middleware_stack = MethodType(_build_middleware_stack_compat, app)
 
 
 @app.get("/health")
-async def health():
-    return {
-        "status": "healthy",
-        "system_available": SYSTEM_AVAILABLE,
-        "routers_available": ROUTERS_AVAILABLE,
-        "runtime_init_error": runtime.init_error,
-        "router_import_error": router_bundle.import_error,
-        "cors_test": "local_only",
-    }
+async def health(response: Response):
+    payload = _runtime_status_payload()
+    response.status_code = 200 if payload["status"] == "healthy" else 503
+    payload["cors_test"] = "local_only"
+    return payload
 
 
 @app.get("/status")
 async def status():
+    payload = _runtime_status_payload()
     return {
-        "status": "online",
-        "system_available": SYSTEM_AVAILABLE,
-        "routers_available": ROUTERS_AVAILABLE,
-        "runtime_init_error": runtime.init_error,
+        **payload,
         "sessions": len(sessions),
         "connections": len(connections),
         "tools": len(registry.tools) if registry else 0,
@@ -138,7 +255,7 @@ async def event_stream(request: Request):
                 "data": json.dumps({"type": event.type, "data": event.data, "timestamp": event.timestamp}),
             })
 
-        for et in ["log_added", "loop_started", "iteration_started", "task_completed", "loop_stopped"]:
+        for et in ["log_added", "loop_started", "iteration_started", "task_completed", "loop_stopped", "worktree_event"]:
             event_bus.subscribe(et, handler)
 
         try:
@@ -151,7 +268,7 @@ async def event_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield {"event": "ping", "data": ""}
         finally:
-            for et in ["log_added", "loop_started", "iteration_started", "task_completed", "loop_stopped"]:
+            for et in ["log_added", "loop_started", "iteration_started", "task_completed", "loop_stopped", "worktree_event"]:
                 try:
                     event_bus.unsubscribe(et, handler)
                 except Exception:
@@ -182,6 +299,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "iteration_started": send_event, "task_completed": send_event,
         "pending_tool_added": send_event, "agent_plan": send_event,
         "agent_step_update": send_event, "agent_plan_clear": send_event,
+        "worktree_event": send_event,
     }
     for et, cb in callbacks.items():
         event_bus.subscribe(et, cb)

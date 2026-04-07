@@ -63,7 +63,7 @@ User Request
     ↓
 API: /tools/create (improvement_api.py)
     ↓
-ToolCreationOrchestrator (core/tool_creation/flow.py)
+ToolCreationOrchestrator (application/use_cases/tool_lifecycle/tool_creation_flow.py)
     ↓
     ├─→ SpecGenerator (spec_generator.py)
     │   ├─→ LLM proposes spec
@@ -97,19 +97,19 @@ ToolCreationOrchestrator (core/tool_creation/flow.py)
 ### Key Files
 
 **Active (Modular System)**:
-- `api/improvement_api.py` - Entry point `/tools/create`
-- `core/tool_creation/flow.py` - Main orchestrator
-- `core/tool_creation/spec_generator.py` - Spec generation with confidence
-- `core/tool_creation/code_generator/qwen_generator.py` - Multi-stage generation
-- `core/tool_creation/code_generator/default_generator.py` - Single-shot generation
-- `core/tool_creation/validator.py` - Comprehensive validation
-- `core/expansion_mode.py` - Experimental tool management
-- `core/tool_creation/sandbox_runner.py` - Isolated testing
+- `api/rest/tools/tool_creation_router.py` - API entry point for tool creation and approvals
+- `application/use_cases/tool_lifecycle/tool_creation_flow.py` - Main orchestrator
+- `infrastructure/code_generation/spec_generator.py` - Spec generation with confidence
+- `infrastructure/code_generation/tool_creation/qwen_generator.py` - Multi-stage generation
+- `infrastructure/code_generation/tool_creation/default_generator.py` - Single-shot generation
+- `infrastructure/validation/ast/tool_creation_validator.py` - Comprehensive validation
+- `application/services/expansion_mode.py` - Experimental tool management
+- `infrastructure/sandbox/creation_sandbox_runner.py` - Isolated testing
 - `config/model_capabilities.json` - Model routing config
 
 **Legacy (Kept for Reference)**:
-- `core/tool_creation_flow.py` - Old monolithic implementation (contains fallback logic)
-- `core/tool_generation_orchestrator.py` - Old incremental generator (reference only)
+- `application/use_cases/tool_lifecycle/tool_creation_skill_aware.py` - Older creation path kept for reference
+- `application/use_cases/tool_lifecycle/tool_generation_orchestrator.py` - Older orchestration path kept for reference
 
 ### Thin Tool Pattern
 

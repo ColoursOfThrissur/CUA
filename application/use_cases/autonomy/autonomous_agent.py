@@ -8,6 +8,7 @@ from application.use_cases.execution.execution_engine import ExecutionEngine, Ex
 from infrastructure.persistence.file_storage.memory_system import MemorySystem
 from application.services.skill_selector import SkillSelector
 from application.services.skill_context_hydrator import SkillContextHydrator
+from domain.entities.skill_models import SkillSelection as SkillSelectionModel
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,13 @@ class AutonomousAgent:
                     ],
                 })
 
-                state = self.executor.execute_plan(plan, execution_id)
+                execution_skill_context = self._build_execution_skill_context(goal, context)
+                state = self.executor.execute_plan(
+                    plan,
+                    execution_id,
+                    skill_context=execution_skill_context,
+                    session_id=session_id,
+                )
                 exec_duration = _time.time() - exec_start
                 execution_history.append(execution_id)
                 final_state = state
@@ -227,6 +234,54 @@ class AutonomousAgent:
         
         return result
 
+    def _build_execution_skill_context(self, goal: AgentGoal, context: Optional[Dict[str, Any]]):
+        """Materialize a SkillExecutionContext for runtime execution from planner context."""
+        skill_context_data = dict((context or {}).get("skill_context") or {})
+        skill_name = str(skill_context_data.get("skill_name", "") or "").strip()
+        if not skill_name or not self.skill_registry:
+            return None
+
+        skill_def = self.skill_registry.get(skill_name)
+        if not skill_def:
+            return None
+
+        selection = SkillSelectionModel(
+            matched=True,
+            skill_name=skill_name,
+            category=str(skill_context_data.get("category", "") or ""),
+            confidence=float(skill_context_data.get("confidence", 1.0) or 1.0),
+            reason=str(skill_context_data.get("reason", "") or ""),
+        )
+        execution_context = SkillContextHydrator.build_context(selection, skill_def, goal.goal_text)
+
+        if skill_context_data.get("instructions_summary"):
+            execution_context.instructions_summary = str(skill_context_data["instructions_summary"])
+        if skill_context_data.get("preferred_tools"):
+            execution_context.preferred_tools = list(skill_context_data["preferred_tools"])
+        if skill_context_data.get("verification_mode"):
+            execution_context.verification_mode = str(skill_context_data["verification_mode"])
+        if skill_context_data.get("output_types"):
+            execution_context.expected_output_types = list(skill_context_data["output_types"])
+
+        merged_hints = dict(getattr(execution_context, "planning_hints", {}) or {})
+        merged_hints.update(dict(skill_context_data.get("planning_hints") or {}))
+        if skill_context_data.get("planning_profile"):
+            merged_hints["planning_profile"] = skill_context_data["planning_profile"]
+            setattr(execution_context, "planning_profile", skill_context_data["planning_profile"])
+        if skill_context_data.get("domain_hint"):
+            merged_hints["domain_hint"] = skill_context_data["domain_hint"]
+        execution_context.planning_hints = merged_hints
+
+        execution_context.validation_rules.update({
+            "planning_profile": skill_context_data.get("planning_profile"),
+            "domain_hint": skill_context_data.get("domain_hint"),
+            "include_past_plans": skill_context_data.get("include_past_plans"),
+            "include_memory_context": skill_context_data.get("include_memory_context"),
+            "include_previous_context": skill_context_data.get("include_previous_context"),
+            "use_compact_schema": skill_context_data.get("use_compact_schema"),
+        })
+        return execution_context
+
     def _build_tool_history(self, plan: ExecutionPlan, state: ExecutionState) -> List[Dict[str, Any]]:
         """Flatten an execution state into tool usage telemetry."""
         registry = getattr(state, "state_registry", None)
@@ -289,13 +344,19 @@ class AutonomousAgent:
                     enhanced_context["skill_context"] = {
                         "skill_name": skill_context.skill_name,
                         "category": skill_context.category,
-                        "instructions_summary": getattr(skill_context, 'instructions_summary', ''),
+                        "instructions_summary": getattr(skill_context, "instructions_summary", ""),
                         "preferred_tools": list(skill_context.preferred_tools),
                         "required_tools": getattr(skill_context.skill_definition, 'required_tools', []),
                         "verification_mode": skill_context.verification_mode,
                         "output_types": list(skill_context.expected_output_types),
                         "ui_renderer": getattr(skill_context.skill_definition, 'ui_renderer', ''),
-                        "skill_constraints": [],
+                        "skill_constraints": list(
+                            (getattr(skill_context, "planning_hints", {}) or {}).get("skill_constraints", [])
+                        ),
+                        "workflow_guidance": list(
+                            (getattr(skill_context, "planning_hints", {}) or {}).get("workflow_guidance", [])
+                        ),
+                        "planning_hints": dict(getattr(skill_context, "planning_hints", {}) or {}),
                     }
 
         # Add learned patterns
@@ -530,8 +591,11 @@ Respond with ONLY valid JSON in this format:
         completed_steps: List[Any],
     ) -> Dict[str, Any]:
         """Stricter non-LLM fallback verification for actionable desktop requests."""
-        all_completed = len(completed_steps) == len(state.step_results)
-        if not all_completed:
+        unfinished = [
+            result for result in state.step_results.values()
+            if result.status not in (StepStatus.COMPLETED, StepStatus.SKIPPED)
+        ]
+        if unfinished:
             return {"success": False, "reason": "Some steps incomplete"}
 
         goal_lower = (goal.goal_text or "").lower()
@@ -571,6 +635,20 @@ Respond with ONLY valid JSON in this format:
 
         if any(word in goal_lower for word in ("list", "show", "find", "count", "extract", "read")):
             if not _contains_explicit_list_data():
+                evidence_outputs = [
+                    output for output in outputs
+                    if isinstance(output, dict)
+                    and (
+                        output.get("answer_ready") is True
+                        or (
+                            output.get("requested_field")
+                            and output.get("field_value")
+                            and not output.get("ambiguous", False)
+                        )
+                    )
+                ]
+                if evidence_outputs:
+                    return {"success": True, "reason": "Structured evidence satisfied the requested desktop detail lookup"}
                 return {
                     "success": False,
                     "reason": "Requested explicit data was not extracted",

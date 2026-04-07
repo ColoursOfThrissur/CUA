@@ -6,7 +6,19 @@ import ToolModeChat from './ToolModeChat';
 import AutonomyMode from './AutonomyMode';
 import './MainCanvas.css';
 
-function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAction, onModeChange, skills, backendConnected, agentPlan }) {
+function MainCanvas({
+  mode,
+  messages,
+  onSendMessage,
+  isProcessing,
+  onFloatingAction,
+  onModeChange,
+  skills,
+  backendConnected,
+  agentPlan,
+  domainHint,
+  onDomainHintChange,
+}) {
   const renderContent = () => {
     if (mode === 'tools') return <ToolModeChat key="tools" onModeChange={onModeChange} />;
     if (mode === 'evolution') return <EvolutionMode key="evolution" />;
@@ -21,6 +33,8 @@ function MainCanvas({ mode, messages, onSendMessage, isProcessing, onFloatingAct
         skills={skills}
         backendConnected={backendConnected}
         agentPlan={agentPlan}
+        domainHint={domainHint}
+        onDomainHintChange={onDomainHintChange}
       />
     );
   };

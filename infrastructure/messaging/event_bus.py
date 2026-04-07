@@ -3,6 +3,9 @@ from typing import Callable, Dict, List
 from dataclasses import dataclass
 from datetime import datetime
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Event:
@@ -49,16 +52,20 @@ class EventBus:
     def emit_sync(self, event_type: str, data: dict):
         """Fire-and-forget emit from sync (non-async) code."""
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if loop.is_running():
                 loop.call_soon_threadsafe(
                     loop.create_task,
                     self.emit(event_type, data)
                 )
-            else:
-                loop.run_until_complete(self.emit(event_type, data))
-        except Exception:
-            pass
+                return
+        except RuntimeError:
+            loop = None
+
+        try:
+            asyncio.run(self.emit(event_type, data))
+        except Exception as e:
+            logger.warning("Failed to emit sync event '%s': %s", event_type, e, exc_info=True)
     
     async def get_event(self):
         """Get next event from queue."""

@@ -13,7 +13,7 @@ It provides:
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from domain.entities.skill_models import SkillDefinition
@@ -45,6 +45,8 @@ class SkillExecutionContext:
     verification_mode: str = "output_validation"  # source_backed, side_effect_observed, output_validation
     risk_level: str = "medium"  # low, medium, high
     fallback_strategy: str = "fail_fast"  # fail_fast, direct_tool_routing, degraded_mode
+    instructions_summary: str = ""
+    planning_hints: Dict[str, Any] = field(default_factory=dict)
     
     # Tool selection guidance
     preferred_tools: List[str] = field(default_factory=list)
@@ -71,7 +73,7 @@ class SkillExecutionContext:
     warnings: List[str] = field(default_factory=list)
     
     # Metrics
-    start_time: datetime = field(default_factory=datetime.utcnow)
+    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     end_time: Optional[datetime] = None
     execution_time_seconds: float = 0.0
     retry_count: int = 0
@@ -87,6 +89,8 @@ class SkillExecutionContext:
             "selected_tool": self.selected_tool,
             "fallback_tools": self.fallback_tools,
             "tool_selection_reasoning": self.tool_selection_reasoning,
+            "instructions_summary": self.instructions_summary,
+            "planning_hints": self.planning_hints,
             "resolved_parameters": self.resolved_parameters,
             "step_history": self.step_history,
             "errors_encountered": self.errors_encountered,
@@ -97,7 +101,7 @@ class SkillExecutionContext:
     
     def mark_complete(self):
         """Mark execution as complete and calculate duration."""
-        self.end_time = datetime.utcnow()
+        self.end_time = datetime.now(timezone.utc)
         self.execution_time_seconds = (self.end_time - self.start_time).total_seconds()
     
     def add_step(self, tool: str, operation: str, status: str, duration: float, result: Any = None):
@@ -108,7 +112,7 @@ class SkillExecutionContext:
             "status": status,
             "duration": duration,
             "result": result,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
     
     def add_error(self, tool: str, error: str, retry_count: int):
@@ -117,7 +121,7 @@ class SkillExecutionContext:
             "tool": tool,
             "error": error,
             "retry_count": retry_count,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
     
     def should_retry(self) -> bool:
